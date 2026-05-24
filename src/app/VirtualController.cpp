@@ -5,7 +5,7 @@
 #include <algorithm>
 
 // ---------------------------------------------------------------------------
-// Report translation — 0x42 → XUSB_REPORT
+// Report translation — 0x45 → XUSB_REPORT
 // ---------------------------------------------------------------------------
 
 static XUSB_REPORT Translate(const uint8_t* buf, size_t n) {

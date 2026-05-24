@@ -48,6 +48,11 @@ bool SteamController::Open() {
                 printf("Active interface found for PID=%04X.\n", pid);
                 return true;
             }
+            if (n > 0)
+                printf("  [probe] unexpected report ID=0x%02X (expected 0x%02X) — firmware mismatch?\n",
+                       buf[0], REPORT_STATE);
+            else
+                printf("  [probe] read timeout on vendor interface.\n");
 
             m_device.Close();
         }

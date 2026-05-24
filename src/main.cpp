@@ -31,7 +31,7 @@ static constexpr uint8_t AXIS_THRESHOLD = 0;   // any idle movement → treat as
 static constexpr bool FORCE_SHOW_BYTES_10_11 = false;  // left joystick X
 static constexpr bool FORCE_SHOW_BYTES_12_13 = false;  // left joystick Y
 static constexpr bool FORCE_SHOW_BYTES_14_15 = false;  // right joystick Y
-static constexpr bool FORCE_SHOW_BYTES_16_17 = true;  // right joystick X
+static constexpr bool FORCE_SHOW_BYTES_16_17 = false;  // right joystick Y
 
 struct ByteStats {
     uint8_t lo  = 0xFF;

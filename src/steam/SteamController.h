@@ -14,10 +14,9 @@ public:
     static constexpr uint16_t VENDOR_USAGE_PAGE = 0xFF00;
 
     // Input report IDs (device → host)
-    static constexpr uint8_t REPORT_STATE         = 0x42;  // 53 bytes: main controller state
+    static constexpr uint8_t REPORT_STATE         = 0x45;  // 53 bytes: main controller state
     static constexpr uint8_t REPORT_SECONDARY      = 0x43;  // 14 bytes: gyro / secondary state
     static constexpr uint8_t REPORT_STATUS         = 0x44;  //  5 bytes: battery / connection
-    static constexpr uint8_t REPORT_EXTENDED       = 0x45;  // 45 bytes: extended sensor state
     static constexpr uint8_t REPORT_UNKNOWN_7B     = 0x7B;  // 12 bytes: TBD
     static constexpr uint8_t REPORT_UNKNOWN_79     = 0x79;  //  1 byte:  TBD
 
@@ -41,7 +40,7 @@ public:
     static constexpr uint8_t TRACKPAD_NONE               = 0x00;
 
     // ---------------------------------------------------------------------------
-    // Input report layout — 0x42 STATE report (buf[0] = 0x42)
+    // Input report layout — 0x45 STATE report (buf[0] = 0x45)
     // ---------------------------------------------------------------------------
 
     // buf[01]       — 8-bit sequence counter (wraps 0xFF → 0x00)
