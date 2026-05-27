@@ -1,10 +1,13 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <functional>
 
 class VirtualController {
 public:
-    VirtualController();
+    using RumbleCallback = std::function<void(uint8_t largeMotor, uint8_t smallMotor)>;
+
+    explicit VirtualController(RumbleCallback rumbleCallback = {});
     ~VirtualController();
     VirtualController(const VirtualController&) = delete;
     VirtualController& operator=(const VirtualController&) = delete;
@@ -13,10 +16,12 @@ public:
     bool IsDriverMissing()  const { return m_driverMissing; }
 
     void Update(const uint8_t* buf, size_t n);
+    void OnRumble(uint8_t largeMotor, uint8_t smallMotor);
 
 private:
     void* m_client       = nullptr;
     void* m_target       = nullptr;
+    RumbleCallback m_rumbleCallback;
     bool  m_valid        = false;
     bool  m_driverMissing = false;
 };

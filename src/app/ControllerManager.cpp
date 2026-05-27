@@ -26,7 +26,14 @@ void ControllerManager::EnableGameMode() {
     if (!m_connected || m_gameModeActive) return;
     if (!g_ctrl->DisableLizardMode()) return;
 
-    m_virtual = std::make_unique<VirtualController>();
+    m_virtual = std::make_unique<VirtualController>(
+        [](uint8_t largeMotor, uint8_t smallMotor) {
+            if (!g_ctrl || !g_ctrl->IsOpen()) return;
+
+            const uint16_t leftSpeed  = static_cast<uint16_t>(static_cast<uint32_t>(largeMotor) * 257u);
+            const uint16_t rightSpeed = static_cast<uint16_t>(static_cast<uint32_t>(smallMotor) * 257u);
+            g_ctrl->SetRumble(leftSpeed, rightSpeed);
+        });
     if (!m_virtual->IsValid()) {
         bool missing = m_virtual->IsDriverMissing();
         m_virtual.reset();
@@ -47,6 +54,8 @@ void ControllerManager::EnableGameMode() {
 void ControllerManager::DisableGameMode() {
     if (!m_gameModeActive) return;
     StopReadLoop();
+    if (g_ctrl && g_ctrl->IsOpen())
+        g_ctrl->SetRumble(0, 0);
     m_trackpad.Reset();
     m_virtual.reset();
     g_ctrl->EnableLizardMode();

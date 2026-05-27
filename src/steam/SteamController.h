@@ -2,6 +2,7 @@
 #include "hid/HidDevice.h"
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <thread>
 
 class SteamController {
@@ -33,6 +34,8 @@ public:
     static constexpr uint8_t CMD_SET_DEFAULT_MAPPINGS   = 0x85;  // ← lizard on
     static constexpr uint8_t CMD_SET_SETTINGS           = 0x87;
     static constexpr uint8_t CMD_GET_SETTINGS           = 0x89;
+    static constexpr uint8_t CMD_TRIGGER_RUMBLE         = 0xEB;
+    static constexpr uint8_t OUT_REPORT_HAPTIC_RUMBLE   = 0x80;
 
     // Setting key IDs (go in the payload of CMD_SET_SETTINGS)
     static constexpr uint8_t SETTING_RIGHT_TRACKPAD_MODE = 0x07;
@@ -129,10 +132,17 @@ public:
     // Returns 0 on timeout.
     size_t ReadReport(uint8_t* buffer, size_t size, uint32_t timeoutMs = 16);
 
+    // Sends a Steam Controller haptic rumble command. Speeds are 0..65535.
+    bool SetRumble(uint16_t leftSpeed, uint16_t rightSpeed);
+
 private:
     void HeartbeatLoop();
+    bool SendRumbleOutput(uint16_t leftSpeed, uint16_t rightSpeed);
 
     HidDevice       m_device;
     std::thread     m_heartbeat;
     std::atomic<bool> m_running{false};
+    std::atomic<uint16_t> m_rumbleLeft{0};
+    std::atomic<uint16_t> m_rumbleRight{0};
+    std::mutex      m_commandMutex;
 };
