@@ -20,9 +20,24 @@ void ControllerManager::OnDeviceChange() {
         TryOpen();
     else if (g_ctrl && !g_ctrl->IsOpen())
         Close(/*restoreLizard=*/false);
+
+    if (m_connected && m_wantsGameMode && !m_gameModeActive)
+        EnableGameMode();
+}
+
+void ControllerManager::Tick() {
+    if (!m_connected) {
+        TryOpen();
+    } else if (g_ctrl && !g_ctrl->IsOpen()) {
+        Close(/*restoreLizard=*/false);
+    }
+
+    if (m_connected && m_wantsGameMode && !m_gameModeActive)
+        EnableGameMode();
 }
 
 void ControllerManager::EnableGameMode() {
+    m_wantsGameMode = true;
     if (!m_connected || m_gameModeActive) return;
     if (!g_ctrl->DisableLizardMode()) return;
 
@@ -52,6 +67,7 @@ void ControllerManager::EnableGameMode() {
 }
 
 void ControllerManager::DisableGameMode() {
+    m_wantsGameMode = false;
     if (!m_gameModeActive) return;
     StopReadLoop();
     if (g_ctrl && g_ctrl->IsOpen())
@@ -83,6 +99,8 @@ void ControllerManager::TryOpen() {
     if (g_ctrl->Open()) {
         m_connected = true;
         m_onStateChanged(m_connected, m_gameModeActive, false);
+        if (m_wantsGameMode && !m_gameModeActive)
+            EnableGameMode();
     }
 }
 

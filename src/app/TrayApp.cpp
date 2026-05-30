@@ -14,6 +14,8 @@ TrayApp::TrayApp() {
 }
 
 TrayApp::~TrayApp() {
+    if (m_hwnd)
+        KillTimer(m_hwnd, TIMER_RECONNECT);
     RemoveTrayIcon();
     g_app = nullptr;
 }
@@ -52,6 +54,7 @@ bool TrayApp::Init(HINSTANCE hInstance) {
 
     LoadSettings();
     AddTrayIcon();
+    SetTimer(m_hwnd, TIMER_RECONNECT, 2000, nullptr);
     return true;
 }
 
@@ -120,6 +123,11 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE)
             m_controller->OnDeviceChange();
         return TRUE;
+
+    case WM_TIMER:
+        if (wp == TIMER_RECONNECT)
+            m_controller->Tick();
+        return 0;
 
     case WM_DESTROY:
         PostQuitMessage(0);

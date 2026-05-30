@@ -21,6 +21,7 @@ public:
 
     // Called when Windows reports a device arrival or removal (WM_DEVICECHANGE).
     void OnDeviceChange();
+    void Tick();
 
     // Toggle game mode on/off. No-op if controller is not connected.
     void EnableGameMode();
@@ -46,6 +47,7 @@ private:
     StateChangedFn                     m_onStateChanged;
     bool                               m_connected            = false;
     bool                               m_gameModeActive       = false;
+    bool                               m_wantsGameMode        = true;
     bool                               m_trackpadMouseEnabled = false;
     bool                               m_backButtonsEnabled   = false;
     bool                               m_useLeftTrackpad      = false;
