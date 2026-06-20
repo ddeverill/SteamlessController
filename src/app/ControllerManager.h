@@ -1,15 +1,9 @@
 #pragma once
-#include "TrackpadMouse.h"
 #include <functional>
-#include <thread>
-#include <atomic>
 #include <memory>
+#include <string>
+#include <vector>
 
-class VirtualController;
-
-// Manages the Steam Controller lifecycle: device discovery, lizard mode
-// disable/enable, and the heartbeat that keeps lizard mode off.
-// All public methods are safe to call from the UI thread.
 class ControllerManager {
 public:
     using StateChangedFn = std::function<void(bool connected, bool gameModeActive, bool vigemMissing)>;
@@ -22,7 +16,7 @@ public:
     // Called when Windows reports a device arrival or removal (WM_DEVICECHANGE).
     void OnDeviceChange();
 
-    // Toggle game mode on/off. No-op if controller is not connected.
+    // Toggle game mode on/off. Applied to all connected controllers.
     void EnableGameMode();
     void DisableGameMode();
 
@@ -30,27 +24,28 @@ public:
     void SetBackButtonsEnabled(bool enabled);
     void SetUseLeftTrackpad(bool enabled);
 
-    bool IsConnected()             const { return m_connected; }
-    bool IsGameModeActive()        const { return m_gameModeActive; }
+    bool IsConnected()             const { return !m_slots.empty(); }
+    bool IsGameModeActive()        const;
     bool IsTrackpadMouseEnabled()  const { return m_trackpadMouseEnabled; }
     bool IsBackButtonsEnabled()    const { return m_backButtonsEnabled; }
     bool IsUseLeftTrackpad()       const { return m_useLeftTrackpad; }
 
 private:
-    void TryOpen();
-    void Close(bool restoreLizard);
-    void StartReadLoop();
-    void StopReadLoop();
-    void ReadLoop();
+    struct Slot;
+
+    // Enumerates live devices, adds new slots, removes disconnected ones.
+    void SyncDevices();
+    void OpenSlot(const std::wstring& path);
+    void EnableGameModeSlot(Slot& slot, bool& vigemMissingOut);
+    void DisableGameModeSlot(Slot& slot);
+    void StartReadLoop(Slot& slot);
+    void StopReadLoop(Slot& slot);
+    void ReadLoop(Slot* slot);
+    void NotifyStateChanged(bool vigemMissing = false);
 
     StateChangedFn                     m_onStateChanged;
-    bool                               m_connected            = false;
-    bool                               m_gameModeActive       = false;
+    std::vector<std::unique_ptr<Slot>> m_slots;
     bool                               m_trackpadMouseEnabled = false;
     bool                               m_backButtonsEnabled   = false;
     bool                               m_useLeftTrackpad      = false;
-    std::unique_ptr<VirtualController> m_virtual;
-    TrackpadMouse                      m_trackpad;
-    std::thread                        m_readThread;
-    std::atomic<bool>                  m_readRunning{false};
 };

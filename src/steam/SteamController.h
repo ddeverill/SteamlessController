@@ -113,8 +113,13 @@ public:
     SteamController(const SteamController&) = delete;
     SteamController& operator=(const SteamController&) = delete;
 
-    // Finds and opens the vendor HID interface. Returns false if not found.
+    // Returns paths for all live Steam Controller interfaces (probes each one).
+    static std::vector<std::wstring> EnumerateAll();
+
+    // Find and open the first live vendor HID interface.
     bool Open();
+    // Open a specific path returned by EnumerateAll (no probe needed).
+    bool Open(const std::wstring& path);
     void Close();
     bool IsOpen() const { return m_device.IsOpen(); }
 
