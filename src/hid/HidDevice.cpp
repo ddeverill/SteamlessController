@@ -163,17 +163,60 @@ bool HidDevice::SendOutputReport(const uint8_t* data, size_t size) {
         std::vector<uint8_t> padded(m_outputReportLen, 0);
         std::memcpy(padded.data(), data, size);
         BOOLEAN ok = HidD_SetOutputReport(m_handle, padded.data(), m_outputReportLen);
+        DWORD err = ok ? ERROR_SUCCESS : GetLastError();
         if (!ok)
-            printf("SendOutputReport(0x%02X) failed: error %lu\n", data[0], GetLastError());
+            printf("SendOutputReport(0x%02X) failed: error %lu\n", data[0], err);
         return ok == TRUE;
     }
 
     BOOLEAN ok = HidD_SetOutputReport(m_handle,
                                        const_cast<PVOID>(static_cast<const void*>(data)),
                                        static_cast<ULONG>(size));
+    DWORD err = ok ? ERROR_SUCCESS : GetLastError();
     if (!ok)
-        printf("SendOutputReport(0x%02X) failed: error %lu\n", data[0], GetLastError());
+        printf("SendOutputReport(0x%02X) failed: error %lu\n", data[0], err);
     return ok == TRUE;
+}
+
+bool HidDevice::WriteOutputReport(const uint8_t* data, size_t size) {
+    auto writeOnce = [&](const uint8_t* buffer, size_t len) -> bool {
+        HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!event)
+            return false;
+
+        OVERLAPPED ov{};
+        ov.hEvent = event;
+
+        DWORD bytesWritten = 0;
+        BOOL ok = WriteFile(m_handle, buffer, static_cast<DWORD>(len), &bytesWritten, &ov);
+        if (!ok && GetLastError() == ERROR_IO_PENDING) {
+            DWORD wait = WaitForSingleObject(event, 1000);
+            if (wait == WAIT_OBJECT_0) {
+                ok = GetOverlappedResult(m_handle, &ov, &bytesWritten, FALSE);
+            } else {
+                // CancelIo is asynchronous — the kernel can still complete the IRP
+                // and write into `ov` after it returns. Block until the cancelled
+                // (or already-completed) I/O drains before `ov` leaves scope.
+                CancelIo(m_handle);
+                ok = GetOverlappedResult(m_handle, &ov, &bytesWritten, TRUE);
+            }
+        }
+
+        DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+        CloseHandle(event);
+
+        if (!ok)
+            printf("WriteOutputReport(0x%02X, %zu bytes) failed: error %lu\n", data[0], len, err);
+        return ok == TRUE;
+    };
+
+    if (size < m_outputReportLen) {
+        std::vector<uint8_t> padded(m_outputReportLen, 0);
+        std::memcpy(padded.data(), data, size);
+        return writeOnce(padded.data(), padded.size());
+    }
+
+    return writeOnce(data, size);
 }
 
 bool HidDevice::SendFeatureReport(const uint8_t* data, size_t size) {
@@ -199,7 +242,9 @@ size_t HidDevice::ReadInputReport(uint8_t* buffer, size_t size, uint32_t timeout
 
         DWORD wait = WaitForSingleObject(m_event, timeoutMs);
         if (wait != WAIT_OBJECT_0) {
+            // CancelIo is asynchronous — drain before ov leaves scope.
             CancelIo(m_handle);
+            GetOverlappedResult(m_handle, &ov, &bytesRead, TRUE);
             return 0;
         }
         if (!GetOverlappedResult(m_handle, &ov, &bytesRead, FALSE))

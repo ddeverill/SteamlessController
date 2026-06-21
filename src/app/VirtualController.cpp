@@ -3,6 +3,23 @@
 #include <ViGEmClient.h>
 #include <cstdio>
 #include <algorithm>
+#include <mutex>
+#include <utility>
+
+static std::mutex g_notificationMutex;
+static VirtualController* g_notificationSink = nullptr;
+
+static VOID X360Notification(
+    PVIGEM_CLIENT,
+    PVIGEM_TARGET,
+    UCHAR largeMotor,
+    UCHAR smallMotor,
+    UCHAR)
+{
+    std::lock_guard<std::mutex> lock(g_notificationMutex);
+    if (g_notificationSink)
+        g_notificationSink->OnRumble(largeMotor, smallMotor);
+}
 
 // ---------------------------------------------------------------------------
 // Report translation — 0x45 → XUSB_REPORT
@@ -90,7 +107,9 @@ static XUSB_REPORT Translate(const uint8_t* buf, size_t n) {
 // VirtualController
 // ---------------------------------------------------------------------------
 
-VirtualController::VirtualController() {
+VirtualController::VirtualController(RumbleCallback rumbleCallback)
+    : m_rumbleCallback(std::move(rumbleCallback))
+{
     m_client = vigem_alloc();
     if (!m_client) { printf("[ViGEm] alloc failed\n"); return; }
 
@@ -116,10 +135,29 @@ VirtualController::VirtualController() {
     }
 
     printf("[ViGEm] Virtual Xbox 360 controller connected\n");
+
+    err = vigem_target_x360_register_notification(
+        static_cast<PVIGEM_CLIENT>(m_client),
+        static_cast<PVIGEM_TARGET>(m_target),
+        X360Notification);
+    if (!VIGEM_SUCCESS(err))
+        printf("[ViGEm] x360 notification registration failed: 0x%08X\n", err);
+    else {
+        std::lock_guard<std::mutex> lock(g_notificationMutex);
+        g_notificationSink = this;
+    }
+
     m_valid = true;
 }
 
 VirtualController::~VirtualController() {
+    if (m_target) {
+        vigem_target_x360_unregister_notification(static_cast<PVIGEM_TARGET>(m_target));
+        std::lock_guard<std::mutex> lock(g_notificationMutex);
+        if (g_notificationSink == this)
+            g_notificationSink = nullptr;
+    }
+
     if (m_client && m_target) {
         vigem_target_remove(static_cast<PVIGEM_CLIENT>(m_client),
                             static_cast<PVIGEM_TARGET>(m_target));
@@ -152,4 +190,9 @@ void VirtualController::Update(const uint8_t* buf, size_t n, const BackButtonCon
     vigem_target_x360_update(static_cast<PVIGEM_CLIENT>(m_client),
                              static_cast<PVIGEM_TARGET>(m_target),
                              report);
+}
+
+void VirtualController::OnRumble(uint8_t largeMotor, uint8_t smallMotor) {
+    if (m_rumbleCallback)
+        m_rumbleCallback(largeMotor, smallMotor);
 }

@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 // ---------------------------------------------------------------------------
 // Internal helper: build a 64-byte feature report command buffer.
@@ -80,9 +81,12 @@ bool SteamController::DisableLizardMode() {
 
     // Step 1: CLEAR_DIGITAL_MAPPINGS — kills keyboard/mouse button emulation.
     BuildCmd(buf, CMD_CLEAR_DIGITAL_MAPPINGS);
-    if (!m_device.SendFeatureReport(buf, sizeof(buf))) {
-        printf("Failed to send CLEAR_DIGITAL_MAPPINGS.\n");
-        return false;
+    {
+        std::lock_guard<std::mutex> lock(m_commandMutex);
+        if (!m_device.SendFeatureReport(buf, sizeof(buf))) {
+            printf("Failed to send CLEAR_DIGITAL_MAPPINGS.\n");
+            return false;
+        }
     }
 
     // Step 2: SET_SETTINGS — set both trackpads to TRACKPAD_NONE.
@@ -92,9 +96,12 @@ bool SteamController::DisableLizardMode() {
         SETTING_RIGHT_TRACKPAD_MODE, 0x00, 0x00,
     };
     BuildCmd(buf, CMD_SET_SETTINGS, settingsPayload, sizeof(settingsPayload));
-    if (!m_device.SendFeatureReport(buf, sizeof(buf))) {
-        printf("Failed to send SET_SETTINGS_VALUES.\n");
-        return false;
+    {
+        std::lock_guard<std::mutex> lock(m_commandMutex);
+        if (!m_device.SendFeatureReport(buf, sizeof(buf))) {
+            printf("Failed to send SET_SETTINGS_VALUES.\n");
+            return false;
+        }
     }
 
     if (!m_running.exchange(true))
@@ -107,8 +114,11 @@ bool SteamController::EnableLizardMode() {
     if (m_running.exchange(false) && m_heartbeat.joinable())
         m_heartbeat.join();
 
+    SetRumble(0, 0);
+
     uint8_t buf[64];
     BuildCmd(buf, CMD_SET_DEFAULT_MAPPINGS);
+    std::lock_guard<std::mutex> lock(m_commandMutex);
     return m_device.SendFeatureReport(buf, sizeof(buf));
 }
 
@@ -120,6 +130,33 @@ size_t SteamController::ReadReport(uint8_t* buffer, size_t size, uint32_t timeou
     return m_device.ReadInputReport(buffer, size, timeoutMs);
 }
 
+bool SteamController::SetRumble(uint16_t leftSpeed, uint16_t rightSpeed) {
+    if (!m_device.IsOpen()) return false;
+
+    m_rumbleLeft.store(leftSpeed);
+    m_rumbleRight.store(rightSpeed);
+    return SendRumbleOutput(leftSpeed, rightSpeed);
+}
+
+bool SteamController::SendRumbleOutput(uint16_t leftSpeed, uint16_t rightSpeed) {
+    const uint16_t intensity = 0;
+    const uint8_t report[] = {
+        OUT_REPORT_HAPTIC_RUMBLE,
+        0x00,
+        static_cast<uint8_t>(intensity & 0xFF),
+        static_cast<uint8_t>(intensity >> 8),
+        static_cast<uint8_t>(leftSpeed & 0xFF),
+        static_cast<uint8_t>(leftSpeed >> 8),
+        0x00,
+        static_cast<uint8_t>(rightSpeed & 0xFF),
+        static_cast<uint8_t>(rightSpeed >> 8),
+        0x00,
+    };
+
+    std::lock_guard<std::mutex> lock(m_commandMutex);
+    return m_device.WriteOutputReport(report, sizeof(report));
+}
+
 
 // ---------------------------------------------------------------------------
 // Heartbeat
@@ -128,9 +165,26 @@ size_t SteamController::ReadReport(uint8_t* buffer, size_t size, uint32_t timeou
 void SteamController::HeartbeatLoop() {
     uint8_t buf[64];
     BuildCmd(buf, CMD_CLEAR_DIGITAL_MAPPINGS);
+    int lizardTicks = 0;
 
+    // Fixed 40 ms tick: active rumble must be re-sent roughly every 50 ms or
+    // the controller's safety timeout stops the motors. The lizard-mode
+    // keep-alive only needs ~800 ms, so it fires every 20th tick. Don't sleep
+    // longer when rumble is idle — rumble starting mid-sleep would stutter
+    // until the next tick.
     while (m_running.load()) {
-        m_device.SendFeatureReport(buf, sizeof(buf));
-        std::this_thread::sleep_for(std::chrono::milliseconds(800));
+        if (lizardTicks <= 0) {
+            std::lock_guard<std::mutex> lock(m_commandMutex);
+            m_device.SendFeatureReport(buf, sizeof(buf));
+            lizardTicks = 20;
+        }
+
+        uint16_t leftSpeed = m_rumbleLeft.load();
+        uint16_t rightSpeed = m_rumbleRight.load();
+        if (leftSpeed || rightSpeed)
+            SendRumbleOutput(leftSpeed, rightSpeed);
+
+        --lizardTicks;
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
     }
 }

@@ -214,7 +214,13 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
     if (slot.gameModeActive) return;
     if (!slot.sc->DisableLizardMode()) return;
 
-    slot.vc = std::make_unique<VirtualController>();
+    slot.vc = std::make_unique<VirtualController>(
+        [sc = slot.sc.get()](uint8_t largeMotor, uint8_t smallMotor) {
+            if (!sc->IsOpen()) return;
+            const uint16_t leftSpeed  = static_cast<uint16_t>(static_cast<uint32_t>(largeMotor) * 257u);
+            const uint16_t rightSpeed = static_cast<uint16_t>(static_cast<uint32_t>(smallMotor) * 257u);
+            sc->SetRumble(leftSpeed, rightSpeed);
+        });
     if (!slot.vc->IsValid()) {
         if (slot.vc->IsDriverMissing()) vigemMissingOut = true;
         slot.vc.reset();
@@ -233,6 +239,8 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
 void ControllerManager::DisableGameModeSlot(Slot& slot) {
     if (!slot.gameModeActive) return;
     StopReadLoop(slot);
+    if (slot.sc->IsOpen())
+        slot.sc->SetRumble(0, 0);
     slot.trackpad.Reset();
     slot.vc.reset();
     slot.sc->EnableLizardMode();

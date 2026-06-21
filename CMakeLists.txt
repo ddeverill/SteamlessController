@@ -14,7 +14,7 @@ add_library(SteamController STATIC
 target_include_directories(SteamController PUBLIC src)
 target_link_libraries(SteamController PUBLIC hid setupapi)
 if (MSVC)
-    target_compile_options(SteamController PRIVATE /W4 /WX)
+    target_compile_options(SteamController PRIVATE /W4 /WX /utf-8)
 endif()
 
 # Diagnostic probe tool (console)
@@ -23,7 +23,7 @@ add_executable(SteamProbe
 )
 target_link_libraries(SteamProbe PRIVATE SteamController)
 if (MSVC)
-    target_compile_options(SteamProbe PRIVATE /W4 /WX)
+    target_compile_options(SteamProbe PRIVATE /W4 /WX /utf-8)
     set_target_properties(SteamProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
 endif()
 
@@ -36,7 +36,7 @@ target_include_directories(ViGEmClient PUBLIC
 )
 target_link_libraries(ViGEmClient PUBLIC setupapi)
 if (MSVC)
-    target_compile_options(ViGEmClient PRIVATE /W0)
+    target_compile_options(ViGEmClient PRIVATE /W0 /utf-8)
 endif()
 
 # RawGameController diagnostic probe (WinRT)
@@ -45,7 +45,7 @@ add_executable(RawControllerProbe
 )
 target_link_libraries(RawControllerProbe PRIVATE windowsapp)
 if (MSVC)
-    target_compile_options(RawControllerProbe PRIVATE /W4)
+    target_compile_options(RawControllerProbe PRIVATE /W4 /utf-8)
 endif()
 
 # WebView2 — downloaded from NuGet (.nupkg is a zip; FetchContent extracts it)
@@ -85,5 +85,5 @@ target_link_libraries(SteamlessController PRIVATE
     shlwapi
 )
 if (MSVC)
-    target_compile_options(SteamlessController PRIVATE /W4 /WX)
+    target_compile_options(SteamlessController PRIVATE /W4 /WX /utf-8 /wd4828)
 endif()

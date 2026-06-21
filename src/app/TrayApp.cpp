@@ -51,6 +51,7 @@ bool TrayApp::Init(HINSTANCE hInstance) {
 
     LoadSettings();
     AddTrayIcon();
+    UpdateTrayIcon(m_controller->IsConnected(), m_controller->IsGameModeActive(), false);
     return true;
 }
 
