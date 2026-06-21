@@ -242,7 +242,9 @@ size_t HidDevice::ReadInputReport(uint8_t* buffer, size_t size, uint32_t timeout
 
         DWORD wait = WaitForSingleObject(m_event, timeoutMs);
         if (wait != WAIT_OBJECT_0) {
+            // CancelIo is asynchronous — drain before ov leaves scope.
             CancelIo(m_handle);
+            GetOverlappedResult(m_handle, &ov, &bytesRead, TRUE);
             return 0;
         }
         if (!GetOverlappedResult(m_handle, &ov, &bytesRead, FALSE))
