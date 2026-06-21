@@ -166,6 +166,11 @@ void SteamController::HeartbeatLoop() {
     BuildCmd(buf, CMD_CLEAR_DIGITAL_MAPPINGS);
     int lizardTicks = 0;
 
+    // Fixed 40 ms tick: active rumble must be re-sent roughly every 50 ms or
+    // the controller's safety timeout stops the motors. The lizard-mode
+    // keep-alive only needs ~800 ms, so it fires every 20th tick. Don't sleep
+    // longer when rumble is idle — rumble starting mid-sleep would stutter
+    // until the next tick.
     while (m_running.load()) {
         if (lizardTicks <= 0) {
             std::lock_guard<std::mutex> lock(m_commandMutex);

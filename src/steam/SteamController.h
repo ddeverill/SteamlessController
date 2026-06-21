@@ -34,7 +34,6 @@ public:
     static constexpr uint8_t CMD_SET_DEFAULT_MAPPINGS   = 0x85;  // ← lizard on
     static constexpr uint8_t CMD_SET_SETTINGS           = 0x87;
     static constexpr uint8_t CMD_GET_SETTINGS           = 0x89;
-    static constexpr uint8_t CMD_TRIGGER_RUMBLE         = 0xEB;
     static constexpr uint8_t OUT_REPORT_HAPTIC_RUMBLE   = 0x80;
 
     // Setting key IDs (go in the payload of CMD_SET_SETTINGS)

@@ -191,10 +191,15 @@ bool HidDevice::WriteOutputReport(const uint8_t* data, size_t size) {
         BOOL ok = WriteFile(m_handle, buffer, static_cast<DWORD>(len), &bytesWritten, &ov);
         if (!ok && GetLastError() == ERROR_IO_PENDING) {
             DWORD wait = WaitForSingleObject(event, 1000);
-            if (wait == WAIT_OBJECT_0)
+            if (wait == WAIT_OBJECT_0) {
                 ok = GetOverlappedResult(m_handle, &ov, &bytesWritten, FALSE);
-            else
+            } else {
+                // CancelIo is asynchronous — the kernel can still complete the IRP
+                // and write into `ov` after it returns. Block until the cancelled
+                // (or already-completed) I/O drains before `ov` leaves scope.
                 CancelIo(m_handle);
+                ok = GetOverlappedResult(m_handle, &ov, &bytesWritten, TRUE);
+            }
         }
 
         DWORD err = ok ? ERROR_SUCCESS : GetLastError();

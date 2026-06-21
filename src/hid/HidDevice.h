@@ -27,8 +27,8 @@ public:
     // data[0] must be the report ID. Padded to OutputReportByteLength automatically.
     bool SendOutputReport(const uint8_t* data, size_t size);
 
-    // Write a HID output report through the interrupt output endpoint.
-    // Some devices use short output reports that should not be padded.
+    // Write a HID output report through the interrupt output endpoint via WriteFile.
+    // data[0] must be the report ID. Padded to OutputReportByteLength automatically.
     bool WriteOutputReport(const uint8_t* data, size_t size);
 
     // Send a HID feature report (SET_REPORT Feature type via EP0 control pipe).
