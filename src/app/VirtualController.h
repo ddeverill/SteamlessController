@@ -3,12 +3,13 @@
 #include <cstddef>
 #include <functional>
 #include "BackButtonConfig.h"
+#include "ControllerPlatform.h"
 
 class VirtualController {
 public:
     using RumbleCallback = std::function<void(uint8_t largeMotor, uint8_t smallMotor)>;
 
-    explicit VirtualController(RumbleCallback rumbleCallback = {});
+    explicit VirtualController(ControllerPlatform platform, RumbleCallback rumbleCallback = {});
     ~VirtualController();
     VirtualController(const VirtualController&) = delete;
     VirtualController& operator=(const VirtualController&) = delete;
@@ -20,9 +21,10 @@ public:
     void OnRumble(uint8_t largeMotor, uint8_t smallMotor);
 
 private:
-    void* m_client       = nullptr;
-    void* m_target       = nullptr;
+    ControllerPlatform m_platform;
+    void* m_client        = nullptr;
+    void* m_target        = nullptr;
     RumbleCallback m_rumbleCallback;
-    bool  m_valid        = false;
+    bool  m_valid         = false;
     bool  m_driverMissing = false;
 };

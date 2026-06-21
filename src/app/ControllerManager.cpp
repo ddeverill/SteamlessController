@@ -148,6 +148,15 @@ void ControllerManager::SetBackButtonsEnabled(bool enabled) {
         slot->trackpad.SetBackButtonsEnabled(enabled);
 }
 
+void ControllerManager::SetControllerPlatform(ControllerPlatform platform) {
+    if (m_controllerPlatform == platform) return;
+    m_controllerPlatform = platform;
+    if (IsGameModeActive()) {
+        DisableGameMode();
+        EnableGameMode();
+    }
+}
+
 void ControllerManager::StartButtonCapture(std::function<void(BackButtonAction)> callback) {
     std::lock_guard<std::mutex> lk(m_captureMutex);
     m_captureCallback = std::move(callback);
@@ -215,6 +224,7 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
     if (!slot.sc->DisableLizardMode()) return;
 
     slot.vc = std::make_unique<VirtualController>(
+        m_controllerPlatform,
         [sc = slot.sc.get()](uint8_t largeMotor, uint8_t smallMotor) {
             if (!sc->IsOpen()) return;
             const uint16_t leftSpeed  = static_cast<uint16_t>(static_cast<uint32_t>(largeMotor) * 257u);

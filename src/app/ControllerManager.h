@@ -1,5 +1,6 @@
 #pragma once
 #include "BackButtonConfig.h"
+#include "ControllerPlatform.h"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -25,12 +26,14 @@ public:
     void SetUseLeftTrackpad(bool enabled);
     void SetBackButtonConfig(const BackButtonConfig& cfg);
     void SetBackButtonsEnabled(bool enabled);
+    void SetControllerPlatform(ControllerPlatform platform);
 
-    bool IsConnected()            const { return !m_slots.empty(); }
-    bool IsGameModeActive()       const;
-    bool IsTrackpadMouseEnabled() const { return m_trackpadMouseEnabled; }
-    bool IsUseLeftTrackpad()      const { return m_useLeftTrackpad; }
-    bool IsBackButtonsEnabled()   const { return m_backButtonsEnabled; }
+    bool IsConnected()              const { return !m_slots.empty(); }
+    bool IsGameModeActive()         const;
+    bool IsTrackpadMouseEnabled()   const { return m_trackpadMouseEnabled; }
+    bool IsUseLeftTrackpad()        const { return m_useLeftTrackpad; }
+    bool IsBackButtonsEnabled()     const { return m_backButtonsEnabled; }
+    ControllerPlatform GetControllerPlatform() const { return m_controllerPlatform; }
     const BackButtonConfig& GetBackButtonConfig() const { return m_backConfig; }
 
     // Called by RemapWindow when a row enters/exits listening state.
@@ -55,6 +58,7 @@ private:
     bool                               m_trackpadMouseEnabled = false;
     bool                               m_useLeftTrackpad      = false;
     bool                               m_backButtonsEnabled   = false;
+    ControllerPlatform                 m_controllerPlatform   = ControllerPlatform::Xbox;
     BackButtonConfig                   m_backConfig;
 
     std::atomic<bool>                        m_capturing{false};

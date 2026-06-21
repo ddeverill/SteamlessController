@@ -1,5 +1,6 @@
 #include "TrayApp.h"
 #include "ControllerManager.h"
+#include "ControllerPlatform.h"
 #include "resource.h"
 #include <shellapi.h>
 #include <dbt.h>
@@ -109,6 +110,14 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case IDM_LEFT_TRACKPAD:
             m_controller->SetUseLeftTrackpad(!m_controller->IsUseLeftTrackpad());
+            SaveSettings();
+            break;
+        case IDM_PLATFORM_XBOX:
+            m_controller->SetControllerPlatform(ControllerPlatform::Xbox);
+            SaveSettings();
+            break;
+        case IDM_PLATFORM_PS:
+            m_controller->SetControllerPlatform(ControllerPlatform::PlayStation);
             SaveSettings();
             break;
         case IDM_STARTUP:
@@ -242,6 +251,9 @@ void TrayApp::LoadSettings() {
     m_controller->SetTrackpadMouseEnabled(readDw(L"TrackpadMouse",   0) != 0);
     m_controller->SetBackButtonsEnabled  (readDw(L"BackButtons",     0) != 0);
     m_controller->SetUseLeftTrackpad     (readDw(L"UseLeftTrackpad", 0) != 0);
+    m_controller->SetControllerPlatform  (readDw(L"ControllerPlatform", 0) != 0
+                                          ? ControllerPlatform::PlayStation
+                                          : ControllerPlatform::Xbox);
 
     BackButtonConfig cfg;
     cfg.l4 = static_cast<BackButtonAction>(readDw(L"BackBtnL4", static_cast<DWORD>(BackButtonAction::None)));
@@ -265,9 +277,10 @@ void TrayApp::SaveSettings() {
                        reinterpret_cast<const BYTE*>(&val), sizeof(val));
     };
 
-    writeDw(L"TrackpadMouse",   m_controller->IsTrackpadMouseEnabled()  ? 1 : 0);
-    writeDw(L"BackButtons",     m_controller->IsBackButtonsEnabled()    ? 1 : 0);
-    writeDw(L"UseLeftTrackpad", m_controller->IsUseLeftTrackpad()       ? 1 : 0);
+    writeDw(L"TrackpadMouse",       m_controller->IsTrackpadMouseEnabled()  ? 1 : 0);
+    writeDw(L"BackButtons",         m_controller->IsBackButtonsEnabled()    ? 1 : 0);
+    writeDw(L"UseLeftTrackpad",     m_controller->IsUseLeftTrackpad()       ? 1 : 0);
+    writeDw(L"ControllerPlatform",  m_controller->GetControllerPlatform() == ControllerPlatform::PlayStation ? 1 : 0);
 
     const auto& cfg = m_controller->GetBackButtonConfig();
     writeDw(L"BackBtnL4", static_cast<DWORD>(cfg.l4));
@@ -304,6 +317,17 @@ void TrayApp::ShowContextMenu() {
                 IDM_LEFT_TRACKPAD, L"Use Left Trackpad Instead");
 
     AppendMenuW(menu, MF_STRING, IDM_REMAP_BACK, L"Remap Back Buttons...");
+
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+    bool isPS = (m_controller->GetControllerPlatform() == ControllerPlatform::PlayStation);
+    HMENU platformMenu = CreatePopupMenu();
+    AppendMenuW(platformMenu, MF_STRING | (!isPS ? MF_CHECKED : MF_UNCHECKED),
+                IDM_PLATFORM_XBOX, L"Xbox");
+    AppendMenuW(platformMenu, MF_STRING | (isPS ? MF_CHECKED : MF_UNCHECKED),
+                IDM_PLATFORM_PS, L"PlayStation");
+    AppendMenuW(menu, MF_STRING | MF_POPUP,
+                reinterpret_cast<UINT_PTR>(platformMenu), L"Controller Platform");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 

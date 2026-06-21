@@ -43,6 +43,8 @@ private:
     static constexpr UINT IDM_LEFT_TRACKPAD = 1005;
     static constexpr UINT IDM_STARTUP       = 1006;
     static constexpr UINT IDM_BACKBUTTONS   = 1007;
+    static constexpr UINT IDM_PLATFORM_XBOX = 1008;
+    static constexpr UINT IDM_PLATFORM_PS   = 1009;
     static constexpr UINT WM_TRAY           = WM_APP + 1;
     static constexpr UINT TRAY_UID          = 1;
 };
