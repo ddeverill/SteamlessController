@@ -2,12 +2,15 @@
 
 A lightweight Windows system tray app that lets you use a **Steam Controller** as a standard gamepad — without Steam running.
 
-<img width="261" height="194" alt="image" src="https://github.com/user-attachments/assets/8e4a1355-d854-4b67-a486-590d225700f5" />
+<img width="263" height="154" alt="image" src="https://github.com/user-attachments/assets/7f4a63f6-b700-47dd-aeac-1fa8f78fcd04" />
 
 When **Steamless Mode** is active, the app disables the controller's built-in keyboard/mouse emulation (lizard mode) and exposes it as a virtual Xbox 360 controller via [ViGEmBus](https://github.com/nefarius/ViGEmBus), making it compatible with any game that supports XInput or the Xbox controller.
 
 ## Features
 
+- **NEW** - Rumble Support
+- **NEW** - Support for multiple Steam Controllers! Long live split screen!
+- **NEW** - New shiny UI for remapping L4/L5 R4/L5 back buttons!
 - System tray icon shows connection and mode status
 - **Steamless Mode** — disables lizard mode and exposes controller as Xbox 360 gamepad
 - **Trackpad Mouse** — use the right (or left) trackpad as a mouse cursor
@@ -17,8 +20,9 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 - Settings persist across restarts
 - Single-instance guard — safe to leave running
 
-<img width="482" height="302" alt="image" src="https://github.com/user-attachments/assets/62e274a5-9d23-4af2-aaca-0f3ecdca3feb" />
+<img width="390" height="281" alt="image" src="https://github.com/user-attachments/assets/dbcc95f6-433b-4b06-937e-8d9e9aec4407" />
 
+<img width="757" height="663" alt="image" src="https://github.com/user-attachments/assets/9a53b632-82b6-4485-93b0-1238c2ec6a07" />
 
 ## Requirements
 
