@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include "BackButtonConfig.h"
 
 class VirtualController {
 public:
@@ -12,7 +13,7 @@ public:
     bool IsValid()          const { return m_valid; }
     bool IsDriverMissing()  const { return m_driverMissing; }
 
-    void Update(const uint8_t* buf, size_t n);
+    void Update(const uint8_t* buf, size_t n, const BackButtonConfig& backCfg, bool backMouseEnabled);
 
 private:
     void* m_client       = nullptr;

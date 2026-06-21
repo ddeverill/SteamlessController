@@ -15,6 +15,9 @@ Results/
 HIDInfo
 HIDReportDescriptor.rtf
 
+# Claude Design files
+ClaudeDesign/
+
 # CMake user files
 CMakeSettings.json
 CMakeUserPresets.json

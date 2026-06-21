@@ -1,6 +1,7 @@
 #pragma once
 #include <Windows.h>
 #include <memory>
+#include "RemapWindow.h"
 
 class ControllerManager;
 
@@ -23,22 +24,25 @@ private:
     void ShowContextMenu();
     void LoadSettings();
     void SaveSettings();
+    void OpenRemapWindow();
     bool IsStartupEnabled() const;
     void SetStartupEnabled(bool enabled);
 
-    HWND                               m_hwnd      = nullptr;
-    HINSTANCE                          m_hInstance = nullptr;
-    UINT                               m_wmTaskbar = 0;
-    HICON                              m_iconOff   = nullptr;
-    HICON                              m_iconOn    = nullptr;
+    HWND                               m_hwnd       = nullptr;
+    HINSTANCE                          m_hInstance  = nullptr;
+    UINT                               m_wmTaskbar  = 0;
+    HICON                              m_iconOff    = nullptr;
+    HICON                              m_iconOn     = nullptr;
     std::unique_ptr<ControllerManager> m_controller;
+    RemapWindow                        m_remapWindow;
 
     static constexpr UINT IDM_TOGGLE        = 1001;
     static constexpr UINT IDM_EXIT          = 1002;
     static constexpr UINT IDM_TRACKPAD      = 1003;
-    static constexpr UINT IDM_BACKBUTTONS   = 1004;
+    static constexpr UINT IDM_REMAP_BACK    = 1004;
     static constexpr UINT IDM_LEFT_TRACKPAD = 1005;
     static constexpr UINT IDM_STARTUP       = 1006;
-    static constexpr UINT WM_TRAY          = WM_APP + 1;
-    static constexpr UINT TRAY_UID         = 1;
+    static constexpr UINT IDM_BACKBUTTONS   = 1007;
+    static constexpr UINT WM_TRAY           = WM_APP + 1;
+    static constexpr UINT TRAY_UID          = 1;
 };
