@@ -25,6 +25,33 @@ static VOID X360Notification(
 // Report translation — 0x45 → XUSB_REPORT
 // ---------------------------------------------------------------------------
 
+static void ApplyBackAction(BackButtonAction action, XUSB_REPORT& r) {
+    switch (action) {
+    case BackButtonAction::A:         r.wButtons |= XUSB_GAMEPAD_A;              break;
+    case BackButtonAction::B:         r.wButtons |= XUSB_GAMEPAD_B;              break;
+    case BackButtonAction::X:         r.wButtons |= XUSB_GAMEPAD_X;              break;
+    case BackButtonAction::Y:         r.wButtons |= XUSB_GAMEPAD_Y;              break;
+    case BackButtonAction::LB:        r.wButtons |= XUSB_GAMEPAD_LEFT_SHOULDER;  break;
+    case BackButtonAction::RB:        r.wButtons |= XUSB_GAMEPAD_RIGHT_SHOULDER; break;
+    case BackButtonAction::LT:        r.bLeftTrigger  = 255;                     break;
+    case BackButtonAction::RT:        r.bRightTrigger = 255;                     break;
+    case BackButtonAction::DPadUp:    r.wButtons |= XUSB_GAMEPAD_DPAD_UP;        break;
+    case BackButtonAction::DPadDown:  r.wButtons |= XUSB_GAMEPAD_DPAD_DOWN;      break;
+    case BackButtonAction::DPadLeft:  r.wButtons |= XUSB_GAMEPAD_DPAD_LEFT;      break;
+    case BackButtonAction::DPadRight: r.wButtons |= XUSB_GAMEPAD_DPAD_RIGHT;     break;
+    case BackButtonAction::Menu:       r.wButtons |= XUSB_GAMEPAD_START;        break;
+    case BackButtonAction::View:       r.wButtons |= XUSB_GAMEPAD_BACK;         break;
+    case BackButtonAction::L3:         r.wButtons |= XUSB_GAMEPAD_LEFT_THUMB;   break;
+    case BackButtonAction::R3:         r.wButtons |= XUSB_GAMEPAD_RIGHT_THUMB;  break;
+    // Mouse button actions are handled via SendInput in the ReadLoop (edge-detected).
+    // None/mouse actions produce no XInput output here.
+    case BackButtonAction::None:
+    case BackButtonAction::LeftMouseButton:
+    case BackButtonAction::RightMouseButton:
+    default: break;
+    }
+}
+
 static XUSB_REPORT Translate(const uint8_t* buf, size_t n) {
     XUSB_REPORT r{};
     if (n < 18) return r;
@@ -142,9 +169,24 @@ VirtualController::~VirtualController() {
     }
 }
 
-void VirtualController::Update(const uint8_t* buf, size_t n) {
+void VirtualController::Update(const uint8_t* buf, size_t n, const BackButtonConfig& backCfg, bool backMouseEnabled) {
     if (!m_valid) return;
     XUSB_REPORT report = Translate(buf, n);
+
+    // Inject back paddle buttons as their mapped XInput actions.
+    // L4 and R4 are skipped when "back buttons as mouse click" is active —
+    // TrackpadMouse handles them as left-mouse-button presses instead.
+    if (n > 4) {
+        if (!backMouseEnabled && (buf[4] & SteamController::BTN_L4)) ApplyBackAction(backCfg.l4, report);
+        if (buf[4] & SteamController::BTN_L5) ApplyBackAction(backCfg.l5, report);
+    }
+    if (n > 2) {
+        if (!backMouseEnabled && (buf[2] & SteamController::BTN_R4)) ApplyBackAction(backCfg.r4, report);
+    }
+    if (n > 3) {
+        if (buf[3] & SteamController::BTN_R5) ApplyBackAction(backCfg.r5, report);
+    }
+
     vigem_target_x360_update(static_cast<PVIGEM_CLIENT>(m_client),
                              static_cast<PVIGEM_TARGET>(m_target),
                              report);

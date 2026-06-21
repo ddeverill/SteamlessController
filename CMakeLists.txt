@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(SteamlessController CXX)
 
+include(FetchContent)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -46,6 +48,20 @@ if (MSVC)
     target_compile_options(RawControllerProbe PRIVATE /W4 /utf-8)
 endif()
 
+# WebView2 — downloaded from NuGet (.nupkg is a zip; FetchContent extracts it)
+FetchContent_Declare(WebView2
+    URL      https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.2849.39
+    DOWNLOAD_EXTRACT_TIMESTAMP ON
+)
+FetchContent_MakeAvailable(WebView2)
+
+# Map CMake architecture to the NuGet lib subdirectory name
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(WV2_ARCH "x64")
+else()
+    set(WV2_ARCH "x86")
+endif()
+
 # System tray app (no console window)
 add_executable(SteamlessController WIN32
     src/app/main.cpp
@@ -53,10 +69,21 @@ add_executable(SteamlessController WIN32
     src/app/ControllerManager.cpp
     src/app/VirtualController.cpp
     src/app/TrackpadMouse.cpp
+    src/app/RemapWindow.cpp
     resources/app.rc
 )
-target_include_directories(SteamlessController PRIVATE resources)
-target_link_libraries(SteamlessController PRIVATE SteamController ViGEmClient)
+target_include_directories(SteamlessController PRIVATE
+    resources
+    ${webview2_SOURCE_DIR}/build/native/include
+)
+target_link_libraries(SteamlessController PRIVATE
+    SteamController
+    ViGEmClient
+    ${webview2_SOURCE_DIR}/build/native/${WV2_ARCH}/WebView2LoaderStatic.lib
+    version
+    ole32
+    shlwapi
+)
 if (MSVC)
     target_compile_options(SteamlessController PRIVATE /W4 /WX /utf-8)
 endif()

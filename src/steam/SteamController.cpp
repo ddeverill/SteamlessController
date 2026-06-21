@@ -32,37 +32,38 @@ static void BuildCmd(uint8_t (&buf)[64], uint8_t cmd,
 // Open / Close
 // ---------------------------------------------------------------------------
 
-bool SteamController::Open() {
+std::vector<std::wstring> SteamController::EnumerateAll() {
+    std::vector<std::wstring> result;
     for (uint16_t pid : { SC2026_PID, SC2026_DONGLE_PID }) {
         auto paths = HidDevice::Enumerate(VALVE_VID, pid, VENDOR_USAGE_PAGE);
-        if (paths.empty()) continue;
-
-        // For the wired controller there is only one interface; for the dongle
-        // there are up to four slots (one per paired controller). Try each in
-        // order and use the first that produces a live input report.
         for (auto const& path : paths) {
-            if (!m_device.Open(path)) continue;
-
+            HidDevice dev;
+            if (!dev.Open(path)) continue;
             uint8_t buf[64];
-            size_t n = m_device.ReadInputReport(buf, sizeof(buf), /*timeoutMs=*/500);
-            if (n > 0 && buf[0] == REPORT_STATE) {
-                printf("Active interface found for PID=%04X.\n", pid);
-                return true;
-            }
-
-            if (n > 0)
-                printf("Unexpected report ID 0x%02X on PID=%04X (expected 0x%02X) — possible firmware mismatch.\n",
-                       buf[0], pid, REPORT_STATE);
-            else
-                printf("Read timeout on PID=%04X vendor interface — no active controller on this slot.\n", pid);
-
-            m_device.Close();
+            size_t n = dev.ReadInputReport(buf, sizeof(buf), /*timeoutMs=*/500);
+            if (n > 0 && buf[0] == REPORT_STATE)
+                result.push_back(path);
+            else if (n > 0)
+                printf("Unexpected report ID 0x%02X on PID=%04X — skipping.\n", buf[0], pid);
         }
     }
+    return result;
+}
 
-    printf("No Steam Controller found (wired PID=%04X or dongle PID=%04X).\n",
-           SC2026_PID, SC2026_DONGLE_PID);
-    return false;
+bool SteamController::Open() {
+    auto paths = EnumerateAll();
+    if (paths.empty()) {
+        printf("No Steam Controller found (wired PID=%04X or dongle PID=%04X).\n",
+               SC2026_PID, SC2026_DONGLE_PID);
+        return false;
+    }
+    return Open(paths[0]);
+}
+
+bool SteamController::Open(const std::wstring& path) {
+    if (!m_device.Open(path)) return false;
+    printf("[SC] Opened controller at path %ls\n", path.c_str());
+    return true;
 }
 
 void SteamController::Close() {

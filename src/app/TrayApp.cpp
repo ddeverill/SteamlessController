@@ -40,7 +40,6 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     DEV_BROADCAST_DEVICEINTERFACE_W filter{};
     filter.dbcc_size       = sizeof(filter);
     filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
-    // HID device interface GUID
     filter.dbcc_classguid  = {0x4D1E55B2, 0xF16F, 0x11CF,
                               {0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30}};
     RegisterDeviceNotificationW(m_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
@@ -83,6 +82,8 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (LOWORD(lp) == NIN_BALLOONUSERCLICK)
             ShellExecuteW(nullptr, L"open", L"https://github.com/nefarius/ViGEmBus/releases/latest",
                           nullptr, nullptr, SW_SHOWNORMAL);
+        else if (LOWORD(lp) == WM_LBUTTONDBLCLK)
+            OpenRemapWindow();
         else if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_LBUTTONUP)
             ShowContextMenu();
         return 0;
@@ -98,6 +99,9 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case IDM_TRACKPAD:
             m_controller->SetTrackpadMouseEnabled(!m_controller->IsTrackpadMouseEnabled());
             SaveSettings();
+            break;
+        case IDM_REMAP_BACK:
+            OpenRemapWindow();
             break;
         case IDM_BACKBUTTONS:
             m_controller->SetBackButtonsEnabled(!m_controller->IsBackButtonsEnabled());
@@ -129,6 +133,17 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+void TrayApp::OpenRemapWindow() {
+    m_remapWindow.Open(
+        m_hInstance,
+        m_controller.get(),
+        m_controller->GetBackButtonConfig(),
+        [this](const BackButtonConfig& cfg) {
+            m_controller->SetBackButtonConfig(cfg);
+            SaveSettings();
+        });
+}
+
 void TrayApp::AddTrayIcon() {
     NOTIFYICONDATAW nid{};
     nid.cbSize           = sizeof(nid);
@@ -153,18 +168,17 @@ void TrayApp::RemoveTrayIcon() {
 
 void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool vigemMissing) {
     if (vigemMissing) { ShowViGEmBalloon(); return; }
-    bool gameModeOn = gameModeActive;
 
-    const wchar_t* tip = gameModeOn  ? L"Steamless Controller — Steamless Mode ON"
-                       : connected   ? L"Steamless Controller — Connected (Steamless Mode OFF)"
-                                     : L"Steamless Controller — No controller found";
+    const wchar_t* tip = gameModeActive ? L"Steamless Controller — Steamless Mode ON"
+                       : connected      ? L"Steamless Controller — Connected (Steamless Mode OFF)"
+                                        : L"Steamless Controller — No controller found";
 
     NOTIFYICONDATAW nid{};
     nid.cbSize = sizeof(nid);
     nid.hWnd   = m_hwnd;
     nid.uID    = TRAY_UID;
     nid.uFlags = NIF_TIP | NIF_ICON;
-    nid.hIcon  = gameModeOn ? m_iconOn : m_iconOff;
+    nid.hIcon  = gameModeActive ? m_iconOn : m_iconOff;
     wcscpy_s(nid.szTip, tip);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
@@ -217,17 +231,24 @@ void TrayApp::LoadSettings() {
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_KEY, 0, KEY_READ, &key) != ERROR_SUCCESS)
         return;
 
-    auto readBool = [&](const wchar_t* name, bool def) -> bool {
+    auto readDw = [&](const wchar_t* name, DWORD def) -> DWORD {
         DWORD val = 0, size = sizeof(val);
         if (RegQueryValueExW(key, name, nullptr, nullptr,
                              reinterpret_cast<LPBYTE>(&val), &size) == ERROR_SUCCESS)
-            return val != 0;
+            return val;
         return def;
     };
 
-    m_controller->SetTrackpadMouseEnabled(readBool(L"TrackpadMouse",   false));
-    m_controller->SetBackButtonsEnabled  (readBool(L"BackButtons",     false));
-    m_controller->SetUseLeftTrackpad     (readBool(L"UseLeftTrackpad", false));
+    m_controller->SetTrackpadMouseEnabled(readDw(L"TrackpadMouse",   0) != 0);
+    m_controller->SetBackButtonsEnabled  (readDw(L"BackButtons",     0) != 0);
+    m_controller->SetUseLeftTrackpad     (readDw(L"UseLeftTrackpad", 0) != 0);
+
+    BackButtonConfig cfg;
+    cfg.l4 = static_cast<BackButtonAction>(readDw(L"BackBtnL4", static_cast<DWORD>(BackButtonAction::None)));
+    cfg.l5 = static_cast<BackButtonAction>(readDw(L"BackBtnL5", static_cast<DWORD>(BackButtonAction::None)));
+    cfg.r4 = static_cast<BackButtonAction>(readDw(L"BackBtnR4", static_cast<DWORD>(BackButtonAction::None)));
+    cfg.r5 = static_cast<BackButtonAction>(readDw(L"BackBtnR5", static_cast<DWORD>(BackButtonAction::None)));
+    m_controller->SetBackButtonConfig(cfg);
 
     RegCloseKey(key);
 }
@@ -239,26 +260,31 @@ void TrayApp::SaveSettings() {
                         &key, nullptr) != ERROR_SUCCESS)
         return;
 
-    auto writeBool = [&](const wchar_t* name, bool val) {
-        DWORD dw = val ? 1 : 0;
+    auto writeDw = [&](const wchar_t* name, DWORD val) {
         RegSetValueExW(key, name, 0, REG_DWORD,
-                       reinterpret_cast<const BYTE*>(&dw), sizeof(dw));
+                       reinterpret_cast<const BYTE*>(&val), sizeof(val));
     };
 
-    writeBool(L"TrackpadMouse",   m_controller->IsTrackpadMouseEnabled());
-    writeBool(L"BackButtons",     m_controller->IsBackButtonsEnabled());
-    writeBool(L"UseLeftTrackpad", m_controller->IsUseLeftTrackpad());
+    writeDw(L"TrackpadMouse",   m_controller->IsTrackpadMouseEnabled()  ? 1 : 0);
+    writeDw(L"BackButtons",     m_controller->IsBackButtonsEnabled()    ? 1 : 0);
+    writeDw(L"UseLeftTrackpad", m_controller->IsUseLeftTrackpad()       ? 1 : 0);
+
+    const auto& cfg = m_controller->GetBackButtonConfig();
+    writeDw(L"BackBtnL4", static_cast<DWORD>(cfg.l4));
+    writeDw(L"BackBtnL5", static_cast<DWORD>(cfg.l5));
+    writeDw(L"BackBtnR4", static_cast<DWORD>(cfg.r4));
+    writeDw(L"BackBtnR5", static_cast<DWORD>(cfg.r5));
 
     RegCloseKey(key);
 }
 
 void TrayApp::ShowContextMenu() {
-    bool connected      = m_controller->IsConnected();
-    bool gameModeOn     = m_controller->IsGameModeActive();
-    bool trackpadOn     = m_controller->IsTrackpadMouseEnabled();
-    bool backButtonsOn  = m_controller->IsBackButtonsEnabled();
-    bool leftTrackpad   = m_controller->IsUseLeftTrackpad();
-    bool startupOn      = IsStartupEnabled();
+    bool connected    = m_controller->IsConnected();
+    bool gameModeOn   = m_controller->IsGameModeActive();
+    bool trackpadOn   = m_controller->IsTrackpadMouseEnabled();
+    bool backMouseOn  = m_controller->IsBackButtonsEnabled();
+    bool leftPad      = m_controller->IsUseLeftTrackpad();
+    bool startupOn    = IsStartupEnabled();
 
     HMENU menu = CreatePopupMenu();
 
@@ -268,19 +294,21 @@ void TrayApp::ShowContextMenu() {
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
-    UINT trackpadFlags = MF_STRING | (trackpadOn ? MF_CHECKED : MF_UNCHECKED);
-    AppendMenuW(menu, trackpadFlags, IDM_TRACKPAD, L"Enable Trackpad Mouse");
+    AppendMenuW(menu, MF_STRING | (trackpadOn ? MF_CHECKED : MF_UNCHECKED),
+                IDM_TRACKPAD, L"Enable Trackpad Mouse");
 
-    UINT backFlags = MF_STRING | (backButtonsOn ? MF_CHECKED : MF_UNCHECKED);
-    AppendMenuW(menu, backFlags, IDM_BACKBUTTONS, L"Enable Back Buttons for Clicking");
+    AppendMenuW(menu, MF_STRING | (backMouseOn ? MF_CHECKED : MF_UNCHECKED),
+                IDM_BACKBUTTONS, L"Back Buttons as Mouse Click");
 
-    UINT leftFlags = MF_STRING | (leftTrackpad ? MF_CHECKED : MF_UNCHECKED);
-    AppendMenuW(menu, leftFlags, IDM_LEFT_TRACKPAD, L"Use Left Trackpad Instead");
+    AppendMenuW(menu, MF_STRING | (leftPad ? MF_CHECKED : MF_UNCHECKED),
+                IDM_LEFT_TRACKPAD, L"Use Left Trackpad Instead");
+
+    AppendMenuW(menu, MF_STRING, IDM_REMAP_BACK, L"Remap Back Buttons...");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
-    UINT startupFlags = MF_STRING | (startupOn ? MF_CHECKED : MF_UNCHECKED);
-    AppendMenuW(menu, startupFlags, IDM_STARTUP, L"Start with Windows");
+    AppendMenuW(menu, MF_STRING | (startupOn ? MF_CHECKED : MF_UNCHECKED),
+                IDM_STARTUP, L"Start with Windows");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"Exit");

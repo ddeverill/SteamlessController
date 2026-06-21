@@ -3,7 +3,8 @@
 ; Non-commercial use only
 
 #define MyAppName "SteamlessController"
-#define MyAppVersion "1.0"
+#define MyAppVersion "1.2"
+#define ViGEmSetup "ViGEmBus_1.22.0_x64_x86_arm64.exe"
 #define MyAppPublisher "Dylan Deverill"
 #define MyAppURL "https://github.com/ddeverill/SteamlessController"
 #define MyAppExeName "SteamlessController.exe"
@@ -45,12 +46,13 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "C:\Users\ddeve\iCloudDrive\Development\SteamlessController\build\release\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-; NOTE: Don't use "Flags: ignoreversion" on any shared system files
+Source: "C:\Users\ddeve\iCloudDrive\Development\SteamlessController\resources\{#ViGEmSetup}"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+Filename: "{tmp}\{#ViGEmSetup}"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing ViGEmBus driver..."; Flags: waituntilterminated runascurrentuser
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 

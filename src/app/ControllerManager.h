@@ -1,15 +1,12 @@
 #pragma once
-#include "TrackpadMouse.h"
-#include <functional>
-#include <thread>
+#include "BackButtonConfig.h"
 #include <atomic>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
 
-class VirtualController;
-
-// Manages the Steam Controller lifecycle: device discovery, lizard mode
-// disable/enable, and the heartbeat that keeps lizard mode off.
-// All public methods are safe to call from the UI thread.
 class ControllerManager {
 public:
     using StateChangedFn = std::function<void(bool connected, bool gameModeActive, bool vigemMissing)>;
@@ -19,38 +16,48 @@ public:
     ControllerManager(const ControllerManager&) = delete;
     ControllerManager& operator=(const ControllerManager&) = delete;
 
-    // Called when Windows reports a device arrival or removal (WM_DEVICECHANGE).
     void OnDeviceChange();
 
-    // Toggle game mode on/off. No-op if controller is not connected.
     void EnableGameMode();
     void DisableGameMode();
 
     void SetTrackpadMouseEnabled(bool enabled);
-    void SetBackButtonsEnabled(bool enabled);
     void SetUseLeftTrackpad(bool enabled);
+    void SetBackButtonConfig(const BackButtonConfig& cfg);
+    void SetBackButtonsEnabled(bool enabled);
 
-    bool IsConnected()             const { return m_connected; }
-    bool IsGameModeActive()        const { return m_gameModeActive; }
-    bool IsTrackpadMouseEnabled()  const { return m_trackpadMouseEnabled; }
-    bool IsBackButtonsEnabled()    const { return m_backButtonsEnabled; }
-    bool IsUseLeftTrackpad()       const { return m_useLeftTrackpad; }
+    bool IsConnected()            const { return !m_slots.empty(); }
+    bool IsGameModeActive()       const;
+    bool IsTrackpadMouseEnabled() const { return m_trackpadMouseEnabled; }
+    bool IsUseLeftTrackpad()      const { return m_useLeftTrackpad; }
+    bool IsBackButtonsEnabled()   const { return m_backButtonsEnabled; }
+    const BackButtonConfig& GetBackButtonConfig() const { return m_backConfig; }
+
+    // Called by RemapWindow when a row enters/exits listening state.
+    // Callback fires on the read thread — use PostMessage to marshal to the UI thread.
+    void StartButtonCapture(std::function<void(BackButtonAction)> callback);
+    void StopButtonCapture();
 
 private:
-    void TryOpen();
-    void Close(bool restoreLizard);
-    void StartReadLoop();
-    void StopReadLoop();
-    void ReadLoop();
+    struct Slot;
+
+    void SyncDevices();
+    void OpenSlot(const std::wstring& path);
+    void EnableGameModeSlot(Slot& slot, bool& vigemMissingOut);
+    void DisableGameModeSlot(Slot& slot);
+    void StartReadLoop(Slot& slot);
+    void StopReadLoop(Slot& slot);
+    void ReadLoop(Slot* slot);
+    void NotifyStateChanged(bool vigemMissing = false);
 
     StateChangedFn                     m_onStateChanged;
-    bool                               m_connected            = false;
-    bool                               m_gameModeActive       = false;
+    std::vector<std::unique_ptr<Slot>> m_slots;
     bool                               m_trackpadMouseEnabled = false;
-    bool                               m_backButtonsEnabled   = false;
     bool                               m_useLeftTrackpad      = false;
-    std::unique_ptr<VirtualController> m_virtual;
-    TrackpadMouse                      m_trackpad;
-    std::thread                        m_readThread;
-    std::atomic<bool>                  m_readRunning{false};
+    bool                               m_backButtonsEnabled   = false;
+    BackButtonConfig                   m_backConfig;
+
+    std::atomic<bool>                        m_capturing{false};
+    std::mutex                               m_captureMutex;
+    std::function<void(BackButtonAction)>    m_captureCallback;
 };

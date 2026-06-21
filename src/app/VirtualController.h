@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <functional>
+#include "BackButtonConfig.h"
 
 class VirtualController {
 public:
@@ -15,7 +16,7 @@ public:
     bool IsValid()          const { return m_valid; }
     bool IsDriverMissing()  const { return m_driverMissing; }
 
-    void Update(const uint8_t* buf, size_t n);
+    void Update(const uint8_t* buf, size_t n, const BackButtonConfig& backCfg, bool backMouseEnabled);
     void OnRumble(uint8_t largeMotor, uint8_t smallMotor);
 
 private:
