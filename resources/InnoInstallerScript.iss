@@ -3,7 +3,7 @@
 ; Non-commercial use only
 
 #define MyAppName "SteamlessController"
-#define MyAppVersion "1.2"
+#define MyAppVersion "1.5"
 #define ViGEmSetup "ViGEmBus_1.22.0_x64_x86_arm64.exe"
 #define MyAppPublisher "Dylan Deverill"
 #define MyAppURL "https://github.com/ddeverill/SteamlessController"
