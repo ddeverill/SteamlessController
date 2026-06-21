@@ -22,6 +22,7 @@ AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+SourceDir=..
 ; "ArchitecturesAllowed=x64compatible" specifies that Setup cannot run
 ; on anything but x64 and Windows 11 on Arm.
 ArchitecturesAllowed=x64compatible
@@ -34,7 +35,7 @@ DisableProgramGroupPage=yes
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
 OutputBaseFilename=SteamlessController-Setup
-SetupIconFile=C:\Users\ddeve\iCloudDrive\Development\SteamlessController\resources\SteamControllerON.ico
+SetupIconFile=resources\SteamControllerON.ico
 SolidCompression=yes
 WizardStyle=modern
 
@@ -45,14 +46,15 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "C:\Users\ddeve\iCloudDrive\Development\SteamlessController\build\release\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\ddeve\iCloudDrive\Development\SteamlessController\resources\{#ViGEmSetup}"; DestDir: "{tmp}"; Flags: deleteafterinstall
+Source: "build\release\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "resources\{#ViGEmSetup}"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{tmp}\{#ViGEmSetup}"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing ViGEmBus driver..."; Flags: waituntilterminated runascurrentuser
+; ViGEmBus uses MSI-style silent switches; /install is rejected by the 1.22.0 bootstrapper.
+Filename: "{tmp}\{#ViGEmSetup}"; Parameters: "/qn /norestart"; StatusMsg: "Installing ViGEmBus driver..."; Flags: waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
