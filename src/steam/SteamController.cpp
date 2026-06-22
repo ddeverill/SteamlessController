@@ -46,10 +46,11 @@ static uint16_t UnitToHapticSpeed(double value, uint16_t minimumSpeed) {
 
 static constexpr uint8_t  HAPTIC_COMMAND_TICK  = 1;
 static constexpr uint8_t  HAPTIC_COMMAND_CLICK = 2;
-static constexpr uint16_t TRACKPAD_CLICK_PULSE_US       = 5000;
-static constexpr int8_t   TRACKPAD_TOUCH_GAIN_DB        = -45;
-static constexpr int8_t   TRACKPAD_CLICK_COMMAND_GAIN_DB = 9;
-static constexpr int16_t  TRACKPAD_CLICK_PULSE_GAIN_DB  = 40;
+static constexpr uint16_t TRACKPAD_CLICK_PULSE_US        = 5000;
+static constexpr int8_t   TRACKPAD_TOUCH_GAIN_DB         = -45;
+static constexpr int8_t   TRACKPAD_MOVE_GAIN_DB          = -50;
+static constexpr int8_t   TRACKPAD_CLICK_COMMAND_GAIN_DB =   9;
+static constexpr int16_t  TRACKPAD_CLICK_PULSE_GAIN_DB   =  40;
 
 // ---------------------------------------------------------------------------
 // Open / Close
@@ -268,6 +269,11 @@ void SteamController::PulseTrackpadHaptic(bool left, bool strongClick) {
     SendTrackpadCommandOutput(side, command, gainDb);
     if (strongClick)
         SendTrackpadPulseOutput(side, TRACKPAD_CLICK_PULSE_US, 0, 1, TRACKPAD_CLICK_PULSE_GAIN_DB);
+}
+
+void SteamController::TickTrackpadMovement(bool left) {
+    const uint8_t side = left ? 0x01 : 0x02;
+    SendTrackpadCommandOutput(side, HAPTIC_COMMAND_TICK, TRACKPAD_MOVE_GAIN_DB);
 }
 
 void SteamController::ClearTrackpadHaptics() {

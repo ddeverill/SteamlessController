@@ -168,8 +168,11 @@ public:
     void SetRumble(uint8_t largeMotor, uint8_t smallMotor);
 
     // Fire a single haptic event on one trackpad.
-    // strongClick = true → physical-click sensation; false → light movement tick.
+    // strongClick = true → physical-click sensation; false → light touch-down tick.
     void PulseTrackpadHaptic(bool left, bool strongClick);
+
+    // Fire a very light tick while the thumb moves on the trackpad.
+    void TickTrackpadMovement(bool left);
 
     // Silence any in-flight trackpad haptic state (lifecycle cleanup hook).
     void ClearTrackpadHaptics();

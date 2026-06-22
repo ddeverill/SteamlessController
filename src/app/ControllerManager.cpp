@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <thread>
@@ -23,10 +24,18 @@ struct ControllerManager::Slot {
     bool                               gameModeActive = false;
 
     // Haptic edge-detection state — fire a haptic on first touch/click each gesture.
-    bool hapticWasRightTouching = false;
-    bool hapticWasLeftTouching  = false;
-    bool hapticWasRightClicked  = false;
-    bool hapticWasLeftClicked   = false;
+    bool    hapticWasRightTouching = false;
+    bool    hapticWasLeftTouching  = false;
+    bool    hapticWasRightClicked  = false;
+    bool    hapticWasLeftClicked   = false;
+
+    // Previous trackpad positions and accumulated travel for distance-based haptic.
+    int16_t hapticPrevRightX       = 0;
+    int16_t hapticPrevRightY       = 0;
+    float   hapticRightDistAccum   = 0.0f;
+    int16_t hapticPrevLeftX        = 0;
+    int16_t hapticPrevLeftY        = 0;
+    float   hapticLeftDistAccum    = 0.0f;
 
     Slot() = default;
     Slot(const Slot&) = delete;
@@ -304,18 +313,81 @@ void ControllerManager::ReadLoop(Slot* slot) {
         if (slot->vc) slot->vc->Update(buf, n, m_backConfig, m_backButtonsEnabled);
         slot->trackpad.Update(buf, n);
 
-        // Trackpad haptics — fire once per new touch/click gesture.
+        // Trackpad haptics.
         {
+            static constexpr float TRACKPAD_HAPTIC_TICK_DISTANCE = 5000.0f;
+
             const uint8_t b2 = n > 4 ? buf[4] : 0;
             const uint8_t b3 = n > 5 ? buf[5] : 0;
             const bool rt = (b2 & SteamController::BTN_TP_RT)       != 0;
             const bool lt = (b3 & SteamController::BTN_TP_LT)       != 0;
             const bool rc = (b2 & SteamController::BTN_TP_RT_CLICK) != 0;
             const bool lc = (b3 & SteamController::BTN_TP_LT_CLICK) != 0;
-            if (rc && !slot->hapticWasRightClicked)  slot->sc->PulseTrackpadHaptic(false, true);
-            if (lc && !slot->hapticWasLeftClicked)   slot->sc->PulseTrackpadHaptic(true,  true);
-            if (rt && !slot->hapticWasRightTouching && !rc) slot->sc->PulseTrackpadHaptic(false, false);
-            if (lt && !slot->hapticWasLeftTouching  && !lc) slot->sc->PulseTrackpadHaptic(true,  false);
+
+            int16_t rx = 0, ry = 0, lx = 0, ly = 0;
+            if (n >= 28) {
+                memcpy(&rx, buf + 24, 2);
+                memcpy(&ry, buf + 26, 2);
+                memcpy(&lx, buf + 18, 2);
+                memcpy(&ly, buf + 20, 2);
+            }
+
+            // Click haptic — strong pulse on press and release.
+            // On release, also reseed the movement baseline so distance accumulated
+            // while clicking doesn't bleed into a spurious movement tick.
+            if (rc && !slot->hapticWasRightClicked) slot->sc->PulseTrackpadHaptic(false, true);
+            if (lc && !slot->hapticWasLeftClicked)  slot->sc->PulseTrackpadHaptic(true,  true);
+            if (!rc && slot->hapticWasRightClicked) {
+                slot->sc->PulseTrackpadHaptic(false, true);
+                slot->hapticPrevRightX     = rx;
+                slot->hapticPrevRightY     = ry;
+                slot->hapticRightDistAccum = 0.0f;
+            }
+            if (!lc && slot->hapticWasLeftClicked) {
+                slot->sc->PulseTrackpadHaptic(true, true);
+                slot->hapticPrevLeftX     = lx;
+                slot->hapticPrevLeftY     = ly;
+                slot->hapticLeftDistAccum = 0.0f;
+            }
+
+            // Movement haptic — tick once per TRACKPAD_HAPTIC_TICK_DISTANCE of travel.
+            if (n >= 28) {
+                // On first-touch frame, seed positions and reset accumulator.
+                if (rt && !slot->hapticWasRightTouching) {
+                    slot->hapticPrevRightX     = rx;
+                    slot->hapticPrevRightY     = ry;
+                    slot->hapticRightDistAccum = 0.0f;
+                }
+                if (lt && !slot->hapticWasLeftTouching) {
+                    slot->hapticPrevLeftX     = lx;
+                    slot->hapticPrevLeftY     = ly;
+                    slot->hapticLeftDistAccum = 0.0f;
+                }
+
+                if (rt && slot->hapticWasRightTouching && !rc) {
+                    const float dx = static_cast<float>(rx - slot->hapticPrevRightX);
+                    const float dy = static_cast<float>(ry - slot->hapticPrevRightY);
+                    slot->hapticRightDistAccum += std::hypot(dx, dy);
+                    while (slot->hapticRightDistAccum >= TRACKPAD_HAPTIC_TICK_DISTANCE) {
+                        slot->sc->TickTrackpadMovement(false);
+                        slot->hapticRightDistAccum -= TRACKPAD_HAPTIC_TICK_DISTANCE;
+                    }
+                    slot->hapticPrevRightX = rx;
+                    slot->hapticPrevRightY = ry;
+                }
+                if (lt && slot->hapticWasLeftTouching && !lc) {
+                    const float dx = static_cast<float>(lx - slot->hapticPrevLeftX);
+                    const float dy = static_cast<float>(ly - slot->hapticPrevLeftY);
+                    slot->hapticLeftDistAccum += std::hypot(dx, dy);
+                    while (slot->hapticLeftDistAccum >= TRACKPAD_HAPTIC_TICK_DISTANCE) {
+                        slot->sc->TickTrackpadMovement(true);
+                        slot->hapticLeftDistAccum -= TRACKPAD_HAPTIC_TICK_DISTANCE;
+                    }
+                    slot->hapticPrevLeftX = lx;
+                    slot->hapticPrevLeftY = ly;
+                }
+            }
+
             slot->hapticWasRightTouching = rt;
             slot->hapticWasLeftTouching  = lt;
             slot->hapticWasRightClicked  = rc;
