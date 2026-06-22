@@ -1,6 +1,7 @@
 #pragma once
 #include "hid/HidDevice.h"
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <thread>
@@ -15,11 +16,16 @@ public:
     static constexpr uint16_t VENDOR_USAGE_PAGE = 0xFF00;
 
     // Input report IDs (device → host)
-    static constexpr uint8_t REPORT_STATE         = 0x45;  // 53 bytes: main controller state (changed from 0x42 in firmware update)
-    static constexpr uint8_t REPORT_SECONDARY      = 0x43;  // 14 bytes: gyro / secondary state
-    static constexpr uint8_t REPORT_STATUS         = 0x44;  //  5 bytes: battery / connection
-    static constexpr uint8_t REPORT_UNKNOWN_7B     = 0x7B;  // 12 bytes: TBD
-    static constexpr uint8_t REPORT_UNKNOWN_79     = 0x79;  //  1 byte:  TBD
+    static constexpr uint8_t REPORT_STATE         = 0x45;  // BLE/no-quaternion state report
+    static constexpr uint8_t REPORT_STATE_LEGACY  = 0x42;  // USB/full state report (same layout)
+    static constexpr uint8_t REPORT_BATTERY_STATUS = 0x43; // TritonBatteryStatus_t
+    static constexpr uint8_t REPORT_STATUS         = 0x44; //  5 bytes: battery / connection
+    static constexpr uint8_t REPORT_UNKNOWN_7B     = 0x7B; // 12 bytes: TBD
+    static constexpr uint8_t REPORT_UNKNOWN_79     = 0x79; //  1 byte:  TBD
+
+    static constexpr uint8_t CHARGE_STATE_DISCHARGING   = 1;
+    static constexpr uint8_t CHARGE_STATE_CHARGING      = 2;
+    static constexpr uint8_t CHARGE_STATE_CHARGING_DONE = 4;
 
     // Feature report IDs — the command channel to the firmware.
     // Commands are wrapped inside Feature Report 0x01 (or 0x02 as fallback).
@@ -34,15 +40,22 @@ public:
     static constexpr uint8_t CMD_SET_DEFAULT_MAPPINGS   = 0x85;  // ← lizard on
     static constexpr uint8_t CMD_SET_SETTINGS           = 0x87;
     static constexpr uint8_t CMD_GET_SETTINGS           = 0x89;
-    static constexpr uint8_t OUT_REPORT_HAPTIC_RUMBLE   = 0x80;
+
+    // Triton output report IDs.
+    static constexpr uint8_t OUT_HAPTIC_RUMBLE   = 0x80;  // continuous two-channel haptic
+    static constexpr uint8_t OUT_HAPTIC_PULSE    = 0x81;  // one-shot pulse (on/off/repeat/gain)
+    static constexpr uint8_t OUT_HAPTIC_COMMAND  = 0x82;  // named command (tick/click + gain)
 
     // Setting key IDs (go in the payload of CMD_SET_SETTINGS)
-    static constexpr uint8_t SETTING_RIGHT_TRACKPAD_MODE = 0x07;
-    static constexpr uint8_t SETTING_LEFT_TRACKPAD_MODE  = 0x08;
-    static constexpr uint8_t TRACKPAD_NONE               = 0x00;
+    static constexpr uint8_t  SETTING_RIGHT_TRACKPAD_MODE = 0x07;
+    static constexpr uint8_t  SETTING_LEFT_TRACKPAD_MODE  = 0x08;
+    static constexpr uint8_t  SETTING_IMU_MODE            = 0x30;
+    static constexpr uint8_t  TRACKPAD_NONE               = 0x00;
+    static constexpr uint16_t IMU_MODE_OFF                = 0x0000;
+    static constexpr uint16_t IMU_MODE_RAW_ACCEL_GYRO     = 0x0018;
 
     // ---------------------------------------------------------------------------
-    // Input report layout — 0x45 STATE report (buf[0] = 0x45)
+    // Input report layout — 0x45 / 0x42 STATE report (buf[0] = 0x45 or 0x42)
     // ---------------------------------------------------------------------------
 
     // buf[01]       — 8-bit sequence counter (wraps 0xFF → 0x00)
@@ -68,22 +81,22 @@ public:
     static constexpr uint8_t BTN_LS       = 0x80;  // bit 7 — left stick click
 
     // buf[04]       — button bitmask byte 2
-    static constexpr uint8_t BTN_STEAM    = 0x01;  // bit 0 — Steam / Guide
-    static constexpr uint8_t BTN_L4       = 0x02;  // bit 1 — back paddle L4
-    static constexpr uint8_t BTN_L5       = 0x04;  // bit 2 — back paddle L5
-    static constexpr uint8_t BTN_LB       = 0x08;  // bit 3
-    static constexpr uint8_t BTN_RS_TOUCH  = 0x10;  // bit 4 — right stick capacitive touch
-    static constexpr uint8_t BTN_TP_RT    = 0x20;  // bit 5 — right trackpad active (touch or click)
-    // bit 6 (0x40): TBD — possibly right trackpad physical click (hard press only)
-    static constexpr uint8_t BTN_RT_FULL  = 0x80;  // bit 7 — right trigger fully pressed (digital threshold)
+    static constexpr uint8_t BTN_STEAM       = 0x01;  // bit 0 — Steam / Guide
+    static constexpr uint8_t BTN_L4          = 0x02;  // bit 1 — back paddle L4
+    static constexpr uint8_t BTN_L5          = 0x04;  // bit 2 — back paddle L5
+    static constexpr uint8_t BTN_LB          = 0x08;  // bit 3
+    static constexpr uint8_t BTN_RS_TOUCH    = 0x10;  // bit 4 — right stick capacitive touch
+    static constexpr uint8_t BTN_TP_RT       = 0x20;  // bit 5 — right trackpad active (touch or click)
+    static constexpr uint8_t BTN_TP_RT_CLICK = 0x40;  // bit 6 — right trackpad hard press (physical click)
+    static constexpr uint8_t BTN_RT_FULL     = 0x80;  // bit 7 — right trigger fully pressed (digital threshold)
 
     // buf[05]       — flags byte
     static constexpr uint8_t BTN_LS_TOUCH    = 0x01;  // bit 0 — left stick capacitive touch
-    static constexpr uint8_t BTN_TP_LT      = 0x02;  // bit 1 — left trackpad active (touch or click)
-    static constexpr uint8_t BTN_TP_LT_CLICK = 0x04; // bit 2 — left trackpad hard press
+    static constexpr uint8_t BTN_TP_LT       = 0x02;  // bit 1 — left trackpad active (touch or click)
+    static constexpr uint8_t BTN_TP_LT_CLICK = 0x04;  // bit 2 — left trackpad hard press
     // bit 3 (0x08): TBD
-    static constexpr uint8_t FLAG_GRIP_RT = 0x10;  // bit 4 — right grip sensor active
-    static constexpr uint8_t FLAG_GRIP_LT = 0x20;  // bit 5 — left grip sensor active
+    static constexpr uint8_t FLAG_GRIP_RT    = 0x10;  // bit 4 — right grip sensor active
+    static constexpr uint8_t FLAG_GRIP_LT    = 0x20;  // bit 5 — left grip sensor active
     // other bits TBD
 
     // buf[06..07]   — left trigger,  16-bit LE signed, 0x0000 (released) – 0x7FFF (full)
@@ -102,11 +115,15 @@ public:
     // buf[26..27]   — right trackpad Y, 16-bit LE signed (0x0000 when not touching)
     // buf[28..29]   — right trackpad contact area, 16-bit LE (0 = no contact; higher = more area/pressure)
 
-    // buf[30..31]   — 0x03 0x46 constant (firmware info?)
-    // buf[32..39]   — IMU quaternion (4× 16-bit LE, little-endian)
-    // buf[40..43]   — unknown / always zero
-    // buf[44..45]   — 0xFF 0xFF at full charge (battery level)
-    // buf[46..53]   — gyro at rest (constant when stationary)
+    // IMU data — only present when IMU is enabled (SETTING_IMU_MODE = IMU_MODE_RAW_ACCEL_GYRO).
+    // Report length grows to ≥ 46 bytes.
+    // buf[30..33]   — IMU timestamp, 32-bit LE unsigned (units ~16 µs)
+    // buf[34..35]   — accelerometer X, 16-bit LE signed
+    // buf[36..37]   — accelerometer Y, 16-bit LE signed
+    // buf[38..39]   — accelerometer Z, 16-bit LE signed
+    // buf[40..41]   — gyroscope X, 16-bit LE signed
+    // buf[42..43]   — gyroscope Y, 16-bit LE signed
+    // buf[44..45]   — gyroscope Z, 16-bit LE signed
 
     // ---------------------------------------------------------------------------
 
@@ -125,6 +142,11 @@ public:
     void Close();
     bool IsOpen() const { return m_device.IsOpen(); }
 
+    // Returns true for any report ID that carries controller state.
+    static bool IsStateReportId(uint8_t id) {
+        return id == REPORT_STATE || id == REPORT_STATE_LEGACY;
+    }
+
     // Two-step sequence: clears digital mappings + sets trackpads to NONE.
     // Starts the background heartbeat thread on first call.
     bool DisableLizardMode();
@@ -136,17 +158,51 @@ public:
     // Returns 0 on timeout.
     size_t ReadReport(uint8_t* buffer, size_t size, uint32_t timeoutMs = 16);
 
-    // Sends a Steam Controller haptic rumble command. Speeds are 0..65535.
-    bool SetRumble(uint16_t leftSpeed, uint16_t rightSpeed);
+    // Enable or disable raw IMU (accel + gyro) output in the state report.
+    bool SetImuEnabled(bool enabled);
+
+    // Set rumble intensity from XInput/DS4 motor bytes (0–255 each).
+    // Uses a power curve, cross-channel mixing, and a short attack boost on
+    // rising edges to produce a more natural feel from the haptic actuators.
+    // Call with (0, 0) to stop rumble.
+    void SetRumble(uint8_t largeMotor, uint8_t smallMotor);
+
+    // Fire a single haptic event on one trackpad.
+    // strongClick = true → physical-click sensation; false → light movement tick.
+    void PulseTrackpadHaptic(bool left, bool strongClick);
+
+    // Silence any in-flight trackpad haptic state (lifecycle cleanup hook).
+    void ClearTrackpadHaptics();
 
 private:
-    void HeartbeatLoop();
-    bool SendRumbleOutput(uint16_t leftSpeed, uint16_t rightSpeed);
+    struct RumbleFrame {
+        uint16_t left  = 0;
+        uint16_t right = 0;
+    };
 
-    HidDevice       m_device;
-    std::thread     m_heartbeat;
+    void HeartbeatLoop();
+    RumbleFrame CurrentRumbleFrameLocked(std::chrono::steady_clock::time_point now) const;
+    bool SendRumbleOutput(uint16_t leftSpeed, uint16_t rightSpeed);
+    bool SendTrackpadPulseOutput(uint8_t side, uint16_t onUs, uint16_t offUs,
+                                  uint16_t repeatCount, int16_t gainDb);
+    bool SendTrackpadCommandOutput(uint8_t side, uint8_t command, int8_t gainDb);
+
+    HidDevice         m_device;
+    std::thread       m_heartbeat;
     std::atomic<bool> m_running{false};
-    std::atomic<uint16_t> m_rumbleLeft{0};
-    std::atomic<uint16_t> m_rumbleRight{0};
-    std::mutex      m_commandMutex;
+
+    // Shared by the heartbeat thread and callers — protect with m_writeMutex.
+    std::mutex        m_writeMutex;
+
+    // Rumble state — protect with m_rumbleMutex.
+    std::mutex        m_rumbleMutex;
+    uint16_t          m_rumbleBaseLeft   = 0;
+    uint16_t          m_rumbleBaseRight  = 0;
+    uint16_t          m_rumbleBoostLeft  = 0;
+    uint16_t          m_rumbleBoostRight = 0;
+    std::chrono::steady_clock::time_point m_rumbleBoostUntil{};
+    std::chrono::steady_clock::time_point m_lastRumbleSent{};
+    uint8_t           m_lastLargeMotor   = 0;
+    uint8_t           m_lastSmallMotor   = 0;
+    bool              m_hasRumbleState   = false;
 };
