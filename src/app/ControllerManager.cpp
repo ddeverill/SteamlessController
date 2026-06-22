@@ -22,6 +22,12 @@ struct ControllerManager::Slot {
     std::atomic<bool>                  readRunning{false};
     bool                               gameModeActive = false;
 
+    // Haptic edge-detection state — fire a haptic on first touch/click each gesture.
+    bool hapticWasRightTouching = false;
+    bool hapticWasLeftTouching  = false;
+    bool hapticWasRightClicked  = false;
+    bool hapticWasLeftClicked   = false;
+
     Slot() = default;
     Slot(const Slot&) = delete;
     Slot& operator=(const Slot&) = delete;
@@ -126,14 +132,18 @@ void ControllerManager::DisableGameMode() {
 
 void ControllerManager::SetTrackpadMouseEnabled(bool enabled) {
     m_trackpadMouseEnabled = enabled;
-    for (auto& slot : m_slots)
+    for (auto& slot : m_slots) {
         slot->trackpad.SetTrackpadEnabled(enabled);
+        if (slot->vc) slot->vc->SetTrackpadMouseClaim(enabled, m_useLeftTrackpad);
+    }
 }
 
 void ControllerManager::SetUseLeftTrackpad(bool enabled) {
     m_useLeftTrackpad = enabled;
-    for (auto& slot : m_slots)
+    for (auto& slot : m_slots) {
         slot->trackpad.SetUseLeftTrackpad(enabled);
+        if (slot->vc) slot->vc->SetTrackpadMouseClaim(m_trackpadMouseEnabled, enabled);
+    }
 }
 
 void ControllerManager::SetBackButtonConfig(const BackButtonConfig& cfg) {
@@ -226,10 +236,7 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
     slot.vc = std::make_unique<VirtualController>(
         m_controllerPlatform,
         [sc = slot.sc.get()](uint8_t largeMotor, uint8_t smallMotor) {
-            if (!sc->IsOpen()) return;
-            const uint16_t leftSpeed  = static_cast<uint16_t>(static_cast<uint32_t>(largeMotor) * 257u);
-            const uint16_t rightSpeed = static_cast<uint16_t>(static_cast<uint32_t>(smallMotor) * 257u);
-            sc->SetRumble(leftSpeed, rightSpeed);
+            if (sc->IsOpen()) sc->SetRumble(largeMotor, smallMotor);
         });
     if (!slot.vc->IsValid()) {
         if (slot.vc->IsDriverMissing()) vigemMissingOut = true;
@@ -237,6 +244,10 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
         slot.sc->EnableLizardMode();
         return;
     }
+
+    if (m_controllerPlatform == ControllerPlatform::PlayStation)
+        slot.sc->SetImuEnabled(true);
+    slot.vc->SetTrackpadMouseClaim(m_trackpadMouseEnabled, m_useLeftTrackpad);
 
     slot.gameModeActive = true;
     slot.trackpad.Reset();
@@ -280,10 +291,36 @@ void ControllerManager::ReadLoop(Slot* slot) {
     while (slot->readRunning) {
         size_t n = slot->sc->ReadReport(buf, sizeof(buf), /*timeoutMs=*/32);
         if (n == 0) continue;
-        if (buf[0] != SteamController::REPORT_STATE) continue;
+
+        // Battery status — update DS4 battery level; no further processing needed.
+        if (buf[0] == SteamController::REPORT_BATTERY_STATUS) {
+            if (n >= 3 && slot->vc)
+                slot->vc->SetBatteryState(buf[1], buf[2]);
+            continue;
+        }
+
+        if (!SteamController::IsStateReportId(buf[0])) continue;
 
         if (slot->vc) slot->vc->Update(buf, n, m_backConfig, m_backButtonsEnabled);
         slot->trackpad.Update(buf, n);
+
+        // Trackpad haptics — fire once per new touch/click gesture.
+        {
+            const uint8_t b2 = n > 4 ? buf[4] : 0;
+            const uint8_t b3 = n > 5 ? buf[5] : 0;
+            const bool rt = (b2 & SteamController::BTN_TP_RT)       != 0;
+            const bool lt = (b3 & SteamController::BTN_TP_LT)       != 0;
+            const bool rc = (b2 & SteamController::BTN_TP_RT_CLICK) != 0;
+            const bool lc = (b3 & SteamController::BTN_TP_LT_CLICK) != 0;
+            if (rc && !slot->hapticWasRightClicked)  slot->sc->PulseTrackpadHaptic(false, true);
+            if (lc && !slot->hapticWasLeftClicked)   slot->sc->PulseTrackpadHaptic(true,  true);
+            if (rt && !slot->hapticWasRightTouching && !rc) slot->sc->PulseTrackpadHaptic(false, false);
+            if (lt && !slot->hapticWasLeftTouching  && !lc) slot->sc->PulseTrackpadHaptic(true,  false);
+            slot->hapticWasRightTouching = rt;
+            slot->hapticWasLeftTouching  = lt;
+            slot->hapticWasRightClicked  = rc;
+            slot->hapticWasLeftClicked   = lc;
+        }
 
         // Fire mouse button events for back paddles mapped to LeftMouseButton/RightMouseButton.
         // Uses edge detection so we only send DOWN on press and UP on release.

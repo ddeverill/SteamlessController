@@ -4,8 +4,6 @@
 #include <cstring>
 #include <cstdint>
 
-static constexpr uint8_t BTN_TP_RT_CLICK = 0x40;  // buf[4] bit 6 — hard press
-
 static void SendMouseButton(DWORD flags) {
     INPUT input{};
     input.type       = INPUT_MOUSE;
@@ -51,7 +49,7 @@ void TrackpadMouse::Update(const uint8_t* buf, size_t n) {
         : (b2 & SteamController::BTN_TP_RT)        != 0;
     const bool clicking = m_useLeftTrackpad
         ? (b3 & SteamController::BTN_TP_LT_CLICK)  != 0
-        : (b2 & BTN_TP_RT_CLICK)                    != 0;
+        : (b2 & SteamController::BTN_TP_RT_CLICK)   != 0;
 
     int16_t x = 0, y = 0;
     if (m_useLeftTrackpad) {

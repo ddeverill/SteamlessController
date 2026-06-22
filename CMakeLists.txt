@@ -29,14 +29,14 @@ endif()
 
 # ViGEmClient (built from source, static)
 add_library(ViGEmClient STATIC
-    third_party/ViGEmClient-1.16.18.0/src/ViGEmClient.cpp
+    third_party/ViGEmClient-b66d02d/src/ViGEmClient.cpp
 )
 target_include_directories(ViGEmClient PUBLIC
-    third_party/ViGEmClient-1.16.18.0/include
+    third_party/ViGEmClient-b66d02d/include
 )
 target_link_libraries(ViGEmClient PUBLIC setupapi)
 if (MSVC)
-    target_compile_options(ViGEmClient PRIVATE /W0 /utf-8)
+    target_compile_options(ViGEmClient PRIVATE /W0 /utf-8 /wd4828)
 endif()
 
 # RawGameController diagnostic probe (WinRT)
