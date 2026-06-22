@@ -8,9 +8,10 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 
 ## Features
 
-- **NEW** - Rumble Support
+- **NEW** - Rumble Support v2.0
 - **NEW** - Support for multiple Steam Controllers! Long live split screen!
 - **NEW** - New shiny UI for remapping L4/L5 R4/L5 back buttons!
+- **NEW** - Support for Xbox OR PlayStation controllers - with PS Touchpad and Gyro plumbing.
 - System tray icon shows connection and mode status
 - **Steamless Mode** — disables lizard mode and exposes controller as Xbox 360 gamepad
 - **Trackpad Mouse** — use the right (or left) trackpad as a mouse cursor
@@ -20,7 +21,7 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 - Settings persist across restarts
 - Single-instance guard — safe to leave running
 
-<img width="390" height="281" alt="image" src="https://github.com/user-attachments/assets/dbcc95f6-433b-4b06-937e-8d9e9aec4407" />
+<img width="472" height="405" alt="image" src="https://github.com/user-attachments/assets/0a07c3a6-8ad6-46a0-8001-d60deec0cece" />
 
 <img width="757" height="663" alt="image" src="https://github.com/user-attachments/assets/9a53b632-82b6-4485-93b0-1238c2ec6a07" />
 
