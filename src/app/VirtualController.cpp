@@ -441,9 +441,12 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
             r.bBatteryLvlSpecial = m_ds4BatterySpecial;
         }
 
-        vigem_target_ds4_update_ex(static_cast<PVIGEM_CLIENT>(m_client),
-                                   static_cast<PVIGEM_TARGET>(m_target),
-                                   ex);
+        VIGEM_ERROR exErr = vigem_target_ds4_update_ex(
+            static_cast<PVIGEM_CLIENT>(m_client),
+            static_cast<PVIGEM_TARGET>(m_target),
+            ex);
+        if (!VIGEM_SUCCESS(exErr))
+            printf("[ViGEm] ds4_update_ex failed: 0x%08X (bus driver may need update)\n", exErr);
     } else {
         XUSB_REPORT report = TranslateX360(buf, n);
 
