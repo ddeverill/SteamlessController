@@ -103,8 +103,9 @@ HidDevice& HidDevice::operator=(HidDevice&& o) noexcept {
 bool HidDevice::Open(const std::wstring& path) {
     Close();
 
-    // FILE_SHARE_READ | FILE_SHARE_WRITE lets us coexist with Steam's open handle.
-    // Remove the share flags for exclusive access (Steam must be closed first).
+    // Shared open for idle tracking — Steam can coexist while game mode is off.
+    // ClaimExclusive() downgrades the share mode to FILE_SHARE_READ when game
+    // mode activates, blocking Steam from obtaining write access at that point.
     m_handle = CreateFileW(path.c_str(),
                            GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -118,6 +119,7 @@ bool HidDevice::Open(const std::wstring& path) {
         return false;
     }
 
+    m_path  = path;
     m_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (m_event == INVALID_HANDLE_VALUE) {
         CloseHandle(m_handle);
@@ -149,6 +151,36 @@ void HidDevice::Close() {
         CloseHandle(m_event);
         m_event = INVALID_HANDLE_VALUE;
     }
+    m_path.clear();
+}
+
+bool HidDevice::Reopen(DWORD shareMode) {
+    if (m_path.empty()) return false;
+    std::wstring savedPath = m_path;
+
+    // Cancel pending I/O before closing so the read thread's overlapped op
+    // drains cleanly. The caller must ensure the read thread is not running.
+    if (m_handle != INVALID_HANDLE_VALUE) {
+        CancelIo(m_handle);
+        CloseHandle(m_handle);
+        m_handle = INVALID_HANDLE_VALUE;
+    }
+
+    m_handle = CreateFileW(savedPath.c_str(),
+                           GENERIC_READ | GENERIC_WRITE,
+                           shareMode,
+                           nullptr,
+                           OPEN_EXISTING,
+                           FILE_FLAG_OVERLAPPED,
+                           nullptr);
+    if (m_handle == INVALID_HANDLE_VALUE) {
+        wprintf(L"Reopen failed for %s (shareMode=0x%lX): error %lu\n",
+                savedPath.c_str(), shareMode, GetLastError());
+        return false;
+    }
+
+    m_path = savedPath;
+    return true;
 }
 
 // ---------------------------------------------------------------------------

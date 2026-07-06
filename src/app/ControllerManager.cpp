@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -23,11 +24,20 @@ struct ControllerManager::Slot {
     std::atomic<bool>                  readRunning{false};
     bool                               gameModeActive = false;
 
-    // Haptic edge-detection state — fire a haptic on first touch/click each gesture.
+    // Haptic edge-detection state for touch (movement ticks).
     bool    hapticWasRightTouching = false;
     bool    hapticWasLeftTouching  = false;
-    bool    hapticWasRightClicked  = false;
-    bool    hapticWasLeftClicked   = false;
+
+    // Click haptic state machine — two states per trackpad.
+    // WaitingForPress:   will fire the press haptic the first time the click bit
+    //                    goes high; ignores any further highs until release fires.
+    // WaitingForRelease: will fire the release haptic the first time the click bit
+    //                    goes low; ignores any further lows until next press fires.
+    // This fires exactly once per downstroke and once per upstroke regardless of
+    // how many times the click bit chatters around the threshold.
+    enum class ClickState { WaitingForPress, WaitingForRelease };
+    ClickState hapticRightClickState = ClickState::WaitingForPress;
+    ClickState hapticLeftClickState  = ClickState::WaitingForPress;
 
     // Previous trackpad positions and accumulated travel for distance-based haptic.
     int16_t hapticPrevRightX       = 0;
@@ -36,6 +46,45 @@ struct ControllerManager::Slot {
     int16_t hapticPrevLeftX        = 0;
     int16_t hapticPrevLeftY        = 0;
     float   hapticLeftDistAccum    = 0.0f;
+
+    // Grace period after first touch — suppresses movement ticks while the press
+    // gesture completes so it can't bleed a TICK in just before the CLICK fires.
+    // Counts down from TOUCH_GRACE_FRAMES to 0; ticks only fire when it is 0.
+    static constexpr int kTouchGraceFrames = 12;  // ~48ms at 250Hz
+    int hapticRightTouchGrace = 0;
+    int hapticLeftTouchGrace  = 0;
+
+    // Click haptic latch. Press: the firmware click bit must hold true for a
+    // couple frames (filters single-frame glitches), then the press haptic
+    // fires. Release: the click bit is IGNORED from then on — chatter around
+    // the firmware's force threshold can't re-fire anything. The latch only
+    // releases (and the release haptic fires) once contact area falls back
+    // to genuinely idle — a light resting touch (~300-600), far below any
+    // pressing level (~1400+ even when easing off mid-hold, ~4000 at click).
+    // An absolute threshold, NOT a fraction of press area: grinding a hard
+    // press dips area to 1000-2000, which a relative threshold read as a
+    // release, firing press/release pairs in a crunchy stream.
+    static constexpr int   kPressConfirmFrames   = 2;     // ~8ms at 250Hz
+    static constexpr float kReleaseIdleArea      = 1000.0f;
+    static constexpr int   kAreaLowConfirmFrames = 8;     // ~32ms at 250Hz
+    int hapticRightClickTrueFrames = 0;
+    int hapticLeftClickTrueFrames  = 0;
+    int hapticRightAreaLowFrames   = 0;
+    int hapticLeftAreaLowFrames    = 0;
+
+    // Movement-accumulator idle reset: if the finger stays still (below the
+    // motion deadzone) this many frames, discard accumulated travel so a
+    // primed accumulator can't discharge a spurious TICK from press wobble.
+    static constexpr int kIdleResetFrames = 30;  // ~120ms at 250Hz
+    int hapticRightIdleFrames = 0;
+    int hapticLeftIdleFrames  = 0;
+
+    // Post-release grace — after the release haptic fires, the finger is
+    // still peeling off / settling; the centroid jumps hundreds of units per
+    // frame during that window, which reads as motion but isn't swiping.
+    static constexpr int kPostReleaseGraceFrames = 45;  // ~180ms at 250Hz
+    int hapticRightReleaseGrace = 0;
+    int hapticLeftReleaseGrace  = 0;
 
     Slot() = default;
     Slot(const Slot&) = delete;
@@ -136,6 +185,16 @@ void ControllerManager::EnableGameMode() {
 void ControllerManager::DisableGameMode() {
     for (auto& slot : m_slots)
         DisableGameModeSlot(*slot);
+    NotifyStateChanged();
+}
+
+void ControllerManager::ReleaseDevices() {
+    // Disable game mode first — enables lizard mode and tears down ViGEm while
+    // we still hold write access to the device.
+    DisableGameMode();
+    // Close all device handles. Slot destructors call SteamController::Close()
+    // which closes the HID handle, allowing another process to open it.
+    m_slots.clear();
     NotifyStateChanged();
 }
 
@@ -240,7 +299,11 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 
 void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
     if (slot.gameModeActive) return;
-    if (!slot.sc->DisableLizardMode()) return;
+    if (!slot.sc->ClaimExclusive()) return;
+    if (!slot.sc->DisableLizardMode()) {
+        slot.sc->ReleaseToShared();
+        return;
+    }
 
     slot.vc = std::make_unique<VirtualController>(
         m_controllerPlatform,
@@ -274,6 +337,8 @@ void ControllerManager::DisableGameModeSlot(Slot& slot) {
     slot.trackpad.Reset();
     slot.vc.reset();
     slot.sc->EnableLizardMode();
+    // Reopen shared so Steam can obtain write access — game mode is no longer active.
+    slot.sc->ReleaseToShared();
     slot.gameModeActive = false;
 }
 
@@ -296,8 +361,20 @@ void ControllerManager::ReadLoop(Slot* slot) {
     uint8_t buf[64];
     uint8_t prevBuf[64] = {};
     bool    hasPrev     = false;
+    auto    lastKeepalive = std::chrono::steady_clock::now();
 
     while (slot->readRunning) {
+        // Keepalive — the firmware silently reverts to lizard mode (and its
+        // autonomous click haptics, which double up with ours as a crunchy
+        // burst) after a period without host feature reports. Re-assert the
+        // lizard-off state every couple of seconds. Must run before the
+        // read-timeout continue below, or an idle controller would starve it.
+        const auto nowKa = std::chrono::steady_clock::now();
+        if (nowKa - lastKeepalive >= std::chrono::seconds(2)) {
+            lastKeepalive = nowKa;
+            slot->sc->SendKeepalive();
+        }
+
         size_t n = slot->sc->ReadReport(buf, sizeof(buf), /*timeoutMs=*/32);
         if (n == 0) continue;
 
@@ -315,7 +392,15 @@ void ControllerManager::ReadLoop(Slot* slot) {
 
         // Trackpad haptics.
         {
-            static constexpr float TRACKPAD_HAPTIC_TICK_DISTANCE = 5000.0f;
+            // Distance of deliberate travel between movement ticks. A full
+            // top-to-bottom swipe (~65k units) should produce roughly 10 ticks.
+            static constexpr float TRACKPAD_HAPTIC_TICK_DISTANCE = 6500.0f;
+            // Per-frame motion deadzone: deltas smaller than this are sensor
+            // jitter or fingertip wobble from pressing, not deliberate motion.
+            // Discarding them keeps the accumulator from priming itself while
+            // the finger rests or presses, which caused spurious ticks to fire
+            // alongside the click haptic on the downstroke.
+            static constexpr float TRACKPAD_HAPTIC_MOTION_DEADZONE = 45.0f;
 
             const uint8_t b2 = n > 4 ? buf[4] : 0;
             const uint8_t b3 = n > 5 ? buf[5] : 0;
@@ -324,74 +409,181 @@ void ControllerManager::ReadLoop(Slot* slot) {
             const bool rc = (b2 & SteamController::BTN_TP_RT_CLICK) != 0;
             const bool lc = (b3 & SteamController::BTN_TP_LT_CLICK) != 0;
 
-            int16_t rx = 0, ry = 0, lx = 0, ly = 0;
+            int16_t  rx = 0, ry = 0, lx = 0, ly = 0;
+            uint16_t rArea = 0, lArea = 0;
             if (n >= 28) {
                 memcpy(&rx, buf + 24, 2);
                 memcpy(&ry, buf + 26, 2);
                 memcpy(&lx, buf + 18, 2);
                 memcpy(&ly, buf + 20, 2);
             }
-
-            // Click haptic — strong pulse on press and release.
-            // On release, also reseed the movement baseline so distance accumulated
-            // while clicking doesn't bleed into a spurious movement tick.
-            if (rc && !slot->hapticWasRightClicked) slot->sc->PulseTrackpadHaptic(false, true);
-            if (lc && !slot->hapticWasLeftClicked)  slot->sc->PulseTrackpadHaptic(true,  true);
-            if (!rc && slot->hapticWasRightClicked) {
-                slot->sc->PulseTrackpadHaptic(false, true);
-                slot->hapticPrevRightX     = rx;
-                slot->hapticPrevRightY     = ry;
-                slot->hapticRightDistAccum = 0.0f;
+            if (n >= 30) {
+                memcpy(&lArea, buf + 22, 2);
+                memcpy(&rArea, buf + 28, 2);
             }
-            if (!lc && slot->hapticWasLeftClicked) {
+
+            // Click haptic latch — press fires off the (briefly confirmed)
+            // firmware click bit; from then on the click bit is ignored so
+            // threshold chatter can't re-fire. The release haptic fires once
+            // contact area returns to idle.
+            slot->hapticRightClickTrueFrames = rc ? slot->hapticRightClickTrueFrames + 1 : 0;
+            slot->hapticLeftClickTrueFrames  = lc ? slot->hapticLeftClickTrueFrames  + 1 : 0;
+
+            if (slot->hapticRightClickState == Slot::ClickState::WaitingForPress
+                    && slot->hapticRightClickTrueFrames >= Slot::kPressConfirmFrames) {
+                slot->sc->PulseTrackpadHaptic(false, true);
+                slot->hapticRightClickState    = Slot::ClickState::WaitingForRelease;
+                slot->hapticRightAreaLowFrames = 0;
+                slot->hapticPrevRightX        = rx;
+                slot->hapticPrevRightY        = ry;
+                slot->hapticRightDistAccum    = 0.0f;
+            } else if (slot->hapticRightClickState == Slot::ClickState::WaitingForRelease) {
+                if (!rc && static_cast<float>(rArea) <= Slot::kReleaseIdleArea) {
+                    if (++slot->hapticRightAreaLowFrames >= Slot::kAreaLowConfirmFrames) {
+                        slot->sc->PulseTrackpadHaptic(false, true);
+                        slot->hapticRightClickState  = Slot::ClickState::WaitingForPress;
+                        slot->hapticRightReleaseGrace = Slot::kPostReleaseGraceFrames;
+                        slot->hapticPrevRightX      = rx;
+                        slot->hapticPrevRightY      = ry;
+                        slot->hapticRightDistAccum  = 0.0f;
+                    }
+                } else {
+                    slot->hapticRightAreaLowFrames = 0;
+                }
+            }
+
+            if (slot->hapticLeftClickState == Slot::ClickState::WaitingForPress
+                    && slot->hapticLeftClickTrueFrames >= Slot::kPressConfirmFrames) {
                 slot->sc->PulseTrackpadHaptic(true, true);
-                slot->hapticPrevLeftX     = lx;
-                slot->hapticPrevLeftY     = ly;
-                slot->hapticLeftDistAccum = 0.0f;
+                slot->hapticLeftClickState    = Slot::ClickState::WaitingForRelease;
+                slot->hapticLeftAreaLowFrames = 0;
+                slot->hapticPrevLeftX         = lx;
+                slot->hapticPrevLeftY         = ly;
+                slot->hapticLeftDistAccum     = 0.0f;
+            } else if (slot->hapticLeftClickState == Slot::ClickState::WaitingForRelease) {
+                if (!lc && static_cast<float>(lArea) <= Slot::kReleaseIdleArea) {
+                    if (++slot->hapticLeftAreaLowFrames >= Slot::kAreaLowConfirmFrames) {
+                        slot->sc->PulseTrackpadHaptic(true, true);
+                        slot->hapticLeftClickState   = Slot::ClickState::WaitingForPress;
+                        slot->hapticLeftReleaseGrace = Slot::kPostReleaseGraceFrames;
+                        slot->hapticPrevLeftX      = lx;
+                        slot->hapticPrevLeftY      = ly;
+                        slot->hapticLeftDistAccum  = 0.0f;
+                    }
+                } else {
+                    slot->hapticLeftAreaLowFrames = 0;
+                }
             }
 
             // Movement haptic — tick once per TRACKPAD_HAPTIC_TICK_DISTANCE of travel.
             if (n >= 28) {
-                // On first-touch frame, seed positions and reset accumulator.
+                // On first-touch frame, seed positions, reset accumulator, and
+                // start grace period so press-gesture motion can't bleed a TICK
+                // just before the CLICK fires (~48ms at 250Hz).
                 if (rt && !slot->hapticWasRightTouching) {
                     slot->hapticPrevRightX     = rx;
                     slot->hapticPrevRightY     = ry;
                     slot->hapticRightDistAccum = 0.0f;
+                    slot->hapticRightTouchGrace = Slot::kTouchGraceFrames;
                 }
                 if (lt && !slot->hapticWasLeftTouching) {
                     slot->hapticPrevLeftX     = lx;
                     slot->hapticPrevLeftY     = ly;
                     slot->hapticLeftDistAccum = 0.0f;
+                    slot->hapticLeftTouchGrace = Slot::kTouchGraceFrames;
                 }
 
-                if (rt && slot->hapticWasRightTouching && !rc) {
-                    const float dx = static_cast<float>(rx - slot->hapticPrevRightX);
-                    const float dy = static_cast<float>(ry - slot->hapticPrevRightY);
-                    slot->hapticRightDistAccum += std::hypot(dx, dy);
-                    while (slot->hapticRightDistAccum >= TRACKPAD_HAPTIC_TICK_DISTANCE) {
-                        slot->sc->TickTrackpadMovement(false);
-                        slot->hapticRightDistAccum -= TRACKPAD_HAPTIC_TICK_DISTANCE;
+                if (slot->hapticRightTouchGrace   > 0) --slot->hapticRightTouchGrace;
+                if (slot->hapticLeftTouchGrace    > 0) --slot->hapticLeftTouchGrace;
+                if (slot->hapticRightReleaseGrace > 0) --slot->hapticRightReleaseGrace;
+                if (slot->hapticLeftReleaseGrace  > 0) --slot->hapticLeftReleaseGrace;
+
+                // No ticks while the finger is pressing down (contact area
+                // balloons far past light-touch levels) and no single-frame
+                // centroid teleports (partial-contact artifacts) — neither is
+                // deliberate swiping, however much distance they report.
+                // NOTE: no minimum-area gate — a light gliding finger reads
+                // near-zero contact area on this pad, indistinguishable from
+                // post-lift ghost drift. Ghosts near clicks are covered by the
+                // post-release grace instead.
+                static constexpr float TRACKPAD_TICK_MAX_AREA = 900.0f;
+                static constexpr float TRACKPAD_TICK_MAX_STEP = 4000.0f;
+
+                // Gate on the latch state, not the raw click bit — while the
+                // click is held (even if the bit chatters low), no ticks.
+                if (rt && slot->hapticWasRightTouching && !rc
+                        && slot->hapticRightClickState == Slot::ClickState::WaitingForPress
+                        && slot->hapticRightTouchGrace == 0) {
+                    const float dx   = static_cast<float>(rx - slot->hapticPrevRightX);
+                    const float dy   = static_cast<float>(ry - slot->hapticPrevRightY);
+                    const float dist = std::hypot(dx, dy);
+                    if (slot->hapticRightReleaseGrace > 0
+                            || static_cast<float>(rArea) > TRACKPAD_TICK_MAX_AREA
+                            || dist > TRACKPAD_TICK_MAX_STEP) {
+                        // Settling after a release, pressing down, or a centroid
+                        // teleport — pause, don't punish: skip the frame without
+                        // accumulating it, but keep travel already earned so a
+                        // brief excursion mid-swipe doesn't zero the progress.
+                        // No tick can fire from a gated frame, and the press
+                        // haptic still resets the accumulator when a click lands.
+                        slot->hapticPrevRightX = rx;
+                        slot->hapticPrevRightY = ry;
+                    } else if (dist >= TRACKPAD_HAPTIC_MOTION_DEADZONE) {
+                        // Below the deadzone: don't accumulate, and don't advance
+                        // the reference point — slow creep past the deadzone still
+                        // counts. If the finger stays still long enough, discard
+                        // accumulated travel (idle reset below).
+                        slot->hapticRightIdleFrames = 0;
+                        slot->hapticRightDistAccum += dist;
+                        if (slot->hapticRightDistAccum >= TRACKPAD_HAPTIC_TICK_DISTANCE) {
+                            if (slot->sc->TickTrackpadMovement(false)) {
+                                slot->hapticRightDistAccum = 0.0f;
+                            } else {
+                                // Rate-limited: hold at threshold so the tick
+                                // fires as soon as the limiter reopens.
+                                slot->hapticRightDistAccum = TRACKPAD_HAPTIC_TICK_DISTANCE;
+                            }
+                        }
+                        slot->hapticPrevRightX = rx;
+                        slot->hapticPrevRightY = ry;
+                    } else if (++slot->hapticRightIdleFrames >= Slot::kIdleResetFrames) {
+                        slot->hapticRightDistAccum = 0.0f;
+                        slot->hapticPrevRightX     = rx;
+                        slot->hapticPrevRightY     = ry;
                     }
-                    slot->hapticPrevRightX = rx;
-                    slot->hapticPrevRightY = ry;
                 }
-                if (lt && slot->hapticWasLeftTouching && !lc) {
-                    const float dx = static_cast<float>(lx - slot->hapticPrevLeftX);
-                    const float dy = static_cast<float>(ly - slot->hapticPrevLeftY);
-                    slot->hapticLeftDistAccum += std::hypot(dx, dy);
-                    while (slot->hapticLeftDistAccum >= TRACKPAD_HAPTIC_TICK_DISTANCE) {
-                        slot->sc->TickTrackpadMovement(true);
-                        slot->hapticLeftDistAccum -= TRACKPAD_HAPTIC_TICK_DISTANCE;
+                if (lt && slot->hapticWasLeftTouching && !lc
+                        && slot->hapticLeftClickState == Slot::ClickState::WaitingForPress
+                        && slot->hapticLeftTouchGrace == 0) {
+                    const float dx   = static_cast<float>(lx - slot->hapticPrevLeftX);
+                    const float dy   = static_cast<float>(ly - slot->hapticPrevLeftY);
+                    const float dist = std::hypot(dx, dy);
+                    if (slot->hapticLeftReleaseGrace > 0
+                            || static_cast<float>(lArea) > TRACKPAD_TICK_MAX_AREA
+                            || dist > TRACKPAD_TICK_MAX_STEP) {
+                        slot->hapticPrevLeftX = lx;
+                        slot->hapticPrevLeftY = ly;
+                    } else if (dist >= TRACKPAD_HAPTIC_MOTION_DEADZONE) {
+                        slot->hapticLeftIdleFrames = 0;
+                        slot->hapticLeftDistAccum += dist;
+                        if (slot->hapticLeftDistAccum >= TRACKPAD_HAPTIC_TICK_DISTANCE) {
+                            if (slot->sc->TickTrackpadMovement(true))
+                                slot->hapticLeftDistAccum = 0.0f;
+                            else
+                                slot->hapticLeftDistAccum = TRACKPAD_HAPTIC_TICK_DISTANCE;
+                        }
+                        slot->hapticPrevLeftX = lx;
+                        slot->hapticPrevLeftY = ly;
+                    } else if (++slot->hapticLeftIdleFrames >= Slot::kIdleResetFrames) {
+                        slot->hapticLeftDistAccum = 0.0f;
+                        slot->hapticPrevLeftX     = lx;
+                        slot->hapticPrevLeftY     = ly;
                     }
-                    slot->hapticPrevLeftX = lx;
-                    slot->hapticPrevLeftY = ly;
                 }
             }
 
             slot->hapticWasRightTouching = rt;
             slot->hapticWasLeftTouching  = lt;
-            slot->hapticWasRightClicked  = rc;
-            slot->hapticWasLeftClicked   = lc;
         }
 
         // Fire mouse button events for back paddles mapped to LeftMouseButton/RightMouseButton.

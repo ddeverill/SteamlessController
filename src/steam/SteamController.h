@@ -40,6 +40,7 @@ public:
     static constexpr uint8_t CMD_SET_DEFAULT_MAPPINGS   = 0x85;  // ← lizard on
     static constexpr uint8_t CMD_SET_SETTINGS           = 0x87;
     static constexpr uint8_t CMD_GET_SETTINGS           = 0x89;
+    static constexpr uint8_t CMD_LOAD_DEFAULT_SETTINGS  = 0x8E;  // ← restore settings for lizard on
 
     // Triton output report IDs.
     static constexpr uint8_t OUT_HAPTIC_RUMBLE   = 0x80;  // continuous two-channel haptic
@@ -148,11 +149,21 @@ public:
     }
 
     // Two-step sequence: clears digital mappings + sets trackpads to NONE.
-    // Starts the background heartbeat thread on first call.
+    // Starts the background rumble thread.
     bool DisableLizardMode();
 
     // Restores default mappings. Should be called before process exit.
     bool EnableLizardMode();
+
+    // Reopen the device handle with FILE_SHARE_READ only, preventing other
+    // processes (e.g. Steam) from obtaining write access. Call before
+    // DisableLizardMode() when entering game mode.
+    bool ClaimExclusive();
+
+    // Reopen the device handle with full share flags, allowing other processes
+    // to open the device for write. Call after EnableLizardMode() when leaving
+    // game mode so Steam can reclaim the controller.
+    void ReleaseToShared();
 
     // Read the next raw input report. buffer[0] = report ID on return.
     // Returns 0 on timeout.
@@ -167,12 +178,19 @@ public:
     // Call with (0, 0) to stop rumble.
     void SetRumble(uint8_t largeMotor, uint8_t smallMotor);
 
+    // Re-assert the lizard-off state (cleared mappings + raw trackpad modes).
+    // The firmware silently reverts to lizard mode — including its autonomous
+    // click haptics — after a period without host feature reports. Call this
+    // every couple of seconds while game mode is active, like hid-steam does.
+    bool SendKeepalive();
+
     // Fire a single haptic event on one trackpad.
     // strongClick = true → physical-click sensation; false → light touch-down tick.
     void PulseTrackpadHaptic(bool left, bool strongClick);
 
     // Fire a very light tick while the thumb moves on the trackpad.
-    void TickTrackpadMovement(bool left);
+    // Returns false when the tick was dropped by the send rate limiter.
+    bool TickTrackpadMovement(bool left);
 
     // Silence any in-flight trackpad haptic state (lifecycle cleanup hook).
     void ClearTrackpadHaptics();
@@ -183,7 +201,7 @@ private:
         uint16_t right = 0;
     };
 
-    void HeartbeatLoop();
+    void RumbleLoop();
     RumbleFrame CurrentRumbleFrameLocked(std::chrono::steady_clock::time_point now) const;
     bool SendRumbleOutput(uint16_t leftSpeed, uint16_t rightSpeed);
     bool SendTrackpadPulseOutput(uint8_t side, uint16_t onUs, uint16_t offUs,
@@ -191,10 +209,10 @@ private:
     bool SendTrackpadCommandOutput(uint8_t side, uint8_t command, int8_t gainDb);
 
     HidDevice         m_device;
-    std::thread       m_heartbeat;
+    std::thread       m_rumbleThread;
     std::atomic<bool> m_running{false};
 
-    // Shared by the heartbeat thread and callers — protect with m_writeMutex.
+    // Shared by the rumble thread and callers — protect with m_writeMutex.
     std::mutex        m_writeMutex;
 
     // Rumble state — protect with m_rumbleMutex.
@@ -208,4 +226,12 @@ private:
     uint8_t           m_lastLargeMotor   = 0;
     uint8_t           m_lastSmallMotor   = 0;
     bool              m_hasRumbleState   = false;
+
+    // Last trackpad haptic send per side (touched only by the read-loop
+    // thread, no lock needed). The firmware queues haptic waveforms — sending
+    // faster than they play builds a backlog that later drains as one crunchy
+    // burst. Movement ticks are dropped while the previous waveform is likely
+    // still playing; click haptics always send.
+    std::chrono::steady_clock::time_point m_lastTrackpadHapticLeft{};
+    std::chrono::steady_clock::time_point m_lastTrackpadHapticRight{};
 };
