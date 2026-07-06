@@ -18,8 +18,12 @@ public:
     HidDevice(HidDevice&& o) noexcept;
     HidDevice& operator=(HidDevice&& o) noexcept;
 
-    // Open with exclusive write access. Returns false if device is in use or not found.
+    // Open with shared read/write access for idle tracking.
+    // Returns false if device is not found.
     bool Open(const std::wstring& path);
+    // Close and reopen with a different share mode (e.g. to claim or release
+    // exclusive write access). Caller must ensure the read thread is stopped first.
+    bool Reopen(DWORD shareMode);
     void Close();
     bool IsOpen() const { return m_handle != INVALID_HANDLE_VALUE; }
 
@@ -44,8 +48,9 @@ public:
     size_t ReadInputReport(uint8_t* buffer, size_t size, uint32_t timeoutMs = 1000);
 
 private:
-    HANDLE m_handle           = INVALID_HANDLE_VALUE;
-    HANDLE m_event            = INVALID_HANDLE_VALUE;
-    ULONG  m_outputReportLen  = 64;
-    ULONG  m_featureReportLen = 64;
+    HANDLE       m_handle           = INVALID_HANDLE_VALUE;
+    HANDLE       m_event            = INVALID_HANDLE_VALUE;
+    ULONG        m_outputReportLen  = 64;
+    ULONG        m_featureReportLen = 64;
+    std::wstring m_path;
 };

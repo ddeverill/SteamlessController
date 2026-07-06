@@ -48,6 +48,16 @@ if (MSVC)
     target_compile_options(RawControllerProbe PRIVATE /W4 /utf-8)
 endif()
 
+# HapticTester — local-only interactive haptic tuning tool (source is gitignored)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/probe/HapticTester.cpp")
+    add_executable(HapticTester src/probe/HapticTester.cpp)
+    target_link_libraries(HapticTester PRIVATE SteamController)
+    if (MSVC)
+        target_compile_options(HapticTester PRIVATE /W4 /utf-8)
+        set_target_properties(HapticTester PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+    endif()
+endif()
+
 # WebView2 — downloaded from NuGet (.nupkg is a zip; FetchContent extracts it)
 FetchContent_Declare(WebView2
     URL      https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.2849.39

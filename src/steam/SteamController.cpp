@@ -44,13 +44,8 @@ static uint16_t UnitToHapticSpeed(double value, uint16_t minimumSpeed) {
     return static_cast<uint16_t>(std::clamp<int>(static_cast<int>(std::lround(speed)), 0, 0xFFFF));
 }
 
-static constexpr uint8_t  HAPTIC_COMMAND_TICK  = 1;
-static constexpr uint8_t  HAPTIC_COMMAND_CLICK = 2;
-static constexpr uint16_t TRACKPAD_CLICK_PULSE_US        = 5000;
-static constexpr int8_t   TRACKPAD_TOUCH_GAIN_DB         = -45;
-static constexpr int8_t   TRACKPAD_MOVE_GAIN_DB          = -50;
-static constexpr int8_t   TRACKPAD_CLICK_COMMAND_GAIN_DB =   9;
-static constexpr int16_t  TRACKPAD_CLICK_PULSE_GAIN_DB   =  40;
+static constexpr uint8_t HAPTIC_COMMAND_TICK  = 1;
+static constexpr uint8_t HAPTIC_COMMAND_CLICK = 2;
 
 // ---------------------------------------------------------------------------
 // Open / Close
@@ -58,19 +53,9 @@ static constexpr int16_t  TRACKPAD_CLICK_PULSE_GAIN_DB   =  40;
 
 std::vector<std::wstring> SteamController::EnumerateAll() {
     std::vector<std::wstring> result;
-    for (uint16_t pid : { SC2026_PID, SC2026_DONGLE_PID }) {
-        auto paths = HidDevice::Enumerate(VALVE_VID, pid, VENDOR_USAGE_PAGE);
-        for (auto const& path : paths) {
-            HidDevice dev;
-            if (!dev.Open(path)) continue;
-            uint8_t buf[64];
-            size_t n = dev.ReadInputReport(buf, sizeof(buf), /*timeoutMs=*/500);
-            if (n > 0 && IsStateReportId(buf[0]))
-                result.push_back(path);
-            else if (n > 0)
-                printf("Unexpected report ID 0x%02X on PID=%04X — skipping.\n", buf[0], pid);
-        }
-    }
+    for (uint16_t pid : { SC2026_PID, SC2026_DONGLE_PID })
+        for (auto const& path : HidDevice::Enumerate(VALVE_VID, pid, VENDOR_USAGE_PAGE))
+            result.push_back(path);
     return result;
 }
 
@@ -91,11 +76,27 @@ bool SteamController::Open(const std::wstring& path) {
 }
 
 void SteamController::Close() {
-    if (m_running.exchange(false) && m_heartbeat.joinable())
-        m_heartbeat.join();
+    if (m_running.exchange(false) && m_rumbleThread.joinable())
+        m_rumbleThread.join();
     ClearTrackpadHaptics();
     SetRumble(0, 0);
     m_device.Close();
+}
+
+// ---------------------------------------------------------------------------
+// Exclusive access control
+// ---------------------------------------------------------------------------
+
+bool SteamController::ClaimExclusive() {
+    // The read thread must already be stopped before calling Reopen — the
+    // caller (EnableGameModeSlot) calls this before starting the read loop.
+    return m_device.Reopen(FILE_SHARE_READ);
+}
+
+void SteamController::ReleaseToShared() {
+    // The read thread must already be stopped before calling Reopen — the
+    // caller (DisableGameModeSlot) stops the read loop before calling this.
+    m_device.Reopen(FILE_SHARE_READ | FILE_SHARE_WRITE);
 }
 
 // ---------------------------------------------------------------------------
@@ -139,22 +140,47 @@ bool SteamController::DisableLizardMode() {
     }
 
     if (!m_running.exchange(true))
-        m_heartbeat = std::thread(&SteamController::HeartbeatLoop, this);
+        m_rumbleThread = std::thread(&SteamController::RumbleLoop, this);
 
     return true;
 }
 
+bool SteamController::SendKeepalive() {
+    uint8_t buf[64];
+    BuildCmd(buf, CMD_CLEAR_DIGITAL_MAPPINGS);
+    std::lock_guard<std::mutex> lock(m_writeMutex);
+    if (!m_device.SendFeatureReport(buf, sizeof(buf)))
+        return false;
+
+    const uint8_t settingsPayload[] = {
+        SETTING_LEFT_TRACKPAD_MODE,  0x00, 0x00,
+        SETTING_RIGHT_TRACKPAD_MODE, 0x00, 0x00,
+    };
+    BuildCmd(buf, CMD_SET_SETTINGS, settingsPayload, sizeof(settingsPayload));
+    return m_device.SendFeatureReport(buf, sizeof(buf));
+}
+
 bool SteamController::EnableLizardMode() {
-    if (m_running.exchange(false) && m_heartbeat.joinable())
-        m_heartbeat.join();
+    if (m_running.exchange(false) && m_rumbleThread.joinable())
+        m_rumbleThread.join();
 
     ClearTrackpadHaptics();
     SetRumble(0, 0);
     SetImuEnabled(false);
 
+    // Restore both halves of lizard mode explicitly: default digital mappings
+    // AND default settings. SET_DEFAULT_MAPPINGS alone leaves the trackpad
+    // modes we overrode (raw mode) in place, so firmware mouse emulation
+    // stayed dead until the firmware's own revert timeout reloaded defaults —
+    // which is why the system took seconds to pick the controller back up.
     uint8_t buf[64];
-    BuildCmd(buf, CMD_SET_DEFAULT_MAPPINGS);
     std::lock_guard<std::mutex> lock(m_writeMutex);
+
+    BuildCmd(buf, CMD_SET_DEFAULT_MAPPINGS);
+    if (!m_device.SendFeatureReport(buf, sizeof(buf)))
+        return false;
+
+    BuildCmd(buf, CMD_LOAD_DEFAULT_SETTINGS);
     return m_device.SendFeatureReport(buf, sizeof(buf));
 }
 
@@ -262,18 +288,29 @@ SteamController::RumbleFrame SteamController::CurrentRumbleFrameLocked(
 // Trackpad haptics
 // ---------------------------------------------------------------------------
 
+// Minimum spacing between haptic sends to one trackpad LRA. The TICK/CLICK
+// waveforms the firmware plays last tens of milliseconds and queue up if
+// commands arrive faster — a drained backlog feels like a crunchy burst.
+static constexpr auto kTrackpadHapticMinGap = std::chrono::milliseconds(50);
+
 void SteamController::PulseTrackpadHaptic(bool left, bool strongClick) {
     const uint8_t side    = left ? 0x01 : 0x02;
     const uint8_t command = strongClick ? HAPTIC_COMMAND_CLICK : HAPTIC_COMMAND_TICK;
-    const int8_t  gainDb  = strongClick ? TRACKPAD_CLICK_COMMAND_GAIN_DB : TRACKPAD_TOUCH_GAIN_DB;
-    SendTrackpadCommandOutput(side, command, gainDb);
-    if (strongClick)
-        SendTrackpadPulseOutput(side, TRACKPAD_CLICK_PULSE_US, 0, 1, TRACKPAD_CLICK_PULSE_GAIN_DB);
+    // Clicks always send — they're the priority event — but they still stamp
+    // the send time so a movement tick can't pile on right after.
+    auto& last = left ? m_lastTrackpadHapticLeft : m_lastTrackpadHapticRight;
+    last = std::chrono::steady_clock::now();
+    SendTrackpadCommandOutput(side, command, 0);
 }
 
-void SteamController::TickTrackpadMovement(bool left) {
+bool SteamController::TickTrackpadMovement(bool left) {
+    const auto now  = std::chrono::steady_clock::now();
+    auto&      last = left ? m_lastTrackpadHapticLeft : m_lastTrackpadHapticRight;
+    if (now - last < kTrackpadHapticMinGap)
+        return false;  // previous waveform likely still playing — drop, don't queue
+    last = now;
     const uint8_t side = left ? 0x01 : 0x02;
-    SendTrackpadCommandOutput(side, HAPTIC_COMMAND_TICK, TRACKPAD_MOVE_GAIN_DB);
+    return SendTrackpadCommandOutput(side, HAPTIC_COMMAND_TICK, 0);
 }
 
 void SteamController::ClearTrackpadHaptics() {
@@ -331,21 +368,13 @@ bool SteamController::SendTrackpadCommandOutput(uint8_t side, uint8_t command, i
 }
 
 // ---------------------------------------------------------------------------
-// Heartbeat — keeps lizard mode suppressed and re-sends active rumble
+// Rumble loop — re-drives the haptic actuators while rumble is active.
+// The Steam Controller uses LRA actuators that need continuous output to
+// sustain vibration, unlike traditional ERM motors that spin freely once set.
 // ---------------------------------------------------------------------------
 
-void SteamController::HeartbeatLoop() {
-    uint8_t buf[64];
-    BuildCmd(buf, CMD_CLEAR_DIGITAL_MAPPINGS);
-    int lizardTicks = 0;
-
+void SteamController::RumbleLoop() {
     while (m_running.load()) {
-        if (lizardTicks <= 0) {
-            std::lock_guard<std::mutex> lock(m_writeMutex);
-            m_device.SendFeatureReport(buf, sizeof(buf));
-            lizardTicks = 20;
-        }
-
         RumbleFrame frame{};
         {
             std::lock_guard<std::mutex> lock(m_rumbleMutex);
@@ -354,7 +383,6 @@ void SteamController::HeartbeatLoop() {
         if (frame.left || frame.right)
             SendRumbleOutput(frame.left, frame.right);
 
-        --lizardTicks;
         std::this_thread::sleep_for(std::chrono::milliseconds(40));
     }
 }

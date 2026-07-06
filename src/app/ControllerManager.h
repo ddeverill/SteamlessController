@@ -21,6 +21,9 @@ public:
 
     void EnableGameMode();
     void DisableGameMode();
+    // Disables game mode then closes all device handles so another process
+    // (e.g. Steam) can claim the controller. Safe to call when already disabled.
+    void ReleaseDevices();
 
     void SetTrackpadMouseEnabled(bool enabled);
     void SetUseLeftTrackpad(bool enabled);

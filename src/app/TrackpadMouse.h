@@ -23,6 +23,8 @@ private:
     bool     m_prevR4    = false;
     int16_t  m_prevX     = 0;
     int16_t  m_prevY     = 0;
+    float    m_remX      = 0.0f;  // sub-pixel movement carry
+    float    m_remY      = 0.0f;
 
-    static constexpr float SENSITIVITY = 0.015f;
+    static constexpr float SENSITIVITY = 0.01125f;
 };

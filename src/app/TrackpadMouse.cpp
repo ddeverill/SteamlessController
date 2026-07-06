@@ -21,6 +21,8 @@ void TrackpadMouse::Reset() {
     m_prevR4    = false;
     m_prevX     = 0;
     m_prevY     = 0;
+    m_remX      = 0.0f;
+    m_remY      = 0.0f;
 }
 
 void TrackpadMouse::Update(const uint8_t* buf, size_t n) {
@@ -64,12 +66,23 @@ void TrackpadMouse::Update(const uint8_t* buf, size_t n) {
         const int dx =  static_cast<int>(x - m_prevX);
         const int dy = -static_cast<int>(y - m_prevY);
         if (dx != 0 || dy != 0) {
-            INPUT input{};
-            input.type       = INPUT_MOUSE;
-            input.mi.dwFlags = MOUSEEVENTF_MOVE;
-            input.mi.dx      = static_cast<LONG>(dx * SENSITIVITY);
-            input.mi.dy      = static_cast<LONG>(dy * SENSITIVITY);
-            SendInput(1, &input, sizeof(INPUT));
+            // Carry sub-pixel remainders between frames — per-frame deltas
+            // scaled by sensitivity are often below one pixel, and truncating
+            // them each frame would discard slow movement entirely.
+            const float fx = static_cast<float>(dx) * SENSITIVITY + m_remX;
+            const float fy = static_cast<float>(dy) * SENSITIVITY + m_remY;
+            const LONG  ix = static_cast<LONG>(fx);
+            const LONG  iy = static_cast<LONG>(fy);
+            m_remX = fx - static_cast<float>(ix);
+            m_remY = fy - static_cast<float>(iy);
+            if (ix != 0 || iy != 0) {
+                INPUT input{};
+                input.type       = INPUT_MOUSE;
+                input.mi.dwFlags = MOUSEEVENTF_MOVE;
+                input.mi.dx      = ix;
+                input.mi.dy      = iy;
+                SendInput(1, &input, sizeof(INPUT));
+            }
         }
     }
 

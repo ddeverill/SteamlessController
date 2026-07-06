@@ -22,6 +22,9 @@ ClaudeDesign/
 CMakeSettings.json
 CMakeUserPresets.json
 
+# Local-only debug tools (not for distribution)
+src/probe/HapticTester.cpp
+
 # Visual Studio
 .vs/
 *.user
