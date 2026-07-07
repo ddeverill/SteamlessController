@@ -1,4 +1,5 @@
 #include "ControllerManager.h"
+#include "EventLog.h"
 #include "VirtualController.h"
 #include "TrackpadMouse.h"
 #include "steam/SteamController.h"
@@ -23,6 +24,7 @@ struct ControllerManager::Slot {
     std::thread                        readThread;
     std::atomic<bool>                  readRunning{false};
     bool                               gameModeActive = false;
+    int                                lastBatteryPercent = -1;  // -1 = never reported
 
     // Haptic edge-detection state for touch (movement ticks).
     bool    hapticWasRightTouching = false;
@@ -139,16 +141,48 @@ static bool DetectCapture(const uint8_t* cur, const uint8_t* prev,
 }
 
 // ---------------------------------------------------------------------------
+// Crash-path lizard restore
+//
+// If the process dies with the controller in game mode, the user is left
+// without input until the firmware's own lizard revert timeout kicks in
+// (several seconds). The unhandled-exception filter shortens that window by
+// best-effort sending the lizard restore reports on the way down. It must not
+// take locks or join threads — another thread may be wedged holding them.
+// ---------------------------------------------------------------------------
+
+static ControllerManager* g_crashRestoreInstance = nullptr;
+
+static LONG WINAPI CrashRestoreFilter(EXCEPTION_POINTERS*) {
+    if (g_crashRestoreInstance)
+        g_crashRestoreInstance->EmergencyRestoreAll();
+    // Let Windows Error Reporting / debuggers see the crash as usual.
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void ControllerManager::EmergencyRestoreAll() noexcept {
+    for (auto& slot : m_slots) {
+        if (!slot || !slot->sc) continue;
+        // Stop the read loop cooperatively (no join) so its keepalive can't
+        // re-clear the mappings we are about to restore.
+        slot->readRunning = false;
+        slot->sc->EmergencyLizardRestore();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
 ControllerManager::ControllerManager(StateChangedFn onStateChanged)
     : m_onStateChanged(std::move(onStateChanged))
 {
+    g_crashRestoreInstance = this;
+    SetUnhandledExceptionFilter(CrashRestoreFilter);
     SyncDevices();
 }
 
 ControllerManager::~ControllerManager() {
+    g_crashRestoreInstance = nullptr;
     for (auto& slot : m_slots) {
         // Stop the read loop and virtual controller first (same as DisableGameModeSlot
         // but without the gameModeActive guard — we always want to restore lizard mode).
@@ -189,6 +223,8 @@ void ControllerManager::DisableGameMode() {
 }
 
 void ControllerManager::ReleaseDevices() {
+    if (!m_slots.empty())
+        EventLog::Write("RELEASE: closing all device handles (intentional handoff)");
     // Disable game mode first — enables lizard mode and tears down ViGEm while
     // we still hold write access to the device.
     DisableGameMode();
@@ -259,6 +295,17 @@ void ControllerManager::SyncDevices() {
         bool alive = std::any_of(livePaths.begin(), livePaths.end(),
             [&](const auto& p) { return p == (*it)->path; });
         if (!alive) {
+            EventLog::Write("DISCONNECT: OS removed device (gameMode=%d, lastBattery=%d%%) %ls",
+                            (*it)->gameModeActive ? 1 : 0,
+                            (*it)->lastBatteryPercent, (*it)->path.c_str());
+            // Alert only when the controller was in active use; deliberate
+            // unplugs while idle (and our own device cycles, which release
+            // slots before cycling) stay quiet.
+            if ((*it)->gameModeActive && m_alertFn)
+                m_alertFn(L"Controller disconnected",
+                          L"The USB device was removed. Check the cable or dongle — "
+                          L"if this happens randomly, Windows USB power saving may be "
+                          L"suspending the port.");
             DisableGameModeSlot(**it);
             it = m_slots.erase(it);
         } else {
@@ -299,8 +346,13 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 
 void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
     if (slot.gameModeActive) return;
-    if (!slot.sc->ClaimExclusive()) return;
+    if (!slot.sc->ClaimExclusive()) {
+        EventLog::Write("GAMEMODE: exclusive claim failed (another process holds a write handle) %ls",
+                        slot.path.c_str());
+        return;
+    }
     if (!slot.sc->DisableLizardMode()) {
+        EventLog::Write("GAMEMODE: DisableLizardMode failed %ls", slot.path.c_str());
         slot.sc->ReleaseToShared();
         return;
     }
@@ -311,6 +363,8 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
             if (sc->IsOpen()) sc->SetRumble(largeMotor, smallMotor);
         });
     if (!slot.vc->IsValid()) {
+        EventLog::Write("GAMEMODE: ViGEm virtual controller failed (driverMissing=%d)",
+                        slot.vc->IsDriverMissing() ? 1 : 0);
         if (slot.vc->IsDriverMissing()) vigemMissingOut = true;
         slot.vc.reset();
         slot.sc->EnableLizardMode();
@@ -321,6 +375,7 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
         slot.sc->SetImuEnabled(true);
     slot.vc->SetTrackpadMouseClaim(m_trackpadMouseEnabled, m_useLeftTrackpad);
 
+    EventLog::Write("GAMEMODE: enabled %ls", slot.path.c_str());
     slot.gameModeActive = true;
     slot.trackpad.Reset();
     slot.trackpad.SetTrackpadEnabled(m_trackpadMouseEnabled);
@@ -331,6 +386,7 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
 
 void ControllerManager::DisableGameModeSlot(Slot& slot) {
     if (!slot.gameModeActive) return;
+    EventLog::Write("GAMEMODE: disabled %ls", slot.path.c_str());
     StopReadLoop(slot);
     if (slot.sc->IsOpen())
         slot.sc->SetRumble(0, 0);
@@ -361,7 +417,14 @@ void ControllerManager::ReadLoop(Slot* slot) {
     uint8_t buf[64];
     uint8_t prevBuf[64] = {};
     bool    hasPrev     = false;
-    auto    lastKeepalive = std::chrono::steady_clock::now();
+    auto    lastKeepalive    = std::chrono::steady_clock::now();
+    auto    lastReport       = std::chrono::steady_clock::now();
+    bool    stalled          = false;
+    bool    keepaliveFailing = false;
+
+    // No reports for this long while the device is still enumerated means the
+    // controller died silently: battery empty, auto-sleep, or wireless drop.
+    static constexpr auto kStallThreshold = std::chrono::seconds(4);
 
     while (slot->readRunning) {
         // Keepalive — the firmware silently reverts to lizard mode (and its
@@ -372,16 +435,57 @@ void ControllerManager::ReadLoop(Slot* slot) {
         const auto nowKa = std::chrono::steady_clock::now();
         if (nowKa - lastKeepalive >= std::chrono::seconds(2)) {
             lastKeepalive = nowKa;
-            slot->sc->SendKeepalive();
+            const bool ok = slot->sc->SendKeepalive();
+            if (!ok && !keepaliveFailing) {
+                keepaliveFailing = true;
+                EventLog::Write("KEEPALIVE: send failed (device write error)");
+            } else if (ok && keepaliveFailing) {
+                keepaliveFailing = false;
+                EventLog::Write("KEEPALIVE: recovered");
+            }
         }
 
         size_t n = slot->sc->ReadReport(buf, sizeof(buf), /*timeoutMs=*/32);
-        if (n == 0) continue;
+        if (n == 0) {
+            if (!stalled
+                    && std::chrono::steady_clock::now() - lastReport > kStallThreshold) {
+                stalled = true;
+                EventLog::Write("STALL: no reports for 4s (lastBattery=%d%%) %ls",
+                                slot->lastBatteryPercent, slot->path.c_str());
+                if (m_alertFn) {
+                    wchar_t text[256];
+                    if (slot->lastBatteryPercent >= 0)
+                        swprintf_s(text,
+                                   L"No input received for several seconds — the battery may "
+                                   L"be dead, the controller may have gone to sleep, or the "
+                                   L"wireless signal dropped. Last battery report: %d%%.",
+                                   slot->lastBatteryPercent);
+                    else
+                        swprintf_s(text,
+                                   L"No input received for several seconds — the battery may "
+                                   L"be dead, the controller may have gone to sleep, or the "
+                                   L"wireless signal dropped.");
+                    m_alertFn(L"Controller not responding", text);
+                }
+            }
+            continue;
+        }
+        lastReport = std::chrono::steady_clock::now();
+        if (stalled) {
+            stalled = false;
+            EventLog::Write("STALL: reports resumed");
+        }
 
         // Battery status — update DS4 battery level; no further processing needed.
         if (buf[0] == SteamController::REPORT_BATTERY_STATUS) {
-            if (n >= 3 && slot->vc)
-                slot->vc->SetBatteryState(buf[1], buf[2]);
+            if (n >= 3) {
+                if (slot->vc)
+                    slot->vc->SetBatteryState(buf[1], buf[2]);
+                if (slot->lastBatteryPercent != static_cast<int>(buf[1])) {
+                    EventLog::Write("BATTERY: %u%% (chargeState=%u)", buf[1], buf[2]);
+                    slot->lastBatteryPercent = static_cast<int>(buf[1]);
+                }
+            }
             continue;
         }
 

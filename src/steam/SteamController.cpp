@@ -90,7 +90,13 @@ void SteamController::Close() {
 bool SteamController::ClaimExclusive() {
     // The read thread must already be stopped before calling Reopen — the
     // caller (EnableGameModeSlot) calls this before starting the read loop.
-    return m_device.Reopen(FILE_SHARE_READ);
+    if (m_device.Reopen(FILE_SHARE_READ))
+        return true;
+    // Another process (Steam) holds a write handle. Reopen already closed our
+    // old handle, so restore shared access — otherwise the device would be
+    // left closed and unusable for idle tracking and later retries.
+    m_device.Reopen(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    return false;
 }
 
 void SteamController::ReleaseToShared() {
@@ -158,6 +164,15 @@ bool SteamController::SendKeepalive() {
     };
     BuildCmd(buf, CMD_SET_SETTINGS, settingsPayload, sizeof(settingsPayload));
     return m_device.SendFeatureReport(buf, sizeof(buf));
+}
+
+void SteamController::EmergencyLizardRestore() noexcept {
+    if (!m_device.IsOpen()) return;
+    uint8_t buf[64];
+    BuildCmd(buf, CMD_SET_DEFAULT_MAPPINGS);
+    m_device.SendFeatureReport(buf, sizeof(buf));
+    BuildCmd(buf, CMD_LOAD_DEFAULT_SETTINGS);
+    m_device.SendFeatureReport(buf, sizeof(buf));
 }
 
 bool SteamController::EnableLizardMode() {

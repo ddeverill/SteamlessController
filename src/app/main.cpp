@@ -7,9 +7,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     // Prevent multiple instances.
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, L"SteamlessController_SingleInstance");
-    if (!mutex || GetLastError() == ERROR_ALREADY_EXISTS) {
-        if (mutex) CloseHandle(mutex);
+    HANDLE mutex = CreateMutexW(nullptr, FALSE, L"SteamlessController_SingleInstance");
+    if (!mutex) return 0;
+    const DWORD wait = WaitForSingleObject(mutex, 0);
+    if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+        CloseHandle(mutex);
         return 0;
     }
 

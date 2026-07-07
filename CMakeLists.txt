@@ -48,6 +48,17 @@ if (MSVC)
     target_compile_options(RawControllerProbe PRIVATE /W4 /utf-8)
 endif()
 
+# Elevated on-demand helper — restarts the controller device node so the tray
+# app (which never runs elevated) can take the device from a running Steam.
+add_executable(SteamlessDeviceCycle WIN32
+    src/helper/DeviceCycleHelper.cpp
+    src/app/DeviceRestart.cpp
+)
+target_link_libraries(SteamlessDeviceCycle PRIVATE SteamController)
+if (MSVC)
+    target_compile_options(SteamlessDeviceCycle PRIVATE /W4 /WX /utf-8)
+endif()
+
 # HapticTester — local-only interactive haptic tuning tool (source is gitignored)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/probe/HapticTester.cpp")
     add_executable(HapticTester src/probe/HapticTester.cpp)
@@ -79,6 +90,9 @@ add_executable(SteamlessController WIN32
     src/app/ControllerManager.cpp
     src/app/VirtualController.cpp
     src/app/TrackpadMouse.cpp
+    src/app/SteamWatcher.cpp
+    src/app/DeviceRestart.cpp
+    src/app/EventLog.cpp
     src/app/RemapWindow.cpp
     resources/app.rc
 )

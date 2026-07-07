@@ -1,20 +1,60 @@
 #include "TrayApp.h"
 #include "ControllerManager.h"
 #include "ControllerPlatform.h"
+#include "DeviceRestart.h"
+#include "EventLog.h"
+#include "steam/SteamController.h"
 #include "resource.h"
 #include <shellapi.h>
 #include <dbt.h>
 #include <winreg.h>
+#include <string>
 
 static TrayApp* g_app = nullptr;
 
 static constexpr wchar_t WNDCLASS_NAME[] = L"SteamlessControllerTray";
+
+static constexpr wchar_t CYCLE_TASK_NAME[]          = L"SteamlessControllerDeviceCycle";
+static constexpr wchar_t LEGACY_STARTUP_TASK_NAME[] = L"SteamlessController";
+static constexpr wchar_t HELPER_EXE_NAME[]          = L"SteamlessDeviceCycle.exe";
+
+// Runs a console tool with no visible window; true when it exits 0.
+static bool RunToolHidden(std::wstring cmdline) {
+    STARTUPINFOW si{};
+    si.cb          = sizeof(si);
+    si.dwFlags     = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        return false;
+    WaitForSingleObject(pi.hProcess, 15000);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return code == 0;
+}
+
+// Path of the helper exe, expected beside our own executable.
+static std::wstring HelperPath() {
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring path(exe);
+    const size_t slash = path.find_last_of(L'\\');
+    if (slash != std::wstring::npos) path.resize(slash + 1);
+    path += HELPER_EXE_NAME;
+    return path;
+}
 
 TrayApp::TrayApp() {
     g_app = this;
 }
 
 TrayApp::~TrayApp() {
+    // Stop the watcher before anything else so its callback can't post to a
+    // window (or reference a controller) that is being torn down.
+    m_steamWatcher.Stop();
     RemoveTrayIcon();
     g_app = nullptr;
 }
@@ -45,14 +85,37 @@ bool TrayApp::Init(HINSTANCE hInstance) {
                               {0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30}};
     RegisterDeviceNotificationW(m_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
 
+    EventLog::Write("=== SteamlessController started ===");
+
     m_controller = std::make_unique<ControllerManager>(
         [this](bool connected, bool gameModeActive, bool vigemMissing) {
             UpdateTrayIcon(connected, gameModeActive, vigemMissing);
         });
+    m_controller->SetAlertCallback(
+        [this](const std::wstring& title, const std::wstring& text) {
+            {
+                std::lock_guard<std::mutex> lk(m_alertMutex);
+                m_alertTitle = title;
+                m_alertText  = text;
+            }
+            PostMessageW(m_hwnd, WM_ALERT, 0, 0);
+        });
 
     LoadSettings();
+    // Converge the startup mechanism with the loaded mode — e.g. the first
+    // elevated run after enabling in-game mode migrates the Run key to the
+    // highest-privileges logon task (and back when the mode changes).
+    UpdateStartupRegistration();
     AddTrayIcon();
     UpdateTrayIcon(m_controller->IsConnected(), m_controller->IsGameModeActive(), false);
+
+    // Start watching for Steam regardless of auto mode — the state is applied
+    // only when auto mode is on, and having it warm makes toggling auto mode
+    // take effect instantly. The initial callback asserts the correct state
+    // at startup (which also self-heals after a previous crash).
+    m_steamWatcher.Start([this](SteamState state) {
+        PostMessageW(m_hwnd, WM_STEAMSTATE, static_cast<WPARAM>(state), 0);
+    });
     return true;
 }
 
@@ -120,19 +183,76 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             m_controller->SetControllerPlatform(ControllerPlatform::PlayStation);
             SaveSettings();
             break;
+        case IDM_MODE_MANUAL:
+            SetAutoMode(AutoMode::Manual);
+            break;
+        case IDM_MODE_STEAM:
+            SetAutoMode(AutoMode::OffWhileSteam);
+            break;
+        case IDM_MODE_GAME:
+            // Make sure the elevated helper task exists (one-time UAC when
+            // the installer didn't register it) before the mode needs it.
+            if (!IsProcessElevated())
+                EnsureCycleTaskRegistered();
+            SetAutoMode(AutoMode::OffOnlyInGame);
+            break;
         case IDM_STARTUP:
-            SetStartupEnabled(!IsStartupEnabled());
+            m_startupEnabled = !m_startupEnabled;
+            UpdateStartupRegistration();
+            break;
+        case IDM_OPENLOG:
+            OpenEventLog();
+            break;
+        case IDM_NOTIFICATIONS:
+            m_notificationsEnabled = !m_notificationsEnabled;
+            EventLog::Write("USER: disconnect notifications %s",
+                            m_notificationsEnabled ? "enabled" : "disabled");
+            SaveSettings();
             break;
         case IDM_EXIT:
+            EventLog::Write("=== SteamlessController exiting (user request) ===");
             m_controller->DisableGameMode();
             PostQuitMessage(0);
             break;
         }
         return 0;
 
+    case WM_STEAMSTATE:
+        ApplySteamState(static_cast<SteamState>(wp));
+        return 0;
+
+    case WM_ALERT: {
+        if (!m_notificationsEnabled)
+            return 0;  // the cause is still in the event log
+        std::wstring title, text;
+        {
+            std::lock_guard<std::mutex> lk(m_alertMutex);
+            title = m_alertTitle;
+            text  = m_alertText;
+        }
+        if (!title.empty())
+            ShowAlertBalloon(title, text);
+        return 0;
+    }
+
+    case WM_TIMER:
+        if (wp == IDT_ACQUIRE) {
+            KillTimer(m_hwnd, IDT_ACQUIRE);
+            if (m_autoMode != AutoMode::Manual && WantControl(m_steamWatcher.GetState()))
+                TryAcquireController();
+        }
+        return 0;
+
     case WM_DEVICECHANGE:
-        if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE)
+        if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
             m_controller->OnDeviceChange();
+            // A controller arriving (plugged in, or re-arriving after a device
+            // cycle) should be acquired without a manual toggle when the
+            // active auto mode wants control right now.
+            if (wp == DBT_DEVICEARRIVAL && m_autoMode != AutoMode::Manual
+                    && WantControl(m_steamWatcher.GetState()))
+                TryAcquireController();
+        }
         return TRUE;
 
     case WM_DESTROY:
@@ -140,6 +260,123 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void TrayApp::SetAutoMode(AutoMode mode) {
+    EventLog::Write("MODE: control mode set to %d (0=manual 1=offWhileSteam 2=offOnlyInGame)",
+                    static_cast<int>(mode));
+    m_autoMode = mode;
+    m_acquireRetries = 0;
+    SaveSettings();
+    UpdateStartupRegistration();
+    if (mode != AutoMode::Manual)
+        ApplySteamState(m_steamWatcher.GetState());
+}
+
+bool TrayApp::WantControl(SteamState state) const {
+    switch (m_autoMode) {
+    case AutoMode::OffWhileSteam: return state == SteamState::NoSteam;
+    case AutoMode::OffOnlyInGame: return state != SteamState::InGame;
+    default:                      return false;  // Manual: tray toggle decides
+    }
+}
+
+void TrayApp::ApplySteamState(SteamState state) {
+    if (m_autoMode == AutoMode::Manual) return;
+
+    EventLog::Write("AUTO: steam state %d (0=none 1=idle 2=inGame) -> %s",
+                    static_cast<int>(state),
+                    WantControl(state) ? "take control" : "yield");
+    if (WantControl(state)) {
+        m_acquireRetries = 0;
+        TryAcquireController();
+    } else {
+        KillTimer(m_hwnd, IDT_ACQUIRE);
+        m_acquireRetries = 0;
+        const bool hadControl = m_controller->IsGameModeActive();
+        // Good citizen: restore lizard mode and close our HID handles so
+        // Steam can claim the controller without contention.
+        m_controller->ReleaseDevices();
+        // Steam only (re)opens controllers on device-arrival events. If it is
+        // already running and we held the device, it never saw one — cycle
+        // the device so Steam adopts it immediately.
+        if (hadControl && state != SteamState::NoSteam)
+            RestartControllerDevices();
+    }
+}
+
+void TrayApp::TryAcquireController() {
+    m_controller->OnDeviceChange();
+    m_controller->EnableGameMode();
+
+    // A short burst of rapid retries: right after a device cycle we race
+    // Steam's re-enumeration for the exclusive open, and starting the claim
+    // the instant the device arrives is what wins that race.
+    for (int i = 0; i < 10 && !m_controller->IsGameModeActive(); ++i) {
+        Sleep(50);
+        m_controller->OnDeviceChange();
+        m_controller->EnableGameMode();
+    }
+    if (m_controller->IsGameModeActive()) {
+        m_acquireRetries = 0;
+        return;
+    }
+    if (!m_controller->IsConnected()) return;  // nothing plugged in — arrival will retrigger
+
+    // Steam holds a write handle, so our exclusive claim can't succeed while
+    // its handle lives. Cycle the device to invalidate it and retry on
+    // re-arrival (the timer is a fallback in case the arrival event is missed).
+    if (m_acquireRetries >= MAX_ACQUIRE_CYCLES) {
+        EventLog::Write("AUTO: giving up acquiring after %d device cycles", MAX_ACQUIRE_CYCLES);
+        return;
+    }
+    ++m_acquireRetries;
+    EventLog::Write("AUTO: exclusive claim blocked — cycling device (attempt %d)", m_acquireRetries);
+    m_controller->ReleaseDevices();
+    if (!RestartControllerDevices()) return;  // helper unavailable — balloon shown
+    // The cycle runs asynchronously via the helper task; the device-arrival
+    // notification drives the claim, with this timer as the fallback.
+    SetTimer(m_hwnd, IDT_ACQUIRE, 2500, nullptr);
+}
+
+bool TrayApp::RestartControllerDevices() {
+    // On the rare elevated run, cycle directly.
+    if (IsProcessElevated()) {
+        bool anyRestarted = false;
+        for (const auto& path : SteamController::EnumerateAll())
+            if (DeviceRestart::RestartInterfaceDevice(path))
+                anyRestarted = true;
+        return anyRestarted;
+    }
+
+    // Normal path: fire the elevated helper via its scheduled task. Starting
+    // a task the user authored needs no elevation, so no UAC prompt here.
+    std::wstring run = L"schtasks.exe /Run /TN \"";
+    run += CYCLE_TASK_NAME;
+    run += L"\"";
+    if (RunToolHidden(run)) return true;
+
+    // Task missing (copied exes without installing?) — register it with a
+    // one-time UAC prompt, then retry.
+    if (!EnsureCycleTaskRegistered()) return false;
+    return RunToolHidden(std::move(run));
+}
+
+void TrayApp::ShowElevationBalloon() {
+    if (m_elevationBalloonShown) return;
+    m_elevationBalloonShown = true;
+
+    NOTIFYICONDATAW nid{};
+    nid.cbSize      = sizeof(nid);
+    nid.hWnd        = m_hwnd;
+    nid.uID         = TRAY_UID;
+    nid.uFlags      = NIF_INFO;
+    nid.dwInfoFlags = NIIF_WARNING;
+    wcscpy_s(nid.szInfoTitle, L"One-time setup needed");
+    wcscpy_s(nid.szInfo,
+             L"Approve the administrator prompt to enable in-game controller "
+             L"handoff (select the mode again to retry).");
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
 void TrayApp::OpenRemapWindow() {
@@ -192,6 +429,26 @@ void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool vigemMiss
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
+void TrayApp::ShowAlertBalloon(const std::wstring& title, const std::wstring& text) {
+    NOTIFYICONDATAW nid{};
+    nid.cbSize      = sizeof(nid);
+    nid.hWnd        = m_hwnd;
+    nid.uID         = TRAY_UID;
+    nid.uFlags      = NIF_INFO;
+    nid.dwInfoFlags = NIIF_WARNING;
+    wcsncpy_s(nid.szInfoTitle, title.c_str(), _TRUNCATE);
+    wcsncpy_s(nid.szInfo,      text.c_str(),  _TRUNCATE);
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+void TrayApp::OpenEventLog() {
+    // Touch the log so the file exists even on a fresh install.
+    EventLog::Write("USER: opened event log");
+    // Open with Notepad explicitly — .log has no guaranteed file association.
+    ShellExecuteW(nullptr, L"open", L"notepad.exe",
+                  EventLog::FilePath().c_str(), nullptr, SW_SHOWNORMAL);
+}
+
 void TrayApp::ShowViGEmBalloon() {
     NOTIFYICONDATAW nid{};
     nid.cbSize           = sizeof(nid);
@@ -208,7 +465,7 @@ static constexpr wchar_t REG_KEY[]     = L"Software\\SteamlessController";
 static constexpr wchar_t REG_RUN_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 static constexpr wchar_t APP_NAME[]    = L"SteamlessController";
 
-bool TrayApp::IsStartupEnabled() const {
+bool TrayApp::RunKeyExists() const {
     HKEY key;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_RUN_KEY, 0, KEY_READ, &key) != ERROR_SUCCESS)
         return false;
@@ -217,7 +474,7 @@ bool TrayApp::IsStartupEnabled() const {
     return exists;
 }
 
-void TrayApp::SetStartupEnabled(bool enabled) {
+void TrayApp::SetRunKey(bool enabled) {
     HKEY key;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_RUN_KEY, 0, KEY_WRITE, &key) != ERROR_SUCCESS)
         return;
@@ -235,6 +492,69 @@ void TrayApp::SetStartupEnabled(bool enabled) {
     RegCloseKey(key);
 }
 
+bool TrayApp::IsProcessElevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        return false;
+    TOKEN_ELEVATION elev{};
+    DWORD size = sizeof(elev);
+    const bool ok = GetTokenInformation(token, TokenElevation, &elev, sizeof(elev), &size) != 0;
+    CloseHandle(token);
+    return ok && elev.TokenIsElevated != 0;
+}
+
+bool TrayApp::EnsureCycleTaskRegistered() {
+    // Already registered? (The installer normally does this.)
+    {
+        std::wstring query = L"schtasks.exe /Query /TN \"";
+        query += CYCLE_TASK_NAME;
+        query += L"\"";
+        if (RunToolHidden(std::move(query))) return true;
+    }
+
+    // One-time UAC prompt: the helper registers its own on-demand task.
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize       = sizeof(sei);
+    sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
+    const std::wstring helper = HelperPath();
+    sei.lpVerb       = L"runas";
+    sei.lpFile       = helper.c_str();
+    sei.lpParameters = L"--register";
+    sei.nShow        = SW_HIDE;
+    if (!ShellExecuteExW(&sei) || !sei.hProcess) {
+        // UAC declined — in-game mode degrades: we can't cycle the device
+        // away from a running Steam, but takeover when Steam exits still works.
+        ShowElevationBalloon();
+        return false;
+    }
+    WaitForSingleObject(sei.hProcess, 30000);
+    DWORD code = 1;
+    GetExitCodeProcess(sei.hProcess, &code);
+    CloseHandle(sei.hProcess);
+    if (code != 0) ShowElevationBalloon();
+    return code == 0;
+}
+
+void TrayApp::DeleteLegacyStartupTask() {
+    // A pre-release build registered an elevated logon task for the tray app
+    // itself; running elevated at logon resurrects the UIPI cursor-freeze
+    // bug, so remove it best-effort (also done by the helper's --register).
+    std::wstring cmd = L"schtasks.exe /Delete /F /TN \"";
+    cmd += LEGACY_STARTUP_TASK_NAME;
+    cmd += L"\"";
+    RunToolHidden(std::move(cmd));
+}
+
+void TrayApp::UpdateStartupRegistration() {
+    // Startup always uses the HKCU Run key — the tray app never runs
+    // elevated, so the Run key works unconditionally.
+    if (m_startupMechanism == 2) DeleteLegacyStartupTask();
+    const int desired = m_startupEnabled ? 1 : 0;
+    SetRunKey(desired == 1);
+    m_startupMechanism = desired;
+    SaveSettings();
+}
+
 void TrayApp::LoadSettings() {
     HKEY key;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_KEY, 0, KEY_READ, &key) != ERROR_SUCCESS)
@@ -248,6 +568,11 @@ void TrayApp::LoadSettings() {
         return def;
     };
 
+    // 0 = Manual, 1 = OffWhileSteam, 2 = OffOnlyInGame (old builds stored 0/1).
+    const DWORD mode = readDw(L"AutoSteamMode", 0);
+    m_autoMode = mode == 2 ? AutoMode::OffOnlyInGame
+               : mode == 1 ? AutoMode::OffWhileSteam
+                           : AutoMode::Manual;
     m_controller->SetTrackpadMouseEnabled(readDw(L"TrackpadMouse",   0) != 0);
     m_controller->SetBackButtonsEnabled  (readDw(L"BackButtons",     0) != 0);
     m_controller->SetUseLeftTrackpad     (readDw(L"UseLeftTrackpad", 0) != 0);
@@ -261,6 +586,14 @@ void TrayApp::LoadSettings() {
     cfg.r4 = static_cast<BackButtonAction>(readDw(L"BackBtnR4", static_cast<DWORD>(BackButtonAction::None)));
     cfg.r5 = static_cast<BackButtonAction>(readDw(L"BackBtnR5", static_cast<DWORD>(BackButtonAction::None)));
     m_controller->SetBackButtonConfig(cfg);
+
+    m_notificationsEnabled = readDw(L"ShowNotifications", 1) != 0;
+
+    // Startup mechanism: 0 none, 1 Run key, 2 elevated task. Migrate installs
+    // that predate the setting by probing the Run key they would have used.
+    m_startupMechanism = static_cast<int>(readDw(L"StartupMechanism",
+                                                 RunKeyExists() ? 1 : 0));
+    m_startupEnabled   = m_startupMechanism != 0;
 
     RegCloseKey(key);
 }
@@ -277,6 +610,9 @@ void TrayApp::SaveSettings() {
                        reinterpret_cast<const BYTE*>(&val), sizeof(val));
     };
 
+    writeDw(L"AutoSteamMode",       static_cast<DWORD>(m_autoMode));
+    writeDw(L"StartupMechanism",    static_cast<DWORD>(m_startupMechanism));
+    writeDw(L"ShowNotifications",   m_notificationsEnabled ? 1 : 0);
     writeDw(L"TrackpadMouse",       m_controller->IsTrackpadMouseEnabled()  ? 1 : 0);
     writeDw(L"BackButtons",         m_controller->IsBackButtonsEnabled()    ? 1 : 0);
     writeDw(L"UseLeftTrackpad",     m_controller->IsUseLeftTrackpad()       ? 1 : 0);
@@ -297,13 +633,31 @@ void TrayApp::ShowContextMenu() {
     bool trackpadOn   = m_controller->IsTrackpadMouseEnabled();
     bool backMouseOn  = m_controller->IsBackButtonsEnabled();
     bool leftPad      = m_controller->IsUseLeftTrackpad();
-    bool startupOn    = IsStartupEnabled();
+    bool startupOn    = m_startupEnabled;
 
     HMENU menu = CreatePopupMenu();
 
-    UINT toggleFlags = MF_STRING | (connected ? MF_ENABLED : MF_GRAYED);
-    AppendMenuW(menu, toggleFlags, IDM_TOGGLE,
-                gameModeOn ? L"Disable Steamless Mode" : L"Enable Steamless Mode");
+    // Manual toggle is disabled while an auto mode owns the decision — when
+    // grayed, the label itself says why.
+    const bool manual = (m_autoMode == AutoMode::Manual);
+    std::wstring toggleLabel = gameModeOn ? L"Disable Steamless Mode"
+                                          : L"Enable Steamless Mode";
+    if (!connected)
+        toggleLabel += L" (no controller detected)";
+    else if (!manual)
+        toggleLabel += L" (managed by Auto Mode)";
+    UINT toggleFlags = MF_STRING | ((connected && manual) ? MF_ENABLED : MF_GRAYED);
+    AppendMenuW(menu, toggleFlags, IDM_TOGGLE, toggleLabel.c_str());
+
+    HMENU modeMenu = CreatePopupMenu();
+    AppendMenuW(modeMenu, MF_STRING | (manual ? MF_CHECKED : MF_UNCHECKED),
+                IDM_MODE_MANUAL, L"Manual");
+    AppendMenuW(modeMenu, MF_STRING | (m_autoMode == AutoMode::OffWhileSteam ? MF_CHECKED : MF_UNCHECKED),
+                IDM_MODE_STEAM, L"Auto - Off while Steam running");
+    AppendMenuW(modeMenu, MF_STRING | (m_autoMode == AutoMode::OffOnlyInGame ? MF_CHECKED : MF_UNCHECKED),
+                IDM_MODE_GAME, L"Auto - Off ONLY while in Steam game");
+    AppendMenuW(menu, MF_STRING | MF_POPUP,
+                reinterpret_cast<UINT_PTR>(modeMenu), L"Control Mode");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
@@ -335,6 +689,9 @@ void TrayApp::ShowContextMenu() {
                 IDM_STARTUP, L"Start with Windows");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, IDM_OPENLOG, L"Open Event Log");
+    AppendMenuW(menu, MF_STRING | (m_notificationsEnabled ? MF_CHECKED : MF_UNCHECKED),
+                IDM_NOTIFICATIONS, L"Disconnect Notifications");
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"Exit");
 
     // SetForegroundWindow is required for the menu to dismiss on click-away.
