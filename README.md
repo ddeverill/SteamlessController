@@ -8,10 +8,12 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 
 ## Features
 
-- **NEW** - Rumble Support v2.0
-- **NEW** - Support for multiple Steam Controllers! Long live split screen!
-- **NEW** - New shiny UI for remapping L4/L5 R4/L5 back buttons!
-- **NEW** - Support for Xbox OR PlayStation controllers - with PS Touchpad and Gyro plumbing.
+- **NEW in 1.8** - Automatically enable/disable based on if Steam is running, or a Steam game is running!
+- **NEW in 1.8** - Advanced debugging and local logging to help diagnose issues
+- Rumble Support v2.0
+- Support for multiple Steam Controllers! Long live split screen!
+- New shiny UI for remapping L4/L5 R4/L5 back buttons!
+- Support for Xbox OR PlayStation controllers - with PS Touchpad and Gyro plumbing.
 - System tray icon shows connection and mode status
 - **Steamless Mode** — disables lizard mode and exposes controller as Xbox 360 gamepad
 - **Trackpad Mouse** — use the right (or left) trackpad as a mouse cursor
@@ -19,9 +21,8 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 - **Use Left Trackpad Instead** — mirror all trackpad/back-button functionality to the left side for left-handed users
 - **Start with Windows** — launch automatically at login
 - Settings persist across restarts
-- Single-instance guard — safe to leave running
 
-<img width="472" height="405" alt="image" src="https://github.com/user-attachments/assets/0a07c3a6-8ad6-46a0-8001-d60deec0cece" />
+<img width="614" height="430" alt="image" src="https://github.com/user-attachments/assets/a8077a20-fd6b-4e1a-a3ea-ccd288a176c6" />
 
 <img width="757" height="663" alt="image" src="https://github.com/user-attachments/assets/9a53b632-82b6-4485-93b0-1238c2ec6a07" />
 
