@@ -3,7 +3,7 @@
 ; Non-commercial use only
 
 #define MyAppName "SteamlessController"
-#define MyAppVersion "1.7"
+#define MyAppVersion "1.8"
 #define ViGEmSetup "ViGEmBus_1.22.0_x64_x86_arm64.exe"
 #define MyAppPublisher "Dylan Deverill"
 #define MyAppURL "https://github.com/ddeverill/SteamlessController"
@@ -47,6 +47,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "build\release\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "build\release\Release\SteamlessDeviceCycle.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "resources\{#ViGEmSetup}"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
@@ -56,5 +57,11 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 ; ViGEmBus uses MSI-style silent switches; /install is rejected by the 1.22.0 bootstrapper.
 Filename: "{tmp}\{#ViGEmSetup}"; Parameters: "/qn /norestart"; StatusMsg: "Installing ViGEmBus driver..."; Flags: waituntilterminated
+; Register the elevated on-demand device-cycle task while the installer is
+; already elevated, so users never see a UAC prompt from the app itself.
+Filename: "{app}\SteamlessDeviceCycle.exe"; Parameters: "--register"; StatusMsg: "Registering controller helper task..."; Flags: waituntilterminated runhidden
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{app}\SteamlessDeviceCycle.exe"; Parameters: "--unregister"; RunOnceId: "RemoveCycleTask"; Flags: waituntilterminated runhidden
 

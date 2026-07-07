@@ -11,6 +11,9 @@
 class ControllerManager {
 public:
     using StateChangedFn = std::function<void(bool connected, bool gameModeActive, bool vigemMissing)>;
+    // User-facing alert (unexpected disconnect, stall). May fire from a read
+    // thread — the receiver must marshal to its own thread (e.g. PostMessage).
+    using AlertFn = std::function<void(const std::wstring& title, const std::wstring& text)>;
 
     explicit ControllerManager(StateChangedFn onStateChanged);
     ~ControllerManager();
@@ -19,11 +22,21 @@ public:
 
     void OnDeviceChange();
 
+    // Set once right after construction, before any game mode is enabled —
+    // read loops copy it without locking.
+    void SetAlertCallback(AlertFn fn) { m_alertFn = std::move(fn); }
+
     void EnableGameMode();
     void DisableGameMode();
     // Disables game mode then closes all device handles so another process
     // (e.g. Steam) can claim the controller. Safe to call when already disabled.
     void ReleaseDevices();
+
+    // Best-effort lizard restore for crash paths — called from the unhandled-
+    // exception filter installed by the constructor. Takes no locks and joins
+    // no threads. The firmware's own revert timeout remains the final
+    // fallback if this fails or the process dies harder than a C++ exception.
+    void EmergencyRestoreAll() noexcept;
 
     void SetTrackpadMouseEnabled(bool enabled);
     void SetUseLeftTrackpad(bool enabled);
@@ -57,6 +70,7 @@ private:
     void NotifyStateChanged(bool vigemMissing = false);
 
     StateChangedFn                     m_onStateChanged;
+    AlertFn                            m_alertFn;
     std::vector<std::unique_ptr<Slot>> m_slots;
     bool                               m_trackpadMouseEnabled = false;
     bool                               m_useLeftTrackpad      = false;

@@ -184,6 +184,14 @@ public:
     // every couple of seconds while game mode is active, like hid-steam does.
     bool SendKeepalive();
 
+    // Crash-context lizard restore: sends the default-mappings and
+    // default-settings feature reports WITHOUT taking locks or joining
+    // threads, so it is safe from an unhandled-exception filter where another
+    // thread may hold m_writeMutex forever. Racing a concurrent writer is
+    // acceptable — if this write is lost, the firmware's own revert timeout
+    // restores lizard mode a few seconds after the process dies.
+    void EmergencyLizardRestore() noexcept;
+
     // Fire a single haptic event on one trackpad.
     // strongClick = true → physical-click sensation; false → light touch-down tick.
     void PulseTrackpadHaptic(bool left, bool strongClick);
