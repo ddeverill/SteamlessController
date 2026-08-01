@@ -54,7 +54,8 @@ static constexpr uint8_t HAPTIC_COMMAND_CLICK = 2;
 std::vector<std::wstring> SteamController::EnumerateAll() {
     std::vector<std::wstring> result;
     for (uint16_t pid : { SC2026_PID, SC2026_DONGLE_PID })
-        for (auto const& path : HidDevice::Enumerate(VALVE_VID, pid, VENDOR_USAGE_PAGE))
+        for (auto const& path : HidDevice::Enumerate(
+                 VALVE_VID, pid, VENDOR_USAGE_PAGE, CONTROLLER_USAGE))
             result.push_back(path);
     return result;
 }
@@ -66,7 +67,20 @@ bool SteamController::Open() {
                SC2026_PID, SC2026_DONGLE_PID);
         return false;
     }
-    return Open(paths[0]);
+
+    for (auto const& path : paths) {
+        if (!Open(path)) continue;
+
+        uint8_t report[64]{};
+        const size_t n = ReadReport(report, sizeof(report), 500);
+        if (n > 0 && IsStateReportId(report[0]))
+            return true;
+
+        Close();
+    }
+
+    printf("No active Steam Controller slot is producing state reports.\n");
+    return false;
 }
 
 bool SteamController::Open(const std::wstring& path) {
@@ -83,20 +97,41 @@ void SteamController::Close() {
     m_device.Close();
 }
 
+bool SteamController::WaitForStateReport(uint32_t timeoutMs) {
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds(timeoutMs);
+    uint8_t report[64]{};
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        const auto waitMs = static_cast<uint32_t>(std::max<int64_t>(1, remaining.count()));
+        const size_t n = ReadReport(report, sizeof(report), waitMs);
+        if (n > 0 && IsStateReportId(report[0]))
+            return true;
+    }
+
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 // Exclusive access control
 // ---------------------------------------------------------------------------
 
-bool SteamController::ClaimExclusive() {
+SteamController::AccessClaim SteamController::ClaimGameModeAccess() {
     // The read thread must already be stopped before calling Reopen — the
     // caller (EnableGameModeSlot) calls this before starting the read loop.
     if (m_device.Reopen(FILE_SHARE_READ))
-        return true;
-    // Another process (Steam) holds a write handle. Reopen already closed our
-    // old handle, so restore shared access — otherwise the device would be
-    // left closed and unusable for idle tracking and later retries.
-    m_device.Reopen(FILE_SHARE_READ | FILE_SHARE_WRITE);
-    return false;
+        return AccessClaim::Exclusive;
+
+    // Windows components and controller utilities may keep a compatible write
+    // handle open even when Steam is not running. Shared access is sufficient
+    // for feature reports and raw input, so retain the working pre-v1.8 behavior
+    // instead of rejecting game mode solely because exclusivity is unavailable.
+    if (m_device.Reopen(FILE_SHARE_READ | FILE_SHARE_WRITE))
+        return AccessClaim::Shared;
+
+    return AccessClaim::Failed;
 }
 
 void SteamController::ReleaseToShared() {

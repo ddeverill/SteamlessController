@@ -69,10 +69,18 @@ static void RunCalibration(SteamController& ctrl) {
 
     // Apply force-show overrides before marking axes.
     auto forceShow = [](size_t i) -> bool {
-        if (FORCE_SHOW_BYTES_10_11 && (i == 10 || i == 11)) return true;
-        if (FORCE_SHOW_BYTES_12_13 && (i == 12 || i == 13)) return true;
-        if (FORCE_SHOW_BYTES_14_15 && (i == 14 || i == 15)) return true;
-        if (FORCE_SHOW_BYTES_16_17 && (i == 16 || i == 17)) return true;
+        if constexpr (FORCE_SHOW_BYTES_10_11) {
+            if (i == 10 || i == 11) return true;
+        }
+        if constexpr (FORCE_SHOW_BYTES_12_13) {
+            if (i == 12 || i == 13) return true;
+        }
+        if constexpr (FORCE_SHOW_BYTES_14_15) {
+            if (i == 14 || i == 15) return true;
+        }
+        if constexpr (FORCE_SHOW_BYTES_16_17) {
+            if (i == 16 || i == 17) return true;
+        }
         return false;
     };
 
@@ -147,24 +155,53 @@ static void EnumerateAllValveDevices() {
         HidD_GetProductString(h, productBuf, sizeof(productBuf));
 
         uint16_t usagePage = 0, usage = 0;
+        uint16_t inputLen = 0, outputLen = 0, featureLen = 0;
         PHIDP_PREPARSED_DATA preparsed;
         if (HidD_GetPreparsedData(h, &preparsed)) {
             HIDP_CAPS caps{};
             if (HidP_GetCaps(preparsed, &caps) == HIDP_STATUS_SUCCESS) {
                 usagePage = caps.UsagePage;
                 usage     = caps.Usage;
+                inputLen  = caps.InputReportByteLength;
+                outputLen = caps.OutputReportByteLength;
+                featureLen = caps.FeatureReportByteLength;
             }
             HidD_FreePreparsedData(preparsed);
         }
 
-        printf("  PID=%04X  UsagePage=%04X  Usage=%04X  \"%ls\"\n",
-               attrs.ProductID, usagePage, usage, productBuf);
         CloseHandle(h);
+
+        HANDLE exclusive = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                       FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                       FILE_FLAG_OVERLAPPED, nullptr);
+        DWORD exclusiveError = exclusive == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+        if (exclusive != INVALID_HANDLE_VALUE) CloseHandle(exclusive);
+
+        size_t reportLen = 0;
+        uint8_t reportId = 0;
+        if (usagePage == SteamController::VENDOR_USAGE_PAGE
+                && usage == SteamController::CONTROLLER_USAGE) {
+            HidDevice inputDevice;
+            if (inputDevice.Open(path)) {
+                uint8_t report[64]{};
+                reportLen = inputDevice.ReadInputReport(report, sizeof(report), 250);
+                if (reportLen > 0) reportId = report[0];
+            }
+        }
+
+        printf("  PID=%04X  UsagePage=%04X  Usage=%04X  In=%u Out=%u Feature=%u  Exclusive=%s",
+               attrs.ProductID, usagePage, usage, inputLen, outputLen, featureLen,
+               exclusiveError == ERROR_SUCCESS ? "yes" : "no");
+        if (exclusiveError != ERROR_SUCCESS)
+            printf(" (error %lu)", exclusiveError);
+        if (reportLen > 0)
+            printf("  LiveReport=0x%02X/%zu", reportId, reportLen);
+        printf("  \"%ls\"\n    %ls\n", productBuf, path.c_str());
     }
     printf("\n");
 }
 
-int main() {
+int main(int argc, char** argv) {
     signal(SIGINT,  OnSignal);
     signal(SIGTERM, OnSignal);
 
@@ -172,6 +209,9 @@ int main() {
     printf("NOTE: Close Steam before running this tool.\n\n");
 
     EnumerateAllValveDevices();
+
+    if (argc > 1 && strcmp(argv[1], "--enumerate-only") == 0)
+        return 0;
 
     SteamController controller;
     g_controller = &controller;

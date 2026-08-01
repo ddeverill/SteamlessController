@@ -346,11 +346,18 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 
 void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
     if (slot.gameModeActive) return;
-    if (!slot.sc->ClaimExclusive()) {
-        EventLog::Write("GAMEMODE: exclusive claim failed (another process holds a write handle) %ls",
-                        slot.path.c_str());
+    if (!slot.sc->WaitForStateReport(250)) {
+        EventLog::Write("GAMEMODE: inactive puck slot skipped %ls", slot.path.c_str());
         return;
     }
+    const auto claim = slot.sc->ClaimGameModeAccess();
+    if (claim == SteamController::AccessClaim::Failed) {
+        EventLog::Write("GAMEMODE: device reopen failed %ls", slot.path.c_str());
+        return;
+    }
+    if (claim == SteamController::AccessClaim::Shared)
+        EventLog::Write("GAMEMODE: exclusive claim unavailable; using shared access %ls",
+                        slot.path.c_str());
     if (!slot.sc->DisableLizardMode()) {
         EventLog::Write("GAMEMODE: DisableLizardMode failed %ls", slot.path.c_str());
         slot.sc->ReleaseToShared();
