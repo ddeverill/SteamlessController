@@ -46,8 +46,12 @@ static bool RunToolHidden(std::wstring cmdline) {
 
 static int CycleDevices() {
     bool any = false;
+    // Bluetooth interfaces are skipped: restarting a BLE devnode is not a
+    // replug — it can wedge the pairing, and it cannot free another
+    // process's handle the way a USB re-enumeration does.
     for (const auto& path : SteamController::EnumerateAll())
-        if (DeviceRestart::RestartInterfaceDevice(path))
+        if (SteamController::TransportFromPath(path) != SteamController::Transport::Bluetooth
+                && DeviceRestart::RestartInterfaceDevice(path))
             any = true;
     return any ? 0 : 1;
 }

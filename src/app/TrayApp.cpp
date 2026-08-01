@@ -340,11 +340,14 @@ void TrayApp::TryAcquireController() {
 }
 
 bool TrayApp::RestartControllerDevices() {
-    // On the rare elevated run, cycle directly.
+    // On the rare elevated run, cycle directly. Bluetooth interfaces are
+    // skipped: restarting a BLE devnode is not a replug — it can wedge the
+    // pairing, and Windows re-arrival semantics differ from USB.
     if (IsProcessElevated()) {
         bool anyRestarted = false;
         for (const auto& path : SteamController::EnumerateAll())
-            if (DeviceRestart::RestartInterfaceDevice(path))
+            if (SteamController::TransportFromPath(path) != SteamController::Transport::Bluetooth
+                    && DeviceRestart::RestartInterfaceDevice(path))
                 anyRestarted = true;
         return anyRestarted;
     }
