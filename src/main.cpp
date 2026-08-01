@@ -24,26 +24,12 @@ static void OnSignal(int) {
 }
 
 // ---------------------------------------------------------------------------
-// Transport identification — inferred from the device interface path.
-// USB paths contain "usb", classic Bluetooth "bthenum", and BLE (HID over
-// GATT) "bthledevice" or the HOGP service UUID.
+// Transport identification — shared with the app (path markers + PID tokens;
+// wired HID paths don't contain "usb", so a plain substring test mislabels them).
 // ---------------------------------------------------------------------------
 
-static std::wstring ToLower(std::wstring s) {
-    for (auto& c : s) c = static_cast<wchar_t>(::towlower(c));
-    return s;
-}
-
 static const char* GuessTransport(const std::wstring& rawPath) {
-    const std::wstring p = ToLower(rawPath);
-    if (p.find(L"bthledevice") != std::wstring::npos ||
-        p.find(L"{00001812-0000-1000-8000-00805f9b34fb}") != std::wstring::npos)
-        return "Bluetooth LE";
-    if (p.find(L"bthenum") != std::wstring::npos)
-        return "Bluetooth Classic";
-    if (p.find(L"usb") != std::wstring::npos)
-        return "USB";
-    return "unknown";
+    return SteamController::TransportName(SteamController::TransportFromPath(rawPath));
 }
 
 // ---------------------------------------------------------------------------
