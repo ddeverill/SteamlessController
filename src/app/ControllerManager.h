@@ -46,11 +46,6 @@ public:
 
     bool IsConnected()              const { return !m_slots.empty(); }
     bool IsGameModeActive()         const;
-    // True when at least one connected controller is on a transport whose
-    // device node can be restarted to invalidate another process's handle
-    // (wired or dongle). Bluetooth links cannot be cycled, so callers must
-    // not escalate to a device cycle when this returns false.
-    bool HasCyclableDevice()        const;
     bool IsTrackpadMouseEnabled()   const { return m_trackpadMouseEnabled; }
     bool IsUseLeftTrackpad()        const { return m_useLeftTrackpad; }
     bool IsBackButtonsEnabled()     const { return m_backButtonsEnabled; }

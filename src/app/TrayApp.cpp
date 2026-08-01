@@ -309,18 +309,13 @@ void TrayApp::TryAcquireController() {
     m_controller->OnDeviceChange();
     m_controller->EnableGameMode();
 
-    // The rapid burst below is only meaningful as a race against Steam's
-    // re-enumeration immediately after a device cycle. Bluetooth has no cycle
-    // to race, and a claim attempt there can block this thread — the UI
-    // thread — for seconds inside a feature-report timeout, so repeating it
-    // eleven times leaves the tray menu unresponsive for half a minute.
-    const bool cyclable = m_controller->HasCyclableDevice();
-    if (cyclable) {
-        for (int i = 0; i < 10 && !m_controller->IsGameModeActive(); ++i) {
-            Sleep(50);
-            m_controller->OnDeviceChange();
-            m_controller->EnableGameMode();
-        }
+    // A short burst of rapid retries: right after a device cycle we race
+    // Steam's re-enumeration for the exclusive open, and starting the claim
+    // the instant the device arrives is what wins that race.
+    for (int i = 0; i < 10 && !m_controller->IsGameModeActive(); ++i) {
+        Sleep(50);
+        m_controller->OnDeviceChange();
+        m_controller->EnableGameMode();
     }
     if (m_controller->IsGameModeActive()) {
         m_acquireRetries = 0;
@@ -328,35 +323,16 @@ void TrayApp::TryAcquireController() {
     }
     if (!m_controller->IsConnected()) return;  // nothing plugged in — arrival will retrigger
 
-    if (!cyclable) {
-        // Bluetooth: nothing can pry the device away from Steam, so the only
-        // way in is for Steam to release it. A few slow polls cover the
-        // handoff race right after a game exits; beyond that, waiting for the
-        // next Steam state transition is both sufficient and cheaper. Crucially
-        // we never release/reopen the handles between polls — that churn is
-        // what previously left the BLE link timing out on every feature write.
-        if (m_acquireRetries >= MAX_ACQUIRE_POLLS) {
-            EventLog::Write("AUTO: Steam still holds the Bluetooth controller after %d polls "
-                            "— waiting for the next Steam state change", MAX_ACQUIRE_POLLS);
-            if (m_notificationsEnabled)
-                ShowAlertBalloon(L"Steam has the controller",
-                                 L"Steam is holding the controller and it cannot be reclaimed "
-                                 L"over Bluetooth while Steam has it. Close Steam to hand it "
-                                 L"back, or use a cable or the dongle instead.");
-            return;
-        }
-        ++m_acquireRetries;
-        EventLog::Write("AUTO: exclusive claim blocked on Bluetooth — polling (attempt %d)",
-                        m_acquireRetries);
-        SetTimer(m_hwnd, IDT_ACQUIRE, ACQUIRE_POLL_MS, nullptr);
-        return;
-    }
-
     // Steam holds a write handle, so our exclusive claim can't succeed while
     // its handle lives. Cycle the device to invalidate it and retry on
     // re-arrival (the timer is a fallback in case the arrival event is missed).
     if (m_acquireRetries >= MAX_ACQUIRE_CYCLES) {
         EventLog::Write("AUTO: giving up acquiring after %d device cycles", MAX_ACQUIRE_CYCLES);
+        // Don't leave the user with a silently dead pad and no explanation.
+        if (m_notificationsEnabled)
+            ShowAlertBalloon(L"Could not take the controller",
+                             L"Steam is holding the controller and did not release it. "
+                             L"Closing Steam will hand it back.");
         return;
     }
     ++m_acquireRetries;
@@ -369,14 +345,14 @@ void TrayApp::TryAcquireController() {
 }
 
 bool TrayApp::RestartControllerDevices() {
-    // On the rare elevated run, cycle directly. Bluetooth interfaces are
-    // skipped: restarting a BLE devnode is not a replug — it can wedge the
-    // pairing, and Windows re-arrival semantics differ from USB.
+    // On the rare elevated run, cycle directly. This works on every transport
+    // including Bluetooth: the devnode being restarted is the HID child, not
+    // the pairing (which lives up at the BTHLEDEVICE layer), and it
+    // re-enumerates as fast as a USB replug.
     if (IsProcessElevated()) {
         bool anyRestarted = false;
         for (const auto& path : SteamController::EnumerateAll())
-            if (SteamController::TransportFromPath(path) != SteamController::Transport::Bluetooth
-                    && DeviceRestart::RestartInterfaceDevice(path))
+            if (DeviceRestart::RestartInterfaceDevice(path))
                 anyRestarted = true;
         return anyRestarted;
     }
