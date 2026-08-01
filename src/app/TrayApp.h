@@ -98,4 +98,10 @@ private:
     static constexpr UINT TRAY_UID          = 1;
     static constexpr UINT_PTR IDT_ACQUIRE   = 1;
     static constexpr int  MAX_ACQUIRE_CYCLES = 3;
+    // Bluetooth cannot be cycled, so the acquire path polls for Steam to let
+    // go instead. Kept short: Steam releases either within the handoff race
+    // after a game exits, or not until its own state changes (which
+    // retriggers acquisition anyway).
+    static constexpr int  MAX_ACQUIRE_POLLS  = 5;
+    static constexpr UINT ACQUIRE_POLL_MS    = 2000;
 };
