@@ -11,6 +11,7 @@
 #include <cstring>
 #include <memory>
 #include <thread>
+#include <utility>
 
 // ---------------------------------------------------------------------------
 // Slot
@@ -18,6 +19,7 @@
 
 struct ControllerManager::Slot {
     std::wstring                       path;
+    SteamController::Transport         transport = SteamController::Transport::Unknown;
     std::unique_ptr<SteamController>   sc;
     std::unique_ptr<VirtualController> vc;
     TrackpadMouse                      trackpad;
@@ -295,17 +297,25 @@ void ControllerManager::SyncDevices() {
         bool alive = std::any_of(livePaths.begin(), livePaths.end(),
             [&](const auto& p) { return p == (*it)->path; });
         if (!alive) {
-            EventLog::Write("DISCONNECT: OS removed device (gameMode=%d, lastBattery=%d%%) %ls",
+            EventLog::Write("DISCONNECT: OS removed device (transport=%s, gameMode=%d, lastBattery=%d%%) %ls",
+                            SteamController::TransportName((*it)->transport),
                             (*it)->gameModeActive ? 1 : 0,
                             (*it)->lastBatteryPercent, (*it)->path.c_str());
             // Alert only when the controller was in active use; deliberate
             // unplugs while idle (and our own device cycles, which release
             // slots before cycling) stay quiet.
-            if ((*it)->gameModeActive && m_alertFn)
-                m_alertFn(L"Controller disconnected",
-                          L"The USB device was removed. Check the cable or dongle — "
-                          L"if this happens randomly, Windows USB power saving may be "
-                          L"suspending the port.");
+            if ((*it)->gameModeActive && m_alertFn) {
+                if ((*it)->transport == SteamController::Transport::Bluetooth)
+                    m_alertFn(L"Controller disconnected",
+                              L"The Bluetooth connection dropped — the controller "
+                              L"powered off, went to sleep, or is out of range. "
+                              L"Press the Steam button to reconnect.");
+                else
+                    m_alertFn(L"Controller disconnected",
+                              L"The USB device was removed. Check the cable or dongle — "
+                              L"if this happens randomly, Windows USB power saving may be "
+                              L"suspending the port.");
+            }
             DisableGameModeSlot(**it);
             it = m_slots.erase(it);
         } else {
@@ -325,9 +335,13 @@ void ControllerManager::SyncDevices() {
 
 void ControllerManager::OpenSlot(const std::wstring& path) {
     auto slot = std::make_unique<Slot>();
-    slot->path = path;
-    slot->sc   = std::make_unique<SteamController>();
+    slot->path      = path;
+    slot->transport = SteamController::TransportFromPath(path);
+    slot->sc        = std::make_unique<SteamController>();
     if (!slot->sc->Open(path)) return;
+
+    EventLog::Write("CONNECT: transport=%s %ls",
+                    SteamController::TransportName(slot->transport), path.c_str());
 
     m_slots.push_back(std::move(slot));
 
@@ -486,11 +500,19 @@ void ControllerManager::ReadLoop(Slot* slot) {
         // Battery status — update DS4 battery level; no further processing needed.
         if (buf[0] == SteamController::REPORT_BATTERY_STATUS) {
             if (n >= 3) {
+                // USB/dongle payload order is [percent, chargeState]; over
+                // Bluetooth the firmware sends the same two bytes swapped —
+                // observed BT reports held a constant 1 (CHARGE_STATE_DISCHARGING)
+                // in buf[1] while buf[2] tracked the real charge level.
+                uint8_t percent     = buf[1];
+                uint8_t chargeState = buf[2];
+                if (slot->transport == SteamController::Transport::Bluetooth)
+                    std::swap(percent, chargeState);
                 if (slot->vc)
-                    slot->vc->SetBatteryState(buf[1], buf[2]);
-                if (slot->lastBatteryPercent != static_cast<int>(buf[1])) {
-                    EventLog::Write("BATTERY: %u%% (chargeState=%u)", buf[1], buf[2]);
-                    slot->lastBatteryPercent = static_cast<int>(buf[1]);
+                    slot->vc->SetBatteryState(percent, chargeState);
+                if (slot->lastBatteryPercent != static_cast<int>(percent)) {
+                    EventLog::Write("BATTERY: %u%% (chargeState=%u)", percent, chargeState);
+                    slot->lastBatteryPercent = static_cast<int>(percent);
                 }
             }
             continue;

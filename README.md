@@ -8,6 +8,7 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 
 ## Features
 
+- **NEW in 1.9** - Bluetooth! Use the controller wired, through the dongle, or paired over Bluetooth LE
 - **NEW in 1.8** - Automatically enable/disable based on if Steam is running, or a Steam game is running!
 - **NEW in 1.8** - Advanced debugging and local logging to help diagnose issues
 - Rumble Support v2.0
@@ -31,7 +32,7 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 ### To run
 - Windows 10 or later (64-bit)
 - [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases/latest) driver installed
-- Steam Controller (VID `0x28DE` / PID `0x1302`)
+- Steam Controller — wired USB (PID `0x1302`), wireless dongle (PID `0x1304`), or Bluetooth LE (PID `0x1303`, pair via Windows Bluetooth settings)
 - Steam **closed** (Steam claims the controller when running)
 
 ### To build

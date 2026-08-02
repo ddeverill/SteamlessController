@@ -18,9 +18,38 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <cstdarg>
+#include <cstdio>
 #include <string>
 #include "app/DeviceRestart.h"
 #include "steam/SteamController.h"
+
+// The helper runs windowless from Task Scheduler, so a failed cycle is
+// otherwise completely silent. It cannot share the tray app's events.log —
+// that is held open with _SH_DENYWR — so it keeps its own next to it.
+static void CycleLog(const char* fmt, ...) {
+    wchar_t local[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH)) return;
+    const std::wstring dir  = std::wstring(local) + L"\\SteamlessController";
+    CreateDirectoryW(dir.c_str(), nullptr);
+
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, (dir + L"\\cycle.log").c_str(), L"a") != 0 || !f) return;
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    fprintf(f, "%04u-%02u-%02u %02u:%02u:%02u.%03u  ",
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+            st.wMilliseconds);
+
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+
+    fputc('\n', f);
+    fclose(f);
+}
 
 static constexpr wchar_t CYCLE_TASK_NAME[] = L"SteamlessControllerDeviceCycle";
 // Startup task name used briefly by a pre-release build that ran the tray app
@@ -46,9 +75,22 @@ static bool RunToolHidden(std::wstring cmdline) {
 
 static int CycleDevices() {
     bool any = false;
-    for (const auto& path : SteamController::EnumerateAll())
-        if (DeviceRestart::RestartInterfaceDevice(path))
-            any = true;
+    const auto paths = SteamController::EnumerateAll();
+    CycleLog("START: %zu interface(s) to cycle", paths.size());
+
+    for (const auto& path : paths) {
+        DWORD err = ERROR_SUCCESS;
+        const bool ok = DeviceRestart::RestartInterfaceDevice(path, &err);
+        // err is only non-zero on the disable-refused fallback path, so
+        // ok=true with err set means the cycle silently did nothing.
+        CycleLog("%s (transport=%s err=%lu) %ls",
+                 ok ? (err == ERROR_SUCCESS ? "CYCLED" : "FELL BACK TO RESTART") : "FAILED",
+                 SteamController::TransportName(SteamController::TransportFromPath(path)),
+                 err, path.c_str());
+        if (ok) any = true;
+    }
+
+    CycleLog("DONE: exit=%d", any ? 0 : 1);
     return any ? 0 : 1;
 }
 

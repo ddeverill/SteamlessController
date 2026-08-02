@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cwctype>
 
 // ---------------------------------------------------------------------------
 // Internal helper: build a 64-byte feature report command buffer.
@@ -53,11 +54,39 @@ static constexpr uint8_t HAPTIC_COMMAND_CLICK = 2;
 
 std::vector<std::wstring> SteamController::EnumerateAll() {
     std::vector<std::wstring> result;
-    for (uint16_t pid : { SC2026_PID, SC2026_DONGLE_PID })
+    for (uint16_t pid : { SC2026_PID, SC2026_BT_PID, SC2026_DONGLE_PID })
         for (auto const& path : HidDevice::Enumerate(
                  VALVE_VID, pid, VENDOR_USAGE_PAGE, CONTROLLER_USAGE))
             result.push_back(path);
     return result;
+}
+
+SteamController::Transport SteamController::TransportFromPath(const std::wstring& path) {
+    std::wstring p = path;
+    for (auto& c : p) c = static_cast<wchar_t>(towlower(c));
+
+    // BLE (HID over GATT) paths carry the HOGP service GUID; classic
+    // Bluetooth HID enumerates under bthenum. Check these before PID — the
+    // BT path also embeds a PID token, and transport must win.
+    if (p.find(L"{00001812-0000-1000-8000-00805f9b34fb}") != std::wstring::npos ||
+        p.find(L"bthledevice") != std::wstring::npos ||
+        p.find(L"bthenum") != std::wstring::npos)
+        return Transport::Bluetooth;
+    if (p.find(L"pid_1304") != std::wstring::npos)
+        return Transport::Dongle;
+    if (p.find(L"pid_1302") != std::wstring::npos ||
+        p.find(L"pid_1303") != std::wstring::npos)
+        return Transport::Wired;
+    return Transport::Unknown;
+}
+
+const char* SteamController::TransportName(Transport t) {
+    switch (t) {
+        case Transport::Wired:     return "wired";
+        case Transport::Dongle:    return "dongle";
+        case Transport::Bluetooth: return "bluetooth";
+        default:                   return "unknown";
+    }
 }
 
 bool SteamController::Open() {

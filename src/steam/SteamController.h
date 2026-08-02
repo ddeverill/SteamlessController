@@ -10,7 +10,14 @@ class SteamController {
 public:
     static constexpr uint16_t VALVE_VID        = 0x28DE;
     static constexpr uint16_t SC2026_PID       = 0x1302;  // wired USB
+    static constexpr uint16_t SC2026_BT_PID    = 0x1303;  // Bluetooth LE (HID over GATT)
     static constexpr uint16_t SC2026_DONGLE_PID = 0x1304; // wireless dongle ("Steam Controller Puck")
+
+    // How the controller is linked to the PC. Bluetooth is detected from the
+    // device interface path (HOGP service GUID / bthenum), the other two by PID.
+    enum class Transport { Unknown, Wired, Dongle, Bluetooth };
+    static Transport   TransportFromPath(const std::wstring& path);
+    static const char* TransportName(Transport t);
 
     // HID Usage Page for the vendor collection that carries all game input.
     static constexpr uint16_t VENDOR_USAGE_PAGE = 0xFF00;
