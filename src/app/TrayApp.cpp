@@ -8,6 +8,8 @@
 #include <shellapi.h>
 #include <dbt.h>
 #include <winreg.h>
+#include <cstdio>
+#include <cstring>
 #include <string>
 
 static TrayApp* g_app = nullptr;
@@ -108,6 +110,16 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     UpdateStartupRegistration();
     AddTrayIcon();
     UpdateTrayIcon(m_controller->IsConnected(), m_controller->IsGameModeActive(), false);
+
+    // The in-game mode needs the elevated cycle helper to take the controller
+    // back from a running Steam. Settle that here rather than on first use:
+    // the installer normally registers the task, but when it hasn't (running
+    // from a build folder, or after an uninstall) the only other trigger is
+    // the cycle itself — so the UAC prompt ambushed the user mid-game-launch.
+    // A no-op once the task exists, which is the common case. Must run after
+    // AddTrayIcon, since a declined prompt reports via the tray balloon.
+    if (m_autoMode == AutoMode::OffOnlyInGame)
+        EnsureCycleTaskRegistered();
 
     // Start watching for Steam regardless of auto mode — the state is applied
     // only when auto mode is on, and having it warm makes toggling auto mode
@@ -511,13 +523,76 @@ bool TrayApp::IsProcessElevated() {
     return ok && elev.TokenIsElevated != 0;
 }
 
+// The executable the cycle task is currently registered to run, or empty when
+// the task is missing or unreadable.
+static std::string RegisteredTaskCommand() {
+    wchar_t tempDir[MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, tempDir)) return {};
+    const std::wstring xmlPath = std::wstring(tempDir) + L"SteamlessTaskQuery.xml";
+
+    // Via cmd.exe for the redirect. The XML declares encoding="UTF-16", but
+    // redirected output is single-byte — read it narrow, don't "fix" this.
+    std::wstring cmd = L"cmd.exe /c schtasks.exe /Query /TN \"";
+    cmd += CYCLE_TASK_NAME;
+    cmd += L"\" /XML > \"" + xmlPath + L"\"";
+    const bool queried = RunToolHidden(std::move(cmd));
+
+    std::string xml;
+    if (queried) {
+        if (FILE* f = nullptr; _wfopen_s(&f, xmlPath.c_str(), L"rb") == 0 && f) {
+            char buf[1024];
+            size_t n;
+            while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+                xml.append(buf, n);
+            fclose(f);
+        }
+    }
+    DeleteFileW(xmlPath.c_str());
+    if (xml.empty()) return {};
+
+    const size_t open = xml.find("<Command>");
+    if (open == std::string::npos) return {};
+    const size_t start = open + strlen("<Command>");
+    const size_t close = xml.find("</Command>", start);
+    if (close == std::string::npos) return {};
+
+    std::string cmdPath = xml.substr(start, close - start);
+    const size_t first = cmdPath.find_first_not_of(" \t\r\n");
+    const size_t last  = cmdPath.find_last_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    return cmdPath.substr(first, last - first + 1);
+}
+
+// True when the registered command is this build's helper. Compared against
+// both codepage renderings of our path, since which one the console redirect
+// used is not worth guessing at.
+static bool RegisteredCommandMatches(const std::string& registered,
+                                     const std::wstring& helper) {
+    if (registered.empty()) return false;
+    for (UINT cp : { CP_ACP, CP_OEMCP }) {
+        const int n = WideCharToMultiByte(cp, 0, helper.c_str(), -1,
+                                          nullptr, 0, nullptr, nullptr);
+        if (n <= 0) continue;
+        std::string narrow(static_cast<size_t>(n) - 1, '\0');
+        WideCharToMultiByte(cp, 0, helper.c_str(), -1, narrow.data(), n, nullptr, nullptr);
+        if (_stricmp(narrow.c_str(), registered.c_str()) == 0) return true;
+    }
+    return false;
+}
+
 bool TrayApp::EnsureCycleTaskRegistered() {
-    // Already registered? (The installer normally does this.)
+    // Registered AND pointing at this build's helper? Existence alone is not
+    // enough: a task left by an older or relocated install still "runs" —
+    // schtasks reports success — while executing a helper that may be gone or
+    // predate current device support, so the cycle silently does nothing and
+    // the controller is never reclaimed. That failure is invisible from the
+    // app's side, so verify the path rather than just the task.
     {
-        std::wstring query = L"schtasks.exe /Query /TN \"";
-        query += CYCLE_TASK_NAME;
-        query += L"\"";
-        if (RunToolHidden(std::move(query))) return true;
+        const std::string registered = RegisteredTaskCommand();
+        if (RegisteredCommandMatches(registered, HelperPath()))
+            return true;
+        if (!registered.empty())
+            EventLog::Write("CYCLE TASK: registered helper is stale, re-registering");
     }
 
     // One-time UAC prompt: the helper registers its own on-demand task.
