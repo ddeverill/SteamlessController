@@ -28,6 +28,12 @@ struct ControllerManager::Slot {
     bool                               gameModeActive = false;
     int                                lastBatteryPercent = -1;  // -1 = never reported
 
+    // When this slot was last found silent. Probing for a state report costs
+    // the full timeout on an empty puck slot, and the acquire path retries in
+    // a rapid burst — without this, three empty slots would block the UI
+    // thread for that timeout on every one of those attempts.
+    std::chrono::steady_clock::time_point lastSilentAt{};
+
     // Haptic edge-detection state for touch (movement ticks).
     bool    hapticWasRightTouching = false;
     bool    hapticWasLeftTouching  = false;
@@ -360,18 +366,40 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 
 void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
     if (slot.gameModeActive) return;
+    // The puck publishes a controller interface per slot and current firmware
+    // rejects the lizard-mode command on an empty one, so only act on a slot
+    // that is actually emitting state. Recently-silent slots are skipped
+    // outright — see Slot::lastSilentAt.
+    static constexpr auto kSilentSlotRetryGap = std::chrono::milliseconds(1500);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - slot.lastSilentAt < kSilentSlotRetryGap) return;
+
     if (!slot.sc->WaitForStateReport(250)) {
-        EventLog::Write("GAMEMODE: inactive puck slot skipped %ls", slot.path.c_str());
+        slot.lastSilentAt = std::chrono::steady_clock::now();
+        EventLog::Write("GAMEMODE: no state reports from slot (transport=%s), skipping %ls",
+                        SteamController::TransportName(slot.transport), slot.path.c_str());
         return;
     }
+
     const auto claim = slot.sc->ClaimGameModeAccess();
     if (claim == SteamController::AccessClaim::Failed) {
         EventLog::Write("GAMEMODE: device reopen failed %ls", slot.path.c_str());
         return;
     }
-    if (claim == SteamController::AccessClaim::Shared)
+    if (claim == SteamController::AccessClaim::Shared) {
+        // A write handle held while Steam is running is most likely Steam's.
+        // Proceeding would put two processes on the same controller, both
+        // driving lizard mode; refusing is what escalates to a device cycle
+        // that takes the handle back. Only settle for shared when Steam is
+        // absent and the holder is some benign system component.
+        if (m_steamPresent) {
+            EventLog::Write("GAMEMODE: exclusive claim blocked while Steam is running %ls",
+                            slot.path.c_str());
+            return;
+        }
         EventLog::Write("GAMEMODE: exclusive claim unavailable; using shared access %ls",
                         slot.path.c_str());
+    }
     if (!slot.sc->DisableLizardMode()) {
         EventLog::Write("GAMEMODE: DisableLizardMode failed %ls", slot.path.c_str());
         slot.sc->ReleaseToShared();

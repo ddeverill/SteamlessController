@@ -132,12 +132,18 @@ bool SteamController::WaitForStateReport(uint32_t timeoutMs) {
     uint8_t report[64]{};
 
     while (std::chrono::steady_clock::now() < deadline) {
+        const auto before = std::chrono::steady_clock::now();
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - std::chrono::steady_clock::now());
+            deadline - before);
         const auto waitMs = static_cast<uint32_t>(std::max<int64_t>(1, remaining.count()));
         const size_t n = ReadReport(report, sizeof(report), waitMs);
         if (n > 0 && IsStateReportId(report[0]))
             return true;
+        // A silent slot times out and consumes the wait; returning nothing
+        // instantly means the read failed outright, so stop rather than spin
+        // on a dead handle for the rest of the window.
+        if (n == 0 && std::chrono::steady_clock::now() - before < std::chrono::milliseconds(2))
+            return false;
     }
 
     return false;

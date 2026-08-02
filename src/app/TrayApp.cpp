@@ -229,9 +229,14 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
 
-    case WM_STEAMSTATE:
-        ApplySteamState(static_cast<SteamState>(wp));
+    case WM_STEAMSTATE: {
+        const auto steamState = static_cast<SteamState>(wp);
+        // Outside ApplySteamState, which returns early in Manual mode — the
+        // shared-handle decision needs to know about Steam in every mode.
+        m_controller->SetSteamPresent(steamState != SteamState::NoSteam);
+        ApplySteamState(steamState);
         return 0;
+    }
 
     case WM_ALERT: {
         if (!m_notificationsEnabled)
