@@ -324,6 +324,38 @@ renderAll();
 }
 
 // ---------------------------------------------------------------------------
+// DPI sizing
+// ---------------------------------------------------------------------------
+
+// Resize to the design size scaled for this window's monitor and centre it
+// there. Nothing scales these numbers for us — the process is
+// PER_MONITOR_AWARE_V2 — so the raw design size renders a postage-stamp
+// window on a high-DPI display while WebView2 renders its CSS at full scale
+// inside it. Clamped to the work area because 760x668 at 200% is taller than
+// a 1080p screen.
+static void SizeAndCentreForDpi(HWND hwnd, int baseW, int baseH) {
+    UINT dpi = GetDpiForWindow(hwnd);
+    if (dpi == 0) dpi = USER_DEFAULT_SCREEN_DPI;
+
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi))
+        return;
+
+    const int workW = mi.rcWork.right - mi.rcWork.left;
+    const int workH = mi.rcWork.bottom - mi.rcWork.top;
+    int w = MulDiv(baseW, dpi, USER_DEFAULT_SCREEN_DPI);
+    int h = MulDiv(baseH, dpi, USER_DEFAULT_SCREEN_DPI);
+    if (w > workW) w = workW;
+    if (h > workH) h = workH;
+
+    SetWindowPos(hwnd, nullptr,
+                 mi.rcWork.left + (workW - w) / 2,
+                 mi.rcWork.top  + (workH - h) / 2,
+                 w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// ---------------------------------------------------------------------------
 // Window procedure
 // ---------------------------------------------------------------------------
 
@@ -341,6 +373,30 @@ LRESULT RemapWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             m_controller->put_Bounds(bounds);
         }
         return 0;
+
+    case WM_GETMINMAXINFO: {
+        // Also scaled: a 560x440 floor in raw pixels is unusably cramped once
+        // the content inside is rendering at 200%.
+        UINT dpi = GetDpiForWindow(hwnd);
+        if (dpi == 0) dpi = USER_DEFAULT_SCREEN_DPI;
+        auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
+        mmi->ptMinTrackSize.x = MulDiv(MIN_WINDOW_W, dpi, USER_DEFAULT_SCREEN_DPI);
+        mmi->ptMinTrackSize.y = MulDiv(MIN_WINDOW_H, dpi, USER_DEFAULT_SCREEN_DPI);
+        return 0;
+    }
+
+    case WM_DPICHANGED: {
+        // Dragged onto a monitor with different scaling. Windows hands us a
+        // suggested rect already converted for the new DPI; taking it keeps
+        // the window the same physical size instead of jumping.
+        const RECT* suggested = reinterpret_cast<const RECT*>(lp);
+        SetWindowPos(hwnd, nullptr,
+                     suggested->left, suggested->top,
+                     suggested->right - suggested->left,
+                     suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+    }
 
     case WM_NCHITTEST: {
         // Let Windows handle non-client areas (resize border, etc.) first.
@@ -437,24 +493,36 @@ void RemapWindow::Open(HINSTANCE hInst, ControllerManager* mgr,
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
     wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    // Match the page background. Resizing repaints the frame before WebView2
+    // catches up, and the default white flashed against the dark UI. Brush
+    // lives for the process, like the class it belongs to.
+    wc.hbrBackground = CreateSolidBrush(RGB(0x15, 0x20, 0x2c));
     wc.lpszClassName = CLASS_NAME;
     wc.style         = CS_DROPSHADOW;
     RegisterClassExW(&wc); // OK if already registered
 
-    // --- Create the frameless popup window, centered on screen ---
-    int screenW = GetSystemMetrics(SM_CXSCREEN);
-    int screenH = GetSystemMetrics(SM_CYSCREEN);
-    int x = (screenW - WINDOW_W) / 2;
-    int y = (screenH - WINDOW_H) / 2;
+    // --- Create the popup window on the monitor the user is working on ---
+    // The tray menu they opened this from is under the cursor, and on a
+    // mixed-DPI desktop that monitor's scaling is what matters. Create it
+    // there first, then size it once the window can report the DPI it landed
+    // on. WS_THICKFRAME makes it resizable; its border sits in the
+    // non-client area, outside the rect WebView2 occupies, so it stays
+    // grabbable even though the web content covers the whole client area.
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    GetMonitorInfoW(MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST), &mi);
 
     m_hwnd = CreateWindowExW(
         0, CLASS_NAME, L"Back Button Mapping",
-        WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX,
-        x, y, WINDOW_W, WINDOW_H,
+        WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX,
+        mi.rcWork.left, mi.rcWork.top, WINDOW_W, WINDOW_H,
         nullptr, nullptr, hInst, nullptr);
 
     if (!m_hwnd) return;
+
+    SizeAndCentreForDpi(m_hwnd, WINDOW_W, WINDOW_H);
 
     ShowWindow(m_hwnd, SW_SHOW);
     UpdateWindow(m_hwnd);
