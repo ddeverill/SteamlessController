@@ -109,6 +109,16 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     AddTrayIcon();
     UpdateTrayIcon(m_controller->IsConnected(), m_controller->IsGameModeActive(), false);
 
+    // The in-game mode needs the elevated cycle helper to take the controller
+    // back from a running Steam. Settle that here rather than on first use:
+    // the installer normally registers the task, but when it hasn't (running
+    // from a build folder, or after an uninstall) the only other trigger is
+    // the cycle itself — so the UAC prompt ambushed the user mid-game-launch.
+    // A no-op once the task exists, which is the common case. Must run after
+    // AddTrayIcon, since a declined prompt reports via the tray balloon.
+    if (m_autoMode == AutoMode::OffOnlyInGame)
+        EnsureCycleTaskRegistered();
+
     // Start watching for Steam regardless of auto mode — the state is applied
     // only when auto mode is on, and having it warm makes toggling auto mode
     // take effect instantly. The initial callback asserts the correct state
