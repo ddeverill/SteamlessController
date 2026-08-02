@@ -328,6 +328,11 @@ void TrayApp::TryAcquireController() {
     // re-arrival (the timer is a fallback in case the arrival event is missed).
     if (m_acquireRetries >= MAX_ACQUIRE_CYCLES) {
         EventLog::Write("AUTO: giving up acquiring after %d device cycles", MAX_ACQUIRE_CYCLES);
+        // Don't leave the user with a silently dead pad and no explanation.
+        if (m_notificationsEnabled)
+            ShowAlertBalloon(L"Could not take the controller",
+                             L"Steam is holding the controller and did not release it. "
+                             L"Closing Steam will hand it back.");
         return;
     }
     ++m_acquireRetries;
@@ -340,7 +345,10 @@ void TrayApp::TryAcquireController() {
 }
 
 bool TrayApp::RestartControllerDevices() {
-    // On the rare elevated run, cycle directly.
+    // On the rare elevated run, cycle directly. This works on every transport
+    // including Bluetooth: the devnode being restarted is the HID child, not
+    // the pairing (which lives up at the BTHLEDEVICE layer), and it
+    // re-enumerates as fast as a USB replug.
     if (IsProcessElevated()) {
         bool anyRestarted = false;
         for (const auto& path : SteamController::EnumerateAll())

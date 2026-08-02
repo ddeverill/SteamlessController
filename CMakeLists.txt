@@ -54,7 +54,7 @@ add_executable(SteamlessDeviceCycle WIN32
     src/helper/DeviceCycleHelper.cpp
     src/app/DeviceRestart.cpp
 )
-target_link_libraries(SteamlessDeviceCycle PRIVATE SteamController)
+target_link_libraries(SteamlessDeviceCycle PRIVATE SteamController cfgmgr32)
 if (MSVC)
     target_compile_options(SteamlessDeviceCycle PRIVATE /W4 /WX /utf-8)
 endif()
@@ -107,6 +107,7 @@ target_link_libraries(SteamlessController PRIVATE
     version
     ole32
     shlwapi
+    cfgmgr32
 )
 if (MSVC)
     target_compile_options(SteamlessController PRIVATE /W4 /WX /utf-8 /wd4828)
