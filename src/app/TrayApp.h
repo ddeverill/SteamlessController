@@ -35,6 +35,7 @@ private:
     void UpdateTrayIcon(bool connected, bool gameModeActive, bool vigemMissing = false);
     void ShowViGEmBalloon();
     void ShowAlertBalloon(const std::wstring& title, const std::wstring& text);
+    void ShowInfoBalloon(const std::wstring& title, const std::wstring& text);
     void OpenEventLog();
     void ShowContextMenu();
     void LoadSettings();

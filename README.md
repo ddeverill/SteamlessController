@@ -78,9 +78,9 @@ Steam normally opens the physical Steam Controller even while the client is idle
 
 The tray's **Debug: Steam coexistence** submenu can apply one of three strategies. Hover an option to see its tradeoffs; selecting one safely releases the controller, closes Steam, applies the setting, and relaunches Steam immediately. If a Steam game is running, the app asks before closing it.
 
-- **Yield to Steam** makes no Steam-specific controller changes. SteamlessController stays off whenever Steam can see the physical controller. This preserves full Steam Input but Game Pass use requires closing Steam.
-- **Hide Steam Controllers from Steam** is recommended for Game Pass. It adds only the three Steam Controller product IDs to Steam's per-device blacklist, leaving Steam Input available for other controller types. Steam Controller-specific layouts, gyro, and touch menus are unavailable in Steam.
-- **Launch Steam with `-nojoy`** disables all Steam client controller support, including Steam Input and Big Picture controller navigation. The app adds the flag to Steam's existing Windows startup entry; launching Steam another way without the flag is detected and SteamlessController safely yields.
+- **Restore Steam's original controller settings** is the explicit off switch. It restores the Valve PID blacklist and `-nojoy` state recorded before SteamlessController first changed them, then SteamlessController yields whenever Steam can see the physical controller.
+- **Reserve Steam Controller for Steamless** is recommended for Game Pass. It adds only the three Steam Controller product IDs to Steam's per-device blacklist, leaving Steam Input available for other controller types. Steam Controller-specific layouts, gyro, and touch menus are unavailable in Steam.
+- **Disable all Steam controller support (`-nojoy`)** disables all Steam client controller support, including Steam Input and Big Picture controller navigation. The app adds the flag to Steam's existing Windows startup entry; launching Steam another way without the flag is detected and SteamlessController safely yields.
 
 The blacklist option backs up `config/config.vdf` to `config/config.vdf.steamlesscontroller.bak`, preserves unrelated blacklist entries, and manages this property inside the outer `InstallConfigStore` object:
 
@@ -89,6 +89,8 @@ The blacklist option backs up `config/config.vdf` to `config/config.vdf.steamles
 ```
 
 SteamlessController verifies both the setting and Steam's current `logs/controller.txt` session before treating the blacklist as safe. For `-nojoy`, it verifies the running `steam.exe` command line through Windows Management Instrumentation. Missing or stale evidence always makes SteamlessController yield rather than risk duplicate input.
+
+Before its first strategy change, SteamlessController records whether each Valve PID and `-nojoy` were already configured. Uninstall closes the tray app, restores that recorded Steam baseline, removes the dedicated backup, Windows startup entry, and settings, and only then removes the application files. Steam is restarted if it was running; if restoration fails, uninstall stops so it can be retried.
 
 SteamlessController sends HID feature reports to disable lizard mode, then reads the raw input reports and translates them into a virtual Xbox 360 controller via ViGEmBus. A background heartbeat re-sends the disable command every 800 ms to keep lizard mode off.
 

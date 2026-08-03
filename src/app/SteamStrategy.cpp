@@ -15,10 +15,16 @@ constexpr wchar_t APP_REG_KEY[] = L"Software\\SteamlessController";
 constexpr wchar_t STEAM_REG_KEY[] = L"Software\\Valve\\Steam";
 constexpr wchar_t RUN_REG_KEY[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t STEAM_RUN_VALUE[] = L"Steam";
+constexpr wchar_t APP_RUN_VALUE[] = L"SteamlessController";
 constexpr wchar_t STRATEGY_VALUE[] = L"SteamStrategy";
+constexpr wchar_t BASELINE_CAPTURED_VALUE[] = L"SteamBaselineCaptured";
+constexpr wchar_t BASELINE_BLACKLIST_VALUE[] = L"SteamBaselineBlacklistMask";
+constexpr wchar_t BASELINE_NOJOY_VALUE[] = L"SteamBaselineNoJoy";
 constexpr std::array<const char*, 3> STEAM_CONTROLLER_IDS = {
     "28de/1302", "28de/1303", "28de/1304"
 };
+constexpr DWORD ALL_STEAM_CONTROLLER_IDS =
+    (1u << STEAM_CONTROLLER_IDS.size()) - 1u;
 
 bool ReadRegistryString(HKEY root, const wchar_t* keyName, const wchar_t* valueName,
                         std::wstring& value, DWORD* typeOut = nullptr) {
@@ -98,10 +104,11 @@ std::string TrimAscii(std::string text) {
     return text.substr(first, last - first + 1);
 }
 
-bool IsSteamControllerId(const std::string& value) {
+DWORD SteamControllerIdBit(const std::string& value) {
     const std::string lower = LowerAscii(TrimAscii(value));
-    return std::any_of(STEAM_CONTROLLER_IDS.begin(), STEAM_CONTROLLER_IDS.end(),
-                       [&](const char* id) { return lower == id; });
+    for (size_t i = 0; i < STEAM_CONTROLLER_IDS.size(); ++i)
+        if (lower == STEAM_CONTROLLER_IDS[i]) return 1u << i;
+    return 0;
 }
 
 struct VdfValue {
@@ -123,7 +130,25 @@ VdfValue FindControllerBlacklist(const std::string& config) {
     return {true, open + 1, close, config.substr(open + 1, close - open - 1)};
 }
 
-std::string UpdateControllerBlacklist(std::string config, bool addControllers) {
+DWORD ControllerBlacklistValueMask(const std::string& value) {
+    DWORD mask = 0;
+    size_t start = 0;
+    while (start <= value.size()) {
+        const size_t comma = value.find(',', start);
+        mask |= SteamControllerIdBit(value.substr(
+            start, comma == std::string::npos ? std::string::npos : comma - start));
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return mask;
+}
+
+DWORD ControllerBlacklistConfigMask(const std::string& config) {
+    const VdfValue value = FindControllerBlacklist(config);
+    return value.found ? ControllerBlacklistValueMask(value.value) : 0;
+}
+
+std::string UpdateControllerBlacklist(std::string config, DWORD desiredControllerMask) {
     const VdfValue existing = FindControllerBlacklist(config);
     std::vector<std::string> entries;
     if (existing.found) {
@@ -132,14 +157,15 @@ std::string UpdateControllerBlacklist(std::string config, bool addControllers) {
             const size_t comma = existing.value.find(',', start);
             std::string entry = TrimAscii(existing.value.substr(
                 start, comma == std::string::npos ? std::string::npos : comma - start));
-            if (!entry.empty() && !IsSteamControllerId(entry))
+            if (!entry.empty() && SteamControllerIdBit(entry) == 0)
                 entries.push_back(std::move(entry));
             if (comma == std::string::npos) break;
             start = comma + 1;
         }
     }
-    if (addControllers)
-        for (const char* id : STEAM_CONTROLLER_IDS) entries.emplace_back(id);
+    for (size_t i = 0; i < STEAM_CONTROLLER_IDS.size(); ++i)
+        if ((desiredControllerMask & (1u << i)) != 0)
+            entries.emplace_back(STEAM_CONTROLLER_IDS[i]);
 
     std::string value;
     for (const std::string& entry : entries) {
@@ -151,7 +177,7 @@ std::string UpdateControllerBlacklist(std::string config, bool addControllers) {
         config.replace(existing.start, existing.end - existing.start, value);
         return config;
     }
-    if (!addControllers) return config;
+    if (desiredControllerMask == 0) return config;
 
     const size_t close = config.find_last_of('}');
     if (close == std::string::npos) return {};
@@ -226,6 +252,13 @@ std::vector<std::wstring> ParseArguments(const std::wstring& command) {
     return args;
 }
 
+bool CommandHasNoJoy(const std::wstring& command) {
+    const std::vector<std::wstring> args = ParseArguments(command);
+    return std::any_of(args.begin(), args.end(), [](const std::wstring& arg) {
+        return _wcsicmp(arg.c_str(), L"-nojoy") == 0;
+    });
+}
+
 std::wstring SteamCommand(const std::wstring& steamExe, const std::wstring& existing,
                           bool noJoy) {
     std::vector<std::wstring> args = ParseArguments(existing);
@@ -262,6 +295,80 @@ bool WriteSteamRunCommandIfPresent(const std::wstring& command, std::wstring& er
     }
     RegCloseKey(key);
     return ok;
+}
+
+bool ReadAppDword(const wchar_t* name, DWORD& value) {
+    DWORD bytes = sizeof(value);
+    return RegGetValueW(HKEY_CURRENT_USER, APP_REG_KEY, name, RRF_RT_REG_DWORD,
+                        nullptr, &value, &bytes) == ERROR_SUCCESS;
+}
+
+bool WriteAppDword(HKEY key, const wchar_t* name, DWORD value) {
+    return RegSetValueExW(key, name, 0, REG_DWORD,
+                          reinterpret_cast<const BYTE*>(&value), sizeof(value))
+        == ERROR_SUCCESS;
+}
+
+bool HasSavedStrategy() {
+    DWORD strategy = 0;
+    return ReadAppDword(STRATEGY_VALUE, strategy)
+        && strategy <= static_cast<DWORD>(SteamStrategy::NoJoy);
+}
+
+struct SteamBaseline {
+    DWORD blacklistMask = 0;
+    bool  noJoy = false;
+};
+
+bool LoadBaseline(SteamBaseline& baseline) {
+    DWORD captured = 0;
+    DWORD noJoy = 0;
+    if (!ReadAppDword(BASELINE_CAPTURED_VALUE, captured) || captured == 0
+            || !ReadAppDword(BASELINE_BLACKLIST_VALUE, baseline.blacklistMask)
+            || !ReadAppDword(BASELINE_NOJOY_VALUE, noJoy))
+        return false;
+    baseline.noJoy = noJoy != 0;
+    return true;
+}
+
+bool SaveBaseline(const SteamBaseline& baseline) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, APP_REG_KEY, 0, nullptr,
+                        REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &key, nullptr)
+            != ERROR_SUCCESS)
+        return false;
+
+    // Captured is written last so a partial write is never treated as a
+    // complete restore point.
+    const bool ok = WriteAppDword(key, BASELINE_BLACKLIST_VALUE, baseline.blacklistMask)
+        && WriteAppDword(key, BASELINE_NOJOY_VALUE, baseline.noJoy ? 1 : 0)
+        && WriteAppDword(key, BASELINE_CAPTURED_VALUE, 1);
+    RegCloseKey(key);
+    return ok;
+}
+
+bool EnsureBaseline(const std::string& currentConfig, const std::wstring& startupCommand,
+                    SteamBaseline& baseline) {
+    if (LoadBaseline(baseline)) return true;
+
+    // a1f9b80 could already have applied a strategy before baseline tracking
+    // existed. That version explicitly managed all three Valve IDs and
+    // -nojoy, so migrate them as Steamless-owned. Fresh installs capture the
+    // actual pre-management state and restore it on uninstall.
+    const bool migrating = HasSavedStrategy();
+    baseline.blacklistMask = migrating ? 0 : ControllerBlacklistConfigMask(currentConfig);
+    baseline.noJoy = !migrating && CommandHasNoJoy(startupCommand);
+    return SaveBaseline(baseline);
+}
+
+void DeleteSteamlessStartupAndSettings() {
+    HKEY runKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_REG_KEY, 0, KEY_SET_VALUE, &runKey)
+            == ERROR_SUCCESS) {
+        RegDeleteValueW(runKey, APP_RUN_VALUE);
+        RegCloseKey(runKey);
+    }
+    RegDeleteTreeW(HKEY_CURRENT_USER, APP_REG_KEY);
 }
 
 bool SaveStrategy(SteamStrategy strategy) {
@@ -317,25 +424,7 @@ bool StartSteam(std::wstring command, std::wstring& error) {
 bool ConfigContainsSteamController(const std::wstring& configPath) {
     std::string config;
     if (!ReadFileBytes(configPath, config)) return false;
-    const VdfValue value = FindControllerBlacklist(config);
-    if (!value.found) return false;
-    size_t start = 0;
-    while (start <= value.value.size()) {
-        const size_t comma = value.value.find(',', start);
-        if (IsSteamControllerId(value.value.substr(
-                start, comma == std::string::npos ? std::string::npos : comma - start)))
-            return true;
-        if (comma == std::string::npos) break;
-        start = comma + 1;
-    }
-    return false;
-}
-
-bool CommandHasNoJoy(const std::wstring& command) {
-    const std::vector<std::wstring> args = ParseArguments(command);
-    return std::any_of(args.begin(), args.end(), [](const std::wstring& arg) {
-        return _wcsicmp(arg.c_str(), L"-nojoy") == 0;
-    });
+    return ControllerBlacklistConfigMask(config) != 0;
 }
 
 } // namespace
@@ -370,11 +459,9 @@ ApplyResult ApplyAndRestart(SteamStrategy strategy) {
     std::wstring existingRun;
     const bool steamRunExists = ReadRegistryString(
         HKEY_CURRENT_USER, RUN_REG_KEY, STEAM_RUN_VALUE, existingRun);
+    const bool previousNoJoy = CommandHasNoJoy(existingRun);
     const std::wstring previousLaunchCommand = SteamCommand(
-        steamExe, existingRun, CommandHasNoJoy(existingRun));
-    const std::wstring launchCommand = SteamCommand(
-        steamExe, existingRun, strategy == SteamStrategy::NoJoy);
-
+        steamExe, existingRun, previousNoJoy);
     std::wstring error;
     if (!StopSteam(steamExe, error)) return {false, std::move(error)};
     auto failAfterStop = [&](std::wstring message) {
@@ -393,8 +480,17 @@ ApplyResult ApplyAndRestart(SteamStrategy strategy) {
             && !CopyFileW(configPath.c_str(), backupPath.c_str(), TRUE))
         return failAfterStop(L"Steam was stopped, but config.vdf could not be backed up.");
 
-    const std::string updated = UpdateControllerBlacklist(
-        original, strategy == SteamStrategy::ControllerBlacklist);
+    SteamBaseline baseline;
+    if (!EnsureBaseline(original, existingRun, baseline))
+        return failAfterStop(L"Steam was stopped, but its original settings could not be saved.");
+
+    const DWORD desiredBlacklist = strategy == SteamStrategy::ControllerBlacklist
+        ? ALL_STEAM_CONTROLLER_IDS
+        : strategy == SteamStrategy::YieldToSteam ? baseline.blacklistMask : 0;
+    const bool desiredNoJoy = strategy == SteamStrategy::NoJoy
+        || (strategy == SteamStrategy::YieldToSteam && baseline.noJoy);
+    const std::wstring launchCommand = SteamCommand(steamExe, existingRun, desiredNoJoy);
+    const std::string updated = UpdateControllerBlacklist(original, desiredBlacklist);
     if (updated.empty())
         return failAfterStop(L"Steam was stopped, but config.vdf was not valid VDF.");
     if (updated != original && !WriteFileAtomically(configPath, updated))
@@ -419,6 +515,64 @@ ApplyResult ApplyAndRestart(SteamStrategy strategy) {
     return {true, {}};
 }
 
+ApplyResult CleanupForUninstall() {
+    SteamBaseline baseline;
+    const bool hasBaseline = LoadBaseline(baseline);
+    const bool hasStrategy = HasSavedStrategy();
+    std::wstring steamPath, steamExe, configPath;
+    if (!GetSteamPaths(steamPath, steamExe, configPath)) {
+        // Steam itself is gone, so there is no persistent Steam config left to
+        // restore. Still remove SteamlessController's per-user state.
+        DeleteSteamlessStartupAndSettings();
+        return {true, {}};
+    }
+    const std::wstring backupPath = configPath + L".steamlesscontroller.bak";
+    if (!hasBaseline && !hasStrategy) {
+        DeleteFileW(backupPath.c_str());
+        DeleteSteamlessStartupAndSettings();
+        return {true, {}};
+    }
+
+    std::wstring existingRun;
+    ReadRegistryString(HKEY_CURRENT_USER, RUN_REG_KEY, STEAM_RUN_VALUE, existingRun);
+    const bool steamWasRunning = IsSteamProcessRunning();
+    const std::wstring previousLaunchCommand = SteamCommand(
+        steamExe, existingRun, CommandHasNoJoy(existingRun));
+    std::wstring error;
+    if (!StopSteam(steamExe, error)) return {false, std::move(error)};
+    auto failAfterStop = [&](std::wstring message) {
+        if (steamWasRunning) {
+            std::wstring restartError;
+            if (!StartSteam(previousLaunchCommand, restartError))
+                message += L" Steam also could not be restarted with its previous settings.";
+        }
+        return ApplyResult{false, std::move(message)};
+    };
+
+    std::string original;
+    if (!ReadFileBytes(configPath, original))
+        return failAfterStop(L"Steam was stopped, but config.vdf could not be read for cleanup.");
+    if (!EnsureBaseline(original, existingRun, baseline))
+        return failAfterStop(L"Steam was stopped, but its original settings could not be recovered.");
+
+    const std::string restored = UpdateControllerBlacklist(original, baseline.blacklistMask);
+    if (restored.empty() || (restored != original && !WriteFileAtomically(configPath, restored)))
+        return failAfterStop(L"Steam was stopped, but its controller blacklist could not be restored.");
+
+    const std::wstring restoredRun = SteamCommand(steamExe, existingRun, baseline.noJoy);
+    if (!WriteSteamRunCommandIfPresent(restoredRun, error)) {
+        if (restored != original) WriteFileAtomically(configPath, original);
+        return failAfterStop(std::move(error));
+    }
+
+    EventLog::Write("STEAM STRATEGY: restored pre-Steamless settings for uninstall");
+    DeleteFileW(backupPath.c_str());
+    DeleteSteamlessStartupAndSettings();
+    if (steamWasRunning && !StartSteam(restoredRun, error))
+        return {true, std::move(error)};
+    return {true, {}};
+}
+
 bool IsGameRunning() {
     DWORD appId = 0;
     DWORD bytes = sizeof(appId);
@@ -434,17 +588,44 @@ bool IsNoJoySelected() {
 const wchar_t* Tooltip(SteamStrategy strategy) {
     switch (strategy) {
     case SteamStrategy::YieldToSteam:
-        return L"Pros: least invasive; Steam Input, gyro, touch menus, and Big Picture "
-               L"controller navigation keep working.\nCons: Steamless yields whenever Steam "
-               L"can see the controller, so Game Pass needs Steam closed.";
+        return L"Restores the Steam Controller blacklist and -nojoy state recorded before "
+               L"SteamlessController first changed them. This is the explicit off switch; "
+               L"Steamless then yields whenever Steam can see the physical controller.";
     case SteamStrategy::ControllerBlacklist:
-        return L"Pros: recommended for Game Pass; Steam stays open and other controller "
-               L"types keep Steam Input.\nCons: Steam Controller layouts, gyro, and touch "
-               L"menus in Steam are unavailable while it is hidden.";
+        return L"Persists across Steam restarts. Steam stays open and other controller "
+               L"types keep Steam Input, but Steam Controller layouts, gyro, and touch "
+               L"menus in Steam are unavailable. Choose 'Restore Steam's original "
+               L"controller settings' to undo it; uninstall also restores the baseline.";
     case SteamStrategy::NoJoy:
-        return L"Pros: simple, driver-free, and Steam can stay open.\nCons: disables all "
-               L"Steam client controller support, including Steam Input and Big Picture "
-               L"controller navigation. Launching Steam without -nojoy bypasses it.";
+        return L"Adds -nojoy to Steam's existing Windows startup command. Steam can stay "
+               L"open, but all Steam Input and Big Picture controller navigation are "
+               L"disabled. Launching Steam another way without the flag bypasses it. "
+               L"Choose 'Restore Steam's original controller settings' to undo it; "
+               L"uninstall also restores the baseline startup command.";
+    }
+    return L"";
+}
+
+const wchar_t* StatusLabel(SteamStrategy strategy) {
+    switch (strategy) {
+    case SteamStrategy::YieldToSteam: return L"Original Steam settings restored (Steamless off)";
+    case SteamStrategy::ControllerBlacklist: return L"Steam Controller reserved for Steamless";
+    case SteamStrategy::NoJoy: return L"Steam controller support disabled (-nojoy)";
+    }
+    return L"Unknown";
+}
+
+const wchar_t* AppliedMessage(SteamStrategy strategy) {
+    switch (strategy) {
+    case SteamStrategy::YieldToSteam:
+        return L"Steam's original controller settings are restored. Steamless will yield "
+               L"whenever Steam can see the physical controller.";
+    case SteamStrategy::ControllerBlacklist:
+        return L"The Steam Controller is now reserved for Steamless. Choose 'Restore Steam's "
+               L"original controller settings' at any time to undo this.";
+    case SteamStrategy::NoJoy:
+        return L"Steam now starts with -nojoy. Choose 'Restore Steam's original controller "
+               L"settings' at any time to undo this.";
     }
     return L"";
 }

@@ -365,6 +365,9 @@ void TrayApp::ApplySteamStrategy(SteamStrategy strategy) {
         MessageBoxW(m_hwnd, result.message.c_str(),
                     result.applied ? L"Steam restart warning" : L"Steam strategy error",
                     MB_OK | (result.applied ? MB_ICONWARNING : MB_ICONERROR));
+    } else if (result.applied) {
+        ShowInfoBalloon(L"Steam coexistence updated",
+                        SteamStrategies::AppliedMessage(strategy));
     }
 }
 
@@ -589,6 +592,18 @@ void TrayApp::ShowAlertBalloon(const std::wstring& title, const std::wstring& te
     nid.uID         = TRAY_UID;
     nid.uFlags      = NIF_INFO;
     nid.dwInfoFlags = NIIF_WARNING;
+    wcsncpy_s(nid.szInfoTitle, title.c_str(), _TRUNCATE);
+    wcsncpy_s(nid.szInfo,      text.c_str(),  _TRUNCATE);
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+void TrayApp::ShowInfoBalloon(const std::wstring& title, const std::wstring& text) {
+    NOTIFYICONDATAW nid{};
+    nid.cbSize      = sizeof(nid);
+    nid.hWnd        = m_hwnd;
+    nid.uID         = TRAY_UID;
+    nid.uFlags      = NIF_INFO;
+    nid.dwInfoFlags = NIIF_INFO;
     wcsncpy_s(nid.szInfoTitle, title.c_str(), _TRUNCATE);
     wcsncpy_s(nid.szInfo,      text.c_str(),  _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -902,17 +917,30 @@ void TrayApp::ShowContextMenu() {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     HMENU debugMenu = CreatePopupMenu();
-    AppendMenuW(debugMenu, MF_STRING, IDM_STEAM_YIELD, L"Yield to Steam");
+    std::wstring currentStrategy = L"Current: ";
+    currentStrategy += SteamStrategies::StatusLabel(m_steamStrategy);
+    AppendMenuW(debugMenu, MF_STRING | MF_GRAYED, 0, currentStrategy.c_str());
+    AppendMenuW(debugMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(debugMenu, MF_STRING, IDM_STEAM_YIELD,
+                L"Restore Steam's original controller settings");
     AppendMenuW(debugMenu, MF_STRING, IDM_STEAM_BLACKLIST,
-                L"Hide Steam Controllers from Steam (recommended)");
-    AppendMenuW(debugMenu, MF_STRING, IDM_STEAM_NOJOY, L"Launch Steam with -nojoy");
+                L"Reserve Steam Controller for Steamless (recommended)");
+    AppendMenuW(debugMenu, MF_STRING, IDM_STEAM_NOJOY,
+                L"Disable all Steam controller support (-nojoy)");
     CheckMenuRadioItem(debugMenu, IDM_STEAM_YIELD, IDM_STEAM_NOJOY,
                        m_steamStrategy == SteamStrategy::YieldToSteam ? IDM_STEAM_YIELD
                        : m_steamStrategy == SteamStrategy::ControllerBlacklist
                            ? IDM_STEAM_BLACKLIST : IDM_STEAM_NOJOY,
                        MF_BYCOMMAND);
+    const wchar_t* shortStatus = m_steamStrategy == SteamStrategy::YieldToSteam
+        ? L"Steamless off"
+        : m_steamStrategy == SteamStrategy::ControllerBlacklist
+            ? L"reserved for Steamless" : L"-nojoy";
+    std::wstring debugLabel = L"Debug: Steam coexistence (";
+    debugLabel += shortStatus;
+    debugLabel += L")";
     AppendMenuW(menu, MF_STRING | MF_POPUP,
-                reinterpret_cast<UINT_PTR>(debugMenu), L"Debug: Steam coexistence");
+                reinterpret_cast<UINT_PTR>(debugMenu), debugLabel.c_str());
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 

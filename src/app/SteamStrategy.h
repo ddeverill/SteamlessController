@@ -23,8 +23,15 @@ SteamStrategy DetectConfigured();
 // Steam is always relaunched so the new controller policy takes effect now.
 ApplyResult ApplyAndRestart(SteamStrategy strategy);
 
+// Restores the Steam settings captured before the first strategy change,
+// removes SteamlessController's own startup/settings entries, and restarts
+// Steam if it was running. Used by the uninstaller.
+ApplyResult CleanupForUninstall();
+
 bool IsGameRunning();
 bool IsNoJoySelected();
 const wchar_t* Tooltip(SteamStrategy strategy);
+const wchar_t* StatusLabel(SteamStrategy strategy);
+const wchar_t* AppliedMessage(SteamStrategy strategy);
 
 } // namespace SteamStrategies
