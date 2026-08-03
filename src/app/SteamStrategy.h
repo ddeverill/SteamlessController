@@ -19,9 +19,10 @@ struct ApplyResult {
 // installations that predate this setting.
 SteamStrategy DetectConfigured();
 
-// Applies the selected strategy, stops Steam cleanly, and starts it again.
-// Steam is always relaunched so the new controller policy takes effect now.
-ApplyResult ApplyAndRestart(SteamStrategy strategy);
+// Applies the selected strategy and restarts Steam when it was running.
+// launchIfStopped preserves the debug menu's explicit relaunch behavior while
+// allowing the tray on/off switch to leave an already-closed Steam closed.
+ApplyResult ApplyAndRestart(SteamStrategy strategy, bool launchIfStopped = true);
 
 // Restores the Steam settings captured before the first strategy change,
 // removes SteamlessController's own startup/settings entries, and restarts
@@ -29,6 +30,7 @@ ApplyResult ApplyAndRestart(SteamStrategy strategy);
 ApplyResult CleanupForUninstall();
 
 bool IsGameRunning();
+bool IsSteamRunning();
 bool IsNoJoySelected();
 const wchar_t* Tooltip(SteamStrategy strategy);
 const wchar_t* StatusLabel(SteamStrategy strategy);

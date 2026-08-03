@@ -451,11 +451,13 @@ SteamStrategy DetectConfigured() {
     return SteamStrategy::YieldToSteam;
 }
 
-ApplyResult ApplyAndRestart(SteamStrategy strategy) {
+ApplyResult ApplyAndRestart(SteamStrategy strategy, bool launchIfStopped) {
     std::wstring steamPath, steamExe, configPath;
     if (!GetSteamPaths(steamPath, steamExe, configPath))
         return {false, L"Steam's installation or config.vdf could not be found."};
 
+    const bool steamWasRunning = IsSteamProcessRunning();
+    const bool shouldLaunchSteam = steamWasRunning || launchIfStopped;
     std::wstring existingRun;
     const bool steamRunExists = ReadRegistryString(
         HKEY_CURRENT_USER, RUN_REG_KEY, STEAM_RUN_VALUE, existingRun);
@@ -465,9 +467,11 @@ ApplyResult ApplyAndRestart(SteamStrategy strategy) {
     std::wstring error;
     if (!StopSteam(steamExe, error)) return {false, std::move(error)};
     auto failAfterStop = [&](std::wstring message) {
-        std::wstring restartError;
-        if (!StartSteam(previousLaunchCommand, restartError)) {
-            message += L" Steam also could not be restarted with its previous settings.";
+        if (shouldLaunchSteam) {
+            std::wstring restartError;
+            if (!StartSteam(previousLaunchCommand, restartError)) {
+                message += L" Steam also could not be restarted with its previous settings.";
+            }
         }
         return ApplyResult{false, std::move(message)};
     };
@@ -511,7 +515,8 @@ ApplyResult ApplyAndRestart(SteamStrategy strategy) {
 
     EventLog::Write("STEAM STRATEGY: applied %d (0=yield 1=blacklist 2=nojoy)",
                     static_cast<int>(strategy));
-    if (!StartSteam(launchCommand, error)) return {true, std::move(error)};
+    if (shouldLaunchSteam && !StartSteam(launchCommand, error))
+        return {true, std::move(error)};
     return {true, {}};
 }
 
@@ -581,6 +586,10 @@ bool IsGameRunning() {
         && appId != 0;
 }
 
+bool IsSteamRunning() {
+    return IsSteamProcessRunning();
+}
+
 bool IsNoJoySelected() {
     return DetectConfigured() == SteamStrategy::NoJoy;
 }
@@ -589,8 +598,9 @@ const wchar_t* Tooltip(SteamStrategy strategy) {
     switch (strategy) {
     case SteamStrategy::YieldToSteam:
         return L"Restores the Steam Controller blacklist and -nojoy state recorded before "
-               L"SteamlessController first changed them. This is the explicit off switch; "
-               L"Steamless then yields whenever Steam can see the physical controller.";
+               L"SteamlessController first changed them. Steamless then yields whenever "
+               L"Steam can see the physical controller; the Steam Handoff menu controls "
+               L"whether it may take over while Steam is idle.";
     case SteamStrategy::ControllerBlacklist:
         return L"Persists across Steam restarts. Steam stays open and other controller "
                L"types keep Steam Input, but Steam Controller layouts, gyro, and touch "
@@ -608,7 +618,7 @@ const wchar_t* Tooltip(SteamStrategy strategy) {
 
 const wchar_t* StatusLabel(SteamStrategy strategy) {
     switch (strategy) {
-    case SteamStrategy::YieldToSteam: return L"Original Steam settings restored (Steamless off)";
+    case SteamStrategy::YieldToSteam: return L"Steam's original controller settings";
     case SteamStrategy::ControllerBlacklist: return L"Steam Controller reserved for Steamless";
     case SteamStrategy::NoJoy: return L"Steam controller support disabled (-nojoy)";
     }

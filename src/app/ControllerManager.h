@@ -2,6 +2,7 @@
 #include "BackButtonConfig.h"
 #include "ControllerPlatform.h"
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -26,7 +27,13 @@ public:
     // read loops copy it without locking.
     void SetAlertCallback(AlertFn fn) { m_alertFn = std::move(fn); }
 
-    void EnableGameMode();
+    enum class EnableGameModeResult {
+        Enabled,
+        NoActiveController,
+        Blocked,
+    };
+
+    EnableGameModeResult EnableGameMode(uint32_t stateWaitMs = 250);
     void DisableGameMode();
     // Disables game mode then closes all device handles so another process
     // (e.g. Steam) can claim the controller. Safe to call when already disabled.
@@ -66,7 +73,8 @@ private:
 
     void SyncDevices();
     void OpenSlot(const std::wstring& path);
-    void EnableGameModeSlot(Slot& slot, bool& vigemMissingOut);
+    EnableGameModeResult EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
+                                            uint32_t stateWaitMs);
     void DisableGameModeSlot(Slot& slot);
     void StartReadLoop(Slot& slot);
     void StopReadLoop(Slot& slot);

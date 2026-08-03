@@ -14,6 +14,8 @@
 #include <cstring>
 #include <string>
 
+#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+
 static TrayApp* g_app = nullptr;
 
 static constexpr wchar_t WNDCLASS_NAME[] = L"SteamlessControllerTray";
@@ -110,9 +112,14 @@ bool TrayApp::Init(HINSTANCE hInstance) {
 
     LoadSettings();
     m_steamStrategy = SteamStrategies::DetectConfigured();
-    // Converge the startup mechanism with the loaded mode — e.g. the first
-    // elevated run after enabling in-game mode migrates the Run key to the
-    // highest-privileges logon task (and back when the mode changes).
+    if (!m_preferredStrategyLoaded)
+        m_preferredSteamStrategy = m_steamStrategy;
+    // An old Manual setting did not mean the Steam reservation itself was
+    // inactive. On first migration, reflect the configuration that is really
+    // applied rather than claiming Steamless is off while Steam remains blocked.
+    if (!m_enabledSettingLoaded && m_steamStrategy != SteamStrategy::YieldToSteam)
+        m_steamlessEnabled = true;
+    // Converge the persisted Start with Windows choice with the Run key.
     UpdateStartupRegistration();
     AddTrayIcon();
     UpdateTrayIcon(m_controller->IsConnected(), m_controller->IsGameModeActive(), false);
@@ -124,13 +131,14 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     // the cycle itself — so the UAC prompt ambushed the user mid-game-launch.
     // A no-op once the task exists, which is the common case. Must run after
     // AddTrayIcon, since a declined prompt reports via the tray balloon.
-    if (m_autoMode == AutoMode::OffOnlyInGame)
+    if (m_steamlessEnabled
+            && m_steamStrategy == SteamStrategy::YieldToSteam
+            && m_handoffMode == HandoffMode::OnlyInGame)
         EnsureCycleTaskRegistered();
 
-    // Start watching for Steam regardless of auto mode — the state is applied
-    // only when auto mode is on, and having it warm makes toggling auto mode
-    // take effect instantly. The initial callback asserts the correct state
-    // at startup (which also self-heals after a previous crash).
+    // Keep Steam state warm even while Steamless is switched off so turning it
+    // back on can apply the selected ownership policy immediately. The initial
+    // callback also asserts the correct state after startup or a crash.
     m_steamWatcher.Start([this](SteamState state) {
         PostMessageW(m_hwnd, WM_STEAMSTATE, static_cast<WPARAM>(state), 0);
     });
@@ -164,19 +172,27 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (LOWORD(lp) == NIN_BALLOONUSERCLICK)
             ShellExecuteW(nullptr, L"open", L"https://github.com/nefarius/ViGEmBus/releases/latest",
                           nullptr, nullptr, SW_SHOWNORMAL);
-        else if (LOWORD(lp) == WM_LBUTTONDBLCLK)
+        else if (LOWORD(lp) == WM_LBUTTONDBLCLK) {
+            KillTimer(m_hwnd, IDT_TRAY_CLICK);
+            m_suppressNextLeftUp = true;
             OpenRemapWindow();
-        else if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_LBUTTONUP)
+        } else if (LOWORD(lp) == WM_LBUTTONUP) {
+            if (m_suppressNextLeftUp) {
+                m_suppressNextLeftUp = false;
+            } else {
+                // Delay until the double-click window closes so the existing
+                // double-click remap action does not also toggle twice.
+                SetTimer(m_hwnd, IDT_TRAY_CLICK, GetDoubleClickTime(), nullptr);
+            }
+        } else if (LOWORD(lp) == WM_RBUTTONUP) {
             ShowContextMenu();
+        }
         return 0;
 
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case IDM_TOGGLE:
-            if (m_controller->IsGameModeActive())
-                m_controller->DisableGameMode();
-            else
-                m_controller->EnableGameMode();
+            ToggleSteamlessMode();
             break;
         case IDM_TRACKPAD:
             m_controller->SetTrackpadMouseEnabled(!m_controller->IsTrackpadMouseEnabled());
@@ -201,18 +217,15 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             m_controller->SetControllerPlatform(ControllerPlatform::PlayStation);
             SaveSettings();
             break;
-        case IDM_MODE_MANUAL:
-            SetAutoMode(AutoMode::Manual);
+        case IDM_HANDOFF_STEAM:
+            SetHandoffMode(HandoffMode::WhileSteamRuns);
             break;
-        case IDM_MODE_STEAM:
-            SetAutoMode(AutoMode::OffWhileSteam);
-            break;
-        case IDM_MODE_GAME:
+        case IDM_HANDOFF_GAME:
             // Make sure the elevated helper task exists (one-time UAC when
             // the installer didn't register it) before the mode needs it.
             if (!IsProcessElevated())
                 EnsureCycleTaskRegistered();
-            SetAutoMode(AutoMode::OffOnlyInGame);
+            SetHandoffMode(HandoffMode::OnlyInGame);
             break;
         case IDM_STARTUP:
             m_startupEnabled = !m_startupEnabled;
@@ -260,9 +273,9 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_STEAMSTATE: {
         const auto steamState = static_cast<SteamState>(wp);
-        // Outside ApplySteamState, which returns early in Manual mode. A shared
-        // manual session must still yield if Steam can see the controller, and
-        // a manual enable must not settle for unsafe shared access.
+        // This remains current while Steamless is switched off. If the user
+        // turns it back on, a shared claim must still be rejected whenever
+        // Steam can see and may own the physical controller.
         m_controller->SetSteamMayOwnController(steamState == SteamState::SteamIdle
                                                || steamState == SteamState::InGame);
         ApplySteamState(steamState);
@@ -286,19 +299,21 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (wp == IDT_ACQUIRE) {
             KillTimer(m_hwnd, IDT_ACQUIRE);
-            if (m_autoMode != AutoMode::Manual && WantControl(m_steamWatcher.GetState()))
+            if (WantControl(m_steamWatcher.GetState()))
                 TryAcquireController();
+        } else if (wp == IDT_TRAY_CLICK) {
+            KillTimer(m_hwnd, IDT_TRAY_CLICK);
+            ToggleSteamlessMode();
         }
         return 0;
 
     case WM_DEVICECHANGE:
         if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
             m_controller->OnDeviceChange();
-            // A controller arriving (plugged in, or re-arriving after a device
-            // cycle) should be acquired without a manual toggle when the
-            // active auto mode wants control right now.
-            if (wp == DBT_DEVICEARRIVAL && m_autoMode != AutoMode::Manual
-                    && WantControl(m_steamWatcher.GetState()))
+            // A controller arriving (plugged in, waking, or re-arriving after
+            // a device cycle) should be acquired whenever the current policy
+            // wants control.
+            if (wp == DBT_DEVICEARRIVAL && WantControl(m_steamWatcher.GetState()))
                 TryAcquireController();
         }
         return TRUE;
@@ -310,42 +325,49 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-void TrayApp::SetAutoMode(AutoMode mode) {
-    EventLog::Write("MODE: control mode set to %d (0=manual 1=offWhileSteam 2=offOnlyInGame)",
+void TrayApp::SetHandoffMode(HandoffMode mode) {
+    EventLog::Write("MODE: Steam handoff set to %d (1=whileSteamRuns 2=onlyInGame)",
                     static_cast<int>(mode));
-    m_autoMode = mode;
+    m_handoffMode = mode;
     m_acquireRetries = 0;
+    m_waitingForWake = false;
+    KillTimer(m_hwnd, IDT_ACQUIRE);
     SaveSettings();
-    UpdateStartupRegistration();
-    if (mode != AutoMode::Manual)
+    if (m_steamlessEnabled)
         ApplySteamState(m_steamWatcher.GetState());
 }
 
 bool TrayApp::WantControl(SteamState state) const {
-    switch (m_autoMode) {
-    case AutoMode::OffWhileSteam:
+    if (!m_steamlessEnabled) return false;
+    switch (m_handoffMode) {
+    case HandoffMode::WhileSteamRuns:
         return state == SteamState::NoSteam || state == SteamState::ControllerHidden;
-    case AutoMode::OffOnlyInGame:
+    case HandoffMode::OnlyInGame:
         return state != SteamState::InGame;
-    default:                      return false;  // Manual: tray toggle decides
     }
+    return false;
 }
 
-void TrayApp::ApplySteamStrategy(SteamStrategy strategy) {
-    if (SteamStrategies::IsGameRunning()) {
+bool TrayApp::ApplySteamStrategy(SteamStrategy strategy,
+                                 bool launchIfStopped,
+                                 bool enableSteamless,
+                                 bool rememberPreference,
+                                 bool confirmRunningGame) {
+    if (confirmRunningGame && SteamStrategies::IsGameRunning()) {
         const int answer = MessageBoxW(
             m_hwnd,
             L"A Steam game is running. Applying this option will close the game when "
             L"Steam restarts. Apply it now?",
             L"Restart Steam",
             MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
-        if (answer != IDYES) return;
+        if (answer != IDYES) return false;
     }
 
     EventLog::Write("USER: applying Steam coexistence strategy %d",
                     static_cast<int>(strategy));
     KillTimer(m_hwnd, IDT_ACQUIRE);
     m_acquireRetries = 0;
+    m_waitingForWake = false;
     m_steamWatcher.Stop();
 
     // Steam must close before config.vdf is edited, and releasing first gives
@@ -354,8 +376,19 @@ void TrayApp::ApplySteamStrategy(SteamStrategy strategy) {
     MSG stale{};
     while (PeekMessageW(&stale, m_hwnd, WM_STEAMSTATE, WM_STEAMSTATE, PM_REMOVE)) {}
 
-    const SteamStrategies::ApplyResult result = SteamStrategies::ApplyAndRestart(strategy);
-    if (result.applied) m_steamStrategy = strategy;
+    const SteamStrategies::ApplyResult result =
+        SteamStrategies::ApplyAndRestart(strategy, launchIfStopped);
+    if (result.applied) {
+        m_steamStrategy = strategy;
+        m_steamlessEnabled = enableSteamless;
+        if (rememberPreference)
+            m_preferredSteamStrategy = strategy;
+        SaveSettings();
+        if (strategy == SteamStrategy::YieldToSteam
+                && m_steamlessEnabled
+                && m_handoffMode == HandoffMode::OnlyInGame)
+            EnsureCycleTaskRegistered();
+    }
 
     m_steamWatcher.Start([this](SteamState state) {
         PostMessageW(m_hwnd, WM_STEAMSTATE, static_cast<WPARAM>(state), 0);
@@ -366,9 +399,14 @@ void TrayApp::ApplySteamStrategy(SteamStrategy strategy) {
                     result.applied ? L"Steam restart warning" : L"Steam strategy error",
                     MB_OK | (result.applied ? MB_ICONWARNING : MB_ICONERROR));
     } else if (result.applied) {
-        ShowInfoBalloon(L"Steam coexistence updated",
-                        SteamStrategies::AppliedMessage(strategy));
+        ShowInfoBalloon(enableSteamless ? L"Steam coexistence updated"
+                                        : L"Steamless turned off",
+                        enableSteamless
+                            ? SteamStrategies::AppliedMessage(strategy)
+                            : L"Steam's original controller settings were restored. Steam can "
+                              L"take the physical controller again.");
     }
+    return result.applied;
 }
 
 void TrayApp::CreateMenuTooltip() {
@@ -429,7 +467,7 @@ void TrayApp::HideMenuTooltip() {
 }
 
 void TrayApp::ApplySteamState(SteamState state) {
-    if (m_autoMode == AutoMode::Manual) return;
+    if (!m_steamlessEnabled) return;
 
     EventLog::Write("AUTO: steam state %d (0=none 1=controllerHidden 2=idle 3=inGame) -> %s",
                     static_cast<int>(state),
@@ -440,6 +478,7 @@ void TrayApp::ApplySteamState(SteamState state) {
     } else {
         KillTimer(m_hwnd, IDT_ACQUIRE);
         m_acquireRetries = 0;
+        m_waitingForWake = false;
         const bool hadControl = m_controller->IsGameModeActive();
         // Good citizen: restore lizard mode and close our HID handles so
         // Steam can claim the controller without contention.
@@ -455,36 +494,54 @@ void TrayApp::ApplySteamState(SteamState state) {
 
 void TrayApp::TryAcquireController() {
     m_controller->OnDeviceChange();
-    m_controller->EnableGameMode();
+    auto result = m_controller->EnableGameMode(m_waitingForWake ? 40 : 250);
 
     // A short burst of rapid retries: right after a device cycle we race
     // Steam's re-enumeration for the exclusive open, and starting the claim
     // the instant the device arrives is what wins that race.
-    for (int i = 0; i < 10 && !m_controller->IsGameModeActive(); ++i) {
+    for (int i = 0; i < 10 && result == ControllerManager::EnableGameModeResult::Blocked
+                            && !m_controller->IsGameModeActive(); ++i) {
         Sleep(50);
         m_controller->OnDeviceChange();
-        m_controller->EnableGameMode();
+        result = m_controller->EnableGameMode(40);
     }
     if (m_controller->IsGameModeActive()) {
+        if (m_waitingForWake)
+            EventLog::Write("AUTO: controller woke; Steamless Mode acquired");
+        m_waitingForWake = false;
         m_acquireRetries = 0;
         return;
     }
-    if (!m_controller->IsConnected()) return;  // nothing plugged in — arrival will retrigger
+    if (!m_controller->IsConnected()) {
+        m_waitingForWake = false;
+        return;  // nothing plugged in — arrival will retrigger
+    }
+    if (result == ControllerManager::EnableGameModeResult::NoActiveController) {
+        m_acquireRetries = 0;
+        if (!m_waitingForWake)
+            EventLog::Write("AUTO: receiver present but controller inactive; waiting for wake");
+        m_waitingForWake = true;
+        SetTimer(m_hwnd, IDT_ACQUIRE, WAKE_RETRY_MS, nullptr);
+        return;
+    }
+    m_waitingForWake = false;
 
-    // Steam holds a write handle, so our exclusive claim can't succeed while
-    // its handle lives. Cycle the device to invalidate it and retry on
-    // re-arrival (the timer is a fallback in case the arrival event is missed).
+    // A reporting slot exists but access or a required command failed. Cycle
+    // the device to invalidate stale handles and retry on re-arrival (the timer
+    // is a fallback in case the arrival event is missed).
     if (m_acquireRetries >= MAX_ACQUIRE_CYCLES) {
         EventLog::Write("AUTO: giving up acquiring after %d device cycles", MAX_ACQUIRE_CYCLES);
         // Don't leave the user with a silently dead pad and no explanation.
         if (m_notificationsEnabled)
             ShowAlertBalloon(L"Could not take the controller",
-                             L"Steam is holding the controller and did not release it. "
-                             L"Closing Steam will hand it back.");
+                             L"Controller reports are arriving, but access or the required "
+                             L"controller command still fails after retrying. Close other "
+                             L"controller tools, then turn Steamless off and on to retry.");
         return;
     }
     ++m_acquireRetries;
-    EventLog::Write("AUTO: exclusive claim blocked — cycling device (attempt %d)", m_acquireRetries);
+    EventLog::Write("AUTO: active controller acquisition blocked — cycling device (attempt %d)",
+                    m_acquireRetries);
     m_controller->ReleaseDevices();
     if (!RestartControllerDevices()) return;  // helper unavailable — balloon shown
     // The cycle runs asynchronously via the helper task; the device-arrival
@@ -595,6 +652,94 @@ void TrayApp::ShowAlertBalloon(const std::wstring& title, const std::wstring& te
     wcsncpy_s(nid.szInfoTitle, title.c_str(), _TRUNCATE);
     wcsncpy_s(nid.szInfo,      text.c_str(),  _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+bool TrayApp::ConfirmToggleSteamRestart(bool enabling, SteamStrategy targetStrategy) {
+    if (!m_confirmSteamRestart || !SteamStrategies::IsSteamRunning())
+        return true;
+
+    const wchar_t* instruction = enabling
+        ? L"Restart Steam to turn Steamless on?"
+        : L"Restart Steam to turn Steamless off?";
+    std::wstring content;
+    if (!enabling) {
+        content = L"Steam's original controller settings will be restored so Steam can "
+                  L"take the physical controller back.";
+    } else if (targetStrategy == SteamStrategy::NoJoy) {
+        content = L"Steam will restart with -nojoy so Steamless can take the physical "
+                  L"controller. All Steam controller support will be disabled.";
+    } else {
+        content = L"Steam will restart with the Steam Controller reserved for Steamless. "
+                  L"Other controller types will remain available to Steam Input.";
+    }
+    if (SteamStrategies::IsGameRunning())
+        content += L" A Steam game is running and will close.";
+
+    TASKDIALOGCONFIG dialog{};
+    dialog.cbSize = sizeof(dialog);
+    dialog.hwndParent = m_hwnd;
+    dialog.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
+    dialog.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
+    dialog.pszWindowTitle = L"Restart Steam";
+    dialog.pszMainIcon = TD_WARNING_ICON;
+    dialog.pszMainInstruction = instruction;
+    dialog.pszContent = content.c_str();
+    dialog.pszVerificationText = L"Don't ask again";
+    dialog.nDefaultButton = IDNO;
+
+    int button = IDNO;
+    BOOL verificationChecked = FALSE;
+    const HRESULT hr = TaskDialogIndirect(&dialog, &button, nullptr, &verificationChecked);
+    if (FAILED(hr)) {
+        button = MessageBoxW(m_hwnd, content.c_str(), instruction,
+                             MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
+        verificationChecked = FALSE;
+    }
+    if (button != IDYES) return false;
+
+    if (verificationChecked) {
+        m_confirmSteamRestart = false;
+        SaveSettings();
+    }
+    return true;
+}
+
+void TrayApp::ToggleSteamlessMode() {
+    if (m_steamlessEnabled && m_steamStrategy != SteamStrategy::YieldToSteam) {
+        if (!ConfirmToggleSteamRestart(false, SteamStrategy::YieldToSteam))
+            return;
+        EventLog::Write("USER: turning Steamless off and restoring Steam settings");
+        ApplySteamStrategy(SteamStrategy::YieldToSteam,
+                           false, false, false, false);
+        return;
+    }
+    if (!m_steamlessEnabled
+            && m_preferredSteamStrategy != SteamStrategy::YieldToSteam) {
+        if (!ConfirmToggleSteamRestart(true, m_preferredSteamStrategy))
+            return;
+        EventLog::Write("USER: turning Steamless on with strategy %d",
+                        static_cast<int>(m_preferredSteamStrategy));
+        ApplySteamStrategy(m_preferredSteamStrategy,
+                           false, true, false, false);
+        return;
+    }
+
+    m_steamlessEnabled = !m_steamlessEnabled;
+    m_acquireRetries = 0;
+    m_waitingForWake = false;
+    KillTimer(m_hwnd, IDT_ACQUIRE);
+    SaveSettings();
+    if (!m_steamlessEnabled) {
+        EventLog::Write("USER: Steamless disabled from tray (Steam settings already restored)");
+        const bool hadControl = m_controller->IsGameModeActive();
+        const SteamState state = m_steamWatcher.GetState();
+        m_controller->ReleaseDevices();
+        if (hadControl && (state == SteamState::SteamIdle || state == SteamState::InGame))
+            RestartControllerDevices();
+    } else {
+        EventLog::Write("USER: Steamless enabled from tray with original Steam settings");
+        ApplySteamState(m_steamWatcher.GetState());
+    }
 }
 
 void TrayApp::ShowInfoBalloon(const std::wstring& title, const std::wstring& text) {
@@ -799,11 +944,20 @@ void TrayApp::LoadSettings() {
         return def;
     };
 
-    // 0 = Manual, 1 = OffWhileSteam, 2 = OffOnlyInGame (old builds stored 0/1).
-    const DWORD mode = readDw(L"AutoSteamMode", 1);
-    m_autoMode = mode == 2 ? AutoMode::OffOnlyInGame
-               : mode == 1 ? AutoMode::OffWhileSteam
-                           : AutoMode::Manual;
+    // Migrate the old 0=manual value to master-off. Values 1 and 2 retain
+    // their previous Steam handoff schedules.
+    const DWORD legacyMode = readDw(L"AutoSteamMode", 1);
+    m_handoffMode = legacyMode == 2 ? HandoffMode::OnlyInGame
+                                    : HandoffMode::WhileSteamRuns;
+    const DWORD enabled = readDw(L"SteamlessEnabled", MAXDWORD);
+    m_enabledSettingLoaded = enabled <= 1;
+    m_steamlessEnabled = m_enabledSettingLoaded ? enabled != 0 : legacyMode != 0;
+    const DWORD preferred = readDw(L"PreferredSteamStrategy", MAXDWORD);
+    if (preferred <= static_cast<DWORD>(SteamStrategy::NoJoy)) {
+        m_preferredSteamStrategy = static_cast<SteamStrategy>(preferred);
+        m_preferredStrategyLoaded = true;
+    }
+    m_confirmSteamRestart = readDw(L"ConfirmSteamRestart", 1) != 0;
     m_controller->SetTrackpadMouseEnabled(readDw(L"TrackpadMouse",   0) != 0);
     m_controller->SetBackButtonsEnabled  (readDw(L"BackButtons",     0) != 0);
     m_controller->SetUseLeftTrackpad     (readDw(L"UseLeftTrackpad", 0) != 0);
@@ -841,7 +995,10 @@ void TrayApp::SaveSettings() {
                        reinterpret_cast<const BYTE*>(&val), sizeof(val));
     };
 
-    writeDw(L"AutoSteamMode",       static_cast<DWORD>(m_autoMode));
+    writeDw(L"AutoSteamMode",       static_cast<DWORD>(m_handoffMode));
+    writeDw(L"SteamlessEnabled",    m_steamlessEnabled ? 1 : 0);
+    writeDw(L"PreferredSteamStrategy", static_cast<DWORD>(m_preferredSteamStrategy));
+    writeDw(L"ConfirmSteamRestart", m_confirmSteamRestart ? 1 : 0);
     writeDw(L"StartupMechanism",    static_cast<DWORD>(m_startupMechanism));
     writeDw(L"ShowNotifications",   m_notificationsEnabled ? 1 : 0);
     writeDw(L"TrackpadMouse",       m_controller->IsTrackpadMouseEnabled()  ? 1 : 0);
@@ -860,7 +1017,6 @@ void TrayApp::SaveSettings() {
 
 void TrayApp::ShowContextMenu() {
     bool connected    = m_controller->IsConnected();
-    bool gameModeOn   = m_controller->IsGameModeActive();
     bool trackpadOn   = m_controller->IsTrackpadMouseEnabled();
     bool backMouseOn  = m_controller->IsBackButtonsEnabled();
     bool leftPad      = m_controller->IsUseLeftTrackpad();
@@ -868,27 +1024,25 @@ void TrayApp::ShowContextMenu() {
 
     HMENU menu = CreatePopupMenu();
 
-    // Manual toggle is disabled while an auto mode owns the decision — when
-    // grayed, the label itself says why.
-    const bool manual = (m_autoMode == AutoMode::Manual);
-    std::wstring toggleLabel = gameModeOn ? L"Disable Steamless Mode"
-                                          : L"Enable Steamless Mode";
+    std::wstring toggleLabel = m_steamlessEnabled ? L"Turn Steamless Off"
+                                                   : L"Turn Steamless On";
     if (!connected)
         toggleLabel += L" (no controller detected)";
-    else if (!manual)
-        toggleLabel += L" (managed by Auto Mode)";
-    UINT toggleFlags = MF_STRING | ((connected && manual) ? MF_ENABLED : MF_GRAYED);
-    AppendMenuW(menu, toggleFlags, IDM_TOGGLE, toggleLabel.c_str());
+    AppendMenuW(menu, MF_STRING, IDM_TOGGLE, toggleLabel.c_str());
 
-    HMENU modeMenu = CreatePopupMenu();
-    AppendMenuW(modeMenu, MF_STRING | (manual ? MF_CHECKED : MF_UNCHECKED),
-                IDM_MODE_MANUAL, L"Manual");
-    AppendMenuW(modeMenu, MF_STRING | (m_autoMode == AutoMode::OffWhileSteam ? MF_CHECKED : MF_UNCHECKED),
-                IDM_MODE_STEAM, L"Auto - Off while Steam running");
-    AppendMenuW(modeMenu, MF_STRING | (m_autoMode == AutoMode::OffOnlyInGame ? MF_CHECKED : MF_UNCHECKED),
-                IDM_MODE_GAME, L"Auto - Off ONLY while in Steam game");
-    AppendMenuW(menu, MF_STRING | MF_POPUP,
-                reinterpret_cast<UINT_PTR>(modeMenu), L"Control Mode");
+    if (m_steamlessEnabled && m_steamStrategy == SteamStrategy::YieldToSteam) {
+        HMENU handoffMenu = CreatePopupMenu();
+        AppendMenuW(handoffMenu,
+                    MF_STRING | (m_handoffMode == HandoffMode::WhileSteamRuns
+                                     ? MF_CHECKED : MF_UNCHECKED),
+                    IDM_HANDOFF_STEAM, L"Use Steamless only while Steam is closed");
+        AppendMenuW(handoffMenu,
+                    MF_STRING | (m_handoffMode == HandoffMode::OnlyInGame
+                                     ? MF_CHECKED : MF_UNCHECKED),
+                    IDM_HANDOFF_GAME, L"Use Steamless except during Steam games");
+        AppendMenuW(menu, MF_STRING | MF_POPUP,
+                    reinterpret_cast<UINT_PTR>(handoffMenu), L"Steam Handoff");
+    }
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
@@ -917,23 +1071,24 @@ void TrayApp::ShowContextMenu() {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     HMENU debugMenu = CreatePopupMenu();
-    std::wstring currentStrategy = L"Current: ";
-    currentStrategy += SteamStrategies::StatusLabel(m_steamStrategy);
+    std::wstring currentStrategy = m_steamlessEnabled ? L"Current: " : L"Off; when on: ";
+    currentStrategy += SteamStrategies::StatusLabel(
+        m_steamlessEnabled ? m_steamStrategy : m_preferredSteamStrategy);
     AppendMenuW(debugMenu, MF_STRING | MF_GRAYED, 0, currentStrategy.c_str());
     AppendMenuW(debugMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(debugMenu, MF_STRING, IDM_STEAM_YIELD,
-                L"Restore Steam's original controller settings");
+                L"Use Steam's original controller support");
     AppendMenuW(debugMenu, MF_STRING, IDM_STEAM_BLACKLIST,
                 L"Reserve Steam Controller for Steamless (recommended)");
     AppendMenuW(debugMenu, MF_STRING, IDM_STEAM_NOJOY,
                 L"Disable all Steam controller support (-nojoy)");
     CheckMenuRadioItem(debugMenu, IDM_STEAM_YIELD, IDM_STEAM_NOJOY,
-                       m_steamStrategy == SteamStrategy::YieldToSteam ? IDM_STEAM_YIELD
-                       : m_steamStrategy == SteamStrategy::ControllerBlacklist
+                       m_preferredSteamStrategy == SteamStrategy::YieldToSteam ? IDM_STEAM_YIELD
+                       : m_preferredSteamStrategy == SteamStrategy::ControllerBlacklist
                            ? IDM_STEAM_BLACKLIST : IDM_STEAM_NOJOY,
                        MF_BYCOMMAND);
-    const wchar_t* shortStatus = m_steamStrategy == SteamStrategy::YieldToSteam
-        ? L"Steamless off"
+    const wchar_t* shortStatus = !m_steamlessEnabled ? L"off"
+        : m_steamStrategy == SteamStrategy::YieldToSteam ? L"Steam handoff"
         : m_steamStrategy == SteamStrategy::ControllerBlacklist
             ? L"reserved for Steamless" : L"-nojoy";
     std::wstring debugLabel = L"Debug: Steam coexistence (";

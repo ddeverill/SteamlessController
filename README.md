@@ -9,13 +9,14 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 ## Features
 
 - **NEW in 1.9** - Bluetooth! Use the controller wired, through the dongle, or paired over Bluetooth LE
-- **NEW in 1.8** - Automatically enable/disable based on if Steam is running, or a Steam game is running!
+- **NEW in 1.8** - Strategy-aware automatic control, with Steam handoff choices shown only when Steam can own the controller
 - **NEW in 1.8** - Advanced debugging and local logging to help diagnose issues
 - Rumble Support v2.0
 - Support for multiple Steam Controllers! Long live split screen!
 - New shiny UI for remapping L4/L5 R4/L5 back buttons!
 - Support for Xbox OR PlayStation controllers - with PS Touchpad and Gyro plumbing.
 - System tray icon shows connection and mode status
+- Left-click the tray icon to toggle Steamless Mode; right-click for settings
 - **Steamless Mode** — disables lizard mode and exposes controller as Xbox 360 gamepad
 - **Trackpad Mouse** — use the right (or left) trackpad as a mouse cursor
 - **Back Buttons for Clicking** — map R4/R5 (or L4/L5) to left/right mouse click
@@ -78,7 +79,7 @@ Steam normally opens the physical Steam Controller even while the client is idle
 
 The tray's **Debug: Steam coexistence** submenu can apply one of three strategies. Hover an option to see its tradeoffs; selecting one safely releases the controller, closes Steam, applies the setting, and relaunches Steam immediately. If a Steam game is running, the app asks before closing it.
 
-- **Restore Steam's original controller settings** is the explicit off switch. It restores the Valve PID blacklist and `-nojoy` state recorded before SteamlessController first changed them, then SteamlessController yields whenever Steam can see the physical controller.
+- **Use Steam's original controller support** restores the Valve PID blacklist and `-nojoy` state recorded before SteamlessController first changed them, then SteamlessController yields whenever Steam can see the physical controller.
 - **Reserve Steam Controller for Steamless** is recommended for Game Pass. It adds only the four supported 2026 Steam Controller product IDs to Steam's per-device blacklist, leaving Steam Input available for other controller types. Steam Controller-specific layouts, gyro, and touch menus are unavailable in Steam.
 - **Disable all Steam controller support (`-nojoy`)** disables all Steam client controller support, including Steam Input and Big Picture controller navigation. The app adds the flag to Steam's existing Windows startup entry; launching Steam another way without the flag is detected and SteamlessController safely yields.
 
@@ -89,6 +90,8 @@ The blacklist option backs up `config/config.vdf` to `config/config.vdf.steamles
 ```
 
 SteamlessController verifies both the setting and Steam's current `logs/controller.txt` session before treating the blacklist as safe. For `-nojoy`, it verifies the running `steam.exe` command line through Windows Management Instrumentation. Missing or stale evidence always makes SteamlessController yield rather than risk duplicate input.
+
+Left-clicking the tray icon turns Steamless off by restoring that Steam baseline, or turns it back on with the last selected coexistence strategy. If Steam is running, the app asks before restarting it; checking **Don't ask again** makes future tray toggles restart Steam automatically. An already-closed Steam client remains closed.
 
 Before its first strategy change, SteamlessController records whether each Valve PID and `-nojoy` were already configured. Uninstall closes the tray app, restores that recorded Steam baseline, removes the dedicated backup, Windows startup entry, and settings, and only then removes the application files. Steam is restarted if it was running; if restoration fails, uninstall stops so it can be retried.
 
