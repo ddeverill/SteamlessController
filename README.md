@@ -72,6 +72,18 @@ cmake --build build/release --config Release --target SteamlessController
 
 The Steam Controller exposes a vendor HID collection (usage page `0xFF00`) that carries all game input in a 54-byte report (ID `0x42`) at ~60 Hz. By default the firmware runs in **lizard mode**, emulating a keyboard and mouse so the controller works without drivers.
 
+### Keeping Steam running
+
+Steam normally opens the physical Steam Controller even while the client is idle. That can produce duplicate keyboard/mouse and virtual-gamepad input if SteamlessController uses the controller at the same time.
+
+Steam's per-device controller blacklist is the narrow workaround: it leaves the Steam client and Steam Input for other controller types running, while reserving Steam Controllers for SteamlessController. Exit Steam, back up and open `config/config.vdf` under the Steam install directory, then add this property inside the outer `InstallConfigStore` object and restart Steam:
+
+```vdf
+"controller_blacklist" "28de/1302,28de/1303,28de/1304"
+```
+
+SteamlessController verifies both the setting and Steam's current `logs/controller.txt` session before treating this as safe. If Steam has not loaded the blacklist, it still yields rather than risk duplicate input. Steam games will receive SteamlessController's virtual Xbox controller instead of the physical Steam Controller, so Steam Controller-specific Steam Input layouts, gyro, and touch menus are unavailable until the entry is removed and Steam is restarted.
+
 SteamlessController sends HID feature reports to disable lizard mode, then reads the raw input reports and translates them into a virtual Xbox 360 controller via ViGEmBus. A background heartbeat re-sends the disable command every 800 ms to keep lizard mode off.
 
 The full input report layout is documented in [`src/steam/SteamController.h`](src/steam/SteamController.h).

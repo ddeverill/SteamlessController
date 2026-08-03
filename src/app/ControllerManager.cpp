@@ -243,11 +243,11 @@ void ControllerManager::ReleaseDevices() {
     NotifyStateChanged();
 }
 
-void ControllerManager::SetSteamPresent(bool present) {
-    if (m_steamPresent == present) return;
-    m_steamPresent = present;
+void ControllerManager::SetSteamMayOwnController(bool mayOwn) {
+    if (m_steamMayOwnController == mayOwn) return;
+    m_steamMayOwnController = mayOwn;
 
-    if (!present) {
+    if (!mayOwn) {
         m_steamConflictAlertShown = false;
         return;
     }
@@ -415,8 +415,8 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
         // whichever mapper starts second can produce duplicate input or starve
         // the other reader. The Windows-only holder is benign, so shared access
         // remains the compatibility path while Steam is absent.
-        if (m_steamPresent) {
-            EventLog::Write("GAMEMODE: shared access blocked while Steam is running %ls",
+        if (m_steamMayOwnController) {
+            EventLog::Write("GAMEMODE: shared access blocked because Steam may own %ls",
                             slot.path.c_str());
             NotifySteamConflict();
             return;
@@ -482,7 +482,8 @@ void ControllerManager::NotifySteamConflict() {
         m_alertFn(L"Steam is using the controller",
                   L"Windows only granted shared controller access while Steam is running. "
                   L"Steamless Mode was kept off to prevent duplicate or missing input. "
-                  L"Exit Steam completely, then enable Steamless Mode again.");
+                  L"Exit Steam, or add the Steam Controller to Steam's controller_blacklist "
+                  L"and restart Steam.");
     }
 }
 

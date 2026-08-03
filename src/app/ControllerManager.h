@@ -38,9 +38,9 @@ public:
     // fallback if this fails or the process dies harder than a C++ exception.
     void EmergencyRestoreAll() noexcept;
 
-    // Shared HID access is only safe while Steam is absent. If Steam appears
-    // during a shared session, yield before both mappers can emit input.
-    void SetSteamPresent(bool present);
+    // Shared HID access is only safe while Steam cannot see the physical
+    // controller. If that changes, yield before both mappers can emit input.
+    void SetSteamMayOwnController(bool mayOwn);
 
     void SetTrackpadMouseEnabled(bool enabled);
     void SetUseLeftTrackpad(bool enabled);
@@ -80,7 +80,7 @@ private:
     bool                               m_trackpadMouseEnabled = false;
     bool                               m_useLeftTrackpad      = false;
     bool                               m_backButtonsEnabled   = false;
-    bool                               m_steamPresent         = false;
+    bool                               m_steamMayOwnController = false;
     bool                               m_steamConflictAlertShown = false;
     ControllerPlatform                 m_controllerPlatform   = ControllerPlatform::Xbox;
     BackButtonConfig                   m_backConfig;

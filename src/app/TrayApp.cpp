@@ -232,9 +232,10 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_STEAMSTATE: {
         const auto steamState = static_cast<SteamState>(wp);
         // Outside ApplySteamState, which returns early in Manual mode. A shared
-        // manual session must still yield if Steam starts, and a manual enable
-        // must not settle for shared access while Steam is already present.
-        m_controller->SetSteamPresent(steamState != SteamState::NoSteam);
+        // manual session must still yield if Steam can see the controller, and
+        // a manual enable must not settle for unsafe shared access.
+        m_controller->SetSteamMayOwnController(steamState == SteamState::SteamIdle
+                                               || steamState == SteamState::InGame);
         ApplySteamState(steamState);
         return 0;
     }
@@ -293,8 +294,10 @@ void TrayApp::SetAutoMode(AutoMode mode) {
 
 bool TrayApp::WantControl(SteamState state) const {
     switch (m_autoMode) {
-    case AutoMode::OffWhileSteam: return state == SteamState::NoSteam;
-    case AutoMode::OffOnlyInGame: return state != SteamState::InGame;
+    case AutoMode::OffWhileSteam:
+        return state == SteamState::NoSteam || state == SteamState::ControllerHidden;
+    case AutoMode::OffOnlyInGame:
+        return state != SteamState::InGame;
     default:                      return false;  // Manual: tray toggle decides
     }
 }
@@ -302,7 +305,7 @@ bool TrayApp::WantControl(SteamState state) const {
 void TrayApp::ApplySteamState(SteamState state) {
     if (m_autoMode == AutoMode::Manual) return;
 
-    EventLog::Write("AUTO: steam state %d (0=none 1=idle 2=inGame) -> %s",
+    EventLog::Write("AUTO: steam state %d (0=none 1=controllerHidden 2=idle 3=inGame) -> %s",
                     static_cast<int>(state),
                     WantControl(state) ? "take control" : "yield");
     if (WantControl(state)) {
@@ -318,7 +321,8 @@ void TrayApp::ApplySteamState(SteamState state) {
         // Steam only (re)opens controllers on device-arrival events. If it is
         // already running and we held the device, it never saw one — cycle
         // the device so Steam adopts it immediately.
-        if (hadControl && state != SteamState::NoSteam)
+        if (hadControl && state != SteamState::NoSteam
+                       && state != SteamState::ControllerHidden)
             RestartControllerDevices();
     }
 }
