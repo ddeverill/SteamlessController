@@ -1,10 +1,14 @@
 #include "SteamWatcher.h"
 #include "EventLog.h"
+#include "SteamStrategy.h"
 #include <Windows.h>
 #include <TlHelp32.h>
+#include <Wbemidl.h>
+#include <shellapi.h>
 #include <algorithm>
 #include <cctype>
 #include <string>
+#include <vector>
 
 static constexpr int POLL_INTERVAL_MS      = 2000;
 static constexpr int POLL_SLICE_MS         = 100;  // wake often for fast Stop()
@@ -12,6 +16,7 @@ static constexpr int LESS_STEAM_POLL_COUNT = 3;    // ~6s stable before we take 
 
 struct SteamProcess {
     bool     running = false;
+    DWORD    pid = 0;
     FILETIME started{};
 };
 
@@ -35,6 +40,7 @@ static SteamProcess FindSteamProcess() {
 
     SteamProcess result{};
     result.running = true;
+    result.pid = pid;
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!process) return result;
 
@@ -42,6 +48,87 @@ static SteamProcess FindSteamProcess() {
     GetProcessTimes(process, &result.started, &exited, &kernel, &user);
     CloseHandle(process);
     return result;
+}
+
+static bool CommandLineHasNoJoy(const std::wstring& commandLine) {
+    int count = 0;
+    LPWSTR* argv = CommandLineToArgvW(commandLine.c_str(), &count);
+    if (!argv) return false;
+    bool found = false;
+    for (int i = 1; i < count; ++i) {
+        if (_wcsicmp(argv[i], L"-nojoy") == 0) {
+            found = true;
+            break;
+        }
+    }
+    LocalFree(argv);
+    return found;
+}
+
+// Win32_Process.CommandLine is a documented Windows source for another
+// process's command line. It lets the watcher prove the running Steam session
+// really has -nojoy instead of trusting a stale startup setting.
+static bool SteamProcessHasNoJoy(DWORD pid) {
+    IWbemLocator* locator = nullptr;
+    IWbemServices* services = nullptr;
+    IEnumWbemClassObject* results = nullptr;
+    IWbemClassObject* object = nullptr;
+    bool hasNoJoy = false;
+
+    HRESULT hr = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_IWbemLocator,
+                                  reinterpret_cast<void**>(&locator));
+    if (FAILED(hr)) goto cleanup;
+
+    {
+        BSTR namespaceName = SysAllocString(L"ROOT\\CIMV2");
+        hr = namespaceName
+            ? locator->ConnectServer(namespaceName, nullptr, nullptr, nullptr, 0,
+                                     nullptr, nullptr, &services)
+            : E_OUTOFMEMORY;
+        SysFreeString(namespaceName);
+    }
+    if (FAILED(hr)) goto cleanup;
+
+    hr = CoSetProxyBlanket(services, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+                           RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+                           nullptr, EOAC_NONE);
+    if (FAILED(hr)) goto cleanup;
+
+    {
+        const std::wstring queryText = L"SELECT CommandLine FROM Win32_Process WHERE ProcessId="
+                                     + std::to_wstring(pid);
+        BSTR language = SysAllocString(L"WQL");
+        BSTR query = SysAllocString(queryText.c_str());
+        hr = language && query
+            ? services->ExecQuery(language, query,
+                                  WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+                                  nullptr, &results)
+            : E_OUTOFMEMORY;
+        SysFreeString(language);
+        SysFreeString(query);
+    }
+    if (FAILED(hr) || !results) goto cleanup;
+
+    {
+        ULONG returned = 0;
+        hr = results->Next(2000, 1, &object, &returned);
+        if (FAILED(hr) || returned != 1 || !object) goto cleanup;
+
+        VARIANT value{};
+        VariantInit(&value);
+        hr = object->Get(L"CommandLine", 0, &value, nullptr, nullptr);
+        if (SUCCEEDED(hr) && V_VT(&value) == VT_BSTR && V_BSTR(&value))
+            hasNoJoy = CommandLineHasNoJoy(V_BSTR(&value));
+        VariantClear(&value);
+    }
+
+cleanup:
+    if (object) object->Release();
+    if (results) results->Release();
+    if (services) services->Release();
+    if (locator) locator->Release();
+    return hasNoJoy;
 }
 
 static bool ReadRegistryString(HKEY root, const wchar_t* subkey, const wchar_t* name,
@@ -189,6 +276,14 @@ static bool IsGameRunning() {
 SteamState SteamWatcher::Detect() {
     const SteamProcess steam = FindSteamProcess();
     if (!steam.running) return SteamState::NoSteam;
+    if (SteamStrategies::IsNoJoySelected()) {
+        if (SteamProcessHasNoJoy(steam.pid)) {
+            ReportControllerHidden(true, "confirmed Steam -nojoy command line");
+            return SteamState::ControllerHidden;
+        }
+        ReportControllerHidden(false, "selected -nojoy is absent from running Steam");
+        return IsGameRunning() ? SteamState::InGame : SteamState::SteamIdle;
+    }
     if (IsControllerHiddenFromSteam(steam)) return SteamState::ControllerHidden;
     return IsGameRunning() ? SteamState::InGame : SteamState::SteamIdle;
 }
@@ -206,6 +301,7 @@ void SteamWatcher::Stop() {
 }
 
 void SteamWatcher::PollLoop() {
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     SteamState reported = Detect();
     m_state = reported;
     if (m_onChange) m_onChange(reported);
@@ -247,4 +343,5 @@ void SteamWatcher::PollLoop() {
             }
         }
     }
+    if (SUCCEEDED(com)) CoUninitialize();
 }

@@ -33,7 +33,7 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 - Windows 10 or later (64-bit)
 - [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases/latest) driver installed
 - Steam Controller — wired USB (PID `0x1302`), wireless dongle (PID `0x1304`), or Bluetooth LE (PID `0x1303`, pair via Windows Bluetooth settings)
-- Steam **closed** (Steam claims the controller when running)
+- Steam **closed**, or a coexistence strategy selected from the tray's debug menu
 
 ### To build
 - [Visual Studio 2022](https://visualstudio.microsoft.com/) with the **Desktop development with C++** workload
@@ -76,13 +76,19 @@ The Steam Controller exposes a vendor HID collection (usage page `0xFF00`) that 
 
 Steam normally opens the physical Steam Controller even while the client is idle. That can produce duplicate keyboard/mouse and virtual-gamepad input if SteamlessController uses the controller at the same time.
 
-Steam's per-device controller blacklist is the narrow workaround: it leaves the Steam client and Steam Input for other controller types running, while reserving Steam Controllers for SteamlessController. Exit Steam, back up and open `config/config.vdf` under the Steam install directory, then add this property inside the outer `InstallConfigStore` object and restart Steam:
+The tray's **Debug: Steam coexistence** submenu can apply one of three strategies. Hover an option to see its tradeoffs; selecting one safely releases the controller, closes Steam, applies the setting, and relaunches Steam immediately. If a Steam game is running, the app asks before closing it.
+
+- **Yield to Steam** makes no Steam-specific controller changes. SteamlessController stays off whenever Steam can see the physical controller. This preserves full Steam Input but Game Pass use requires closing Steam.
+- **Hide Steam Controllers from Steam** is recommended for Game Pass. It adds only the three Steam Controller product IDs to Steam's per-device blacklist, leaving Steam Input available for other controller types. Steam Controller-specific layouts, gyro, and touch menus are unavailable in Steam.
+- **Launch Steam with `-nojoy`** disables all Steam client controller support, including Steam Input and Big Picture controller navigation. The app adds the flag to Steam's existing Windows startup entry; launching Steam another way without the flag is detected and SteamlessController safely yields.
+
+The blacklist option backs up `config/config.vdf` to `config/config.vdf.steamlesscontroller.bak`, preserves unrelated blacklist entries, and manages this property inside the outer `InstallConfigStore` object:
 
 ```vdf
 "controller_blacklist" "28de/1302,28de/1303,28de/1304"
 ```
 
-SteamlessController verifies both the setting and Steam's current `logs/controller.txt` session before treating this as safe. If Steam has not loaded the blacklist, it still yields rather than risk duplicate input. Steam games will receive SteamlessController's virtual Xbox controller instead of the physical Steam Controller, so Steam Controller-specific Steam Input layouts, gyro, and touch menus are unavailable until the entry is removed and Steam is restarted.
+SteamlessController verifies both the setting and Steam's current `logs/controller.txt` session before treating the blacklist as safe. For `-nojoy`, it verifies the running `steam.exe` command line through Windows Management Instrumentation. Missing or stale evidence always makes SteamlessController yield rather than risk duplicate input.
 
 SteamlessController sends HID feature reports to disable lizard mode, then reads the raw input reports and translates them into a virtual Xbox 360 controller via ViGEmBus. A background heartbeat re-sends the disable command every 800 ms to keep lizard mode off.
 

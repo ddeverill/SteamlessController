@@ -482,8 +482,8 @@ void ControllerManager::NotifySteamConflict() {
         m_alertFn(L"Steam is using the controller",
                   L"Windows only granted shared controller access while Steam is running. "
                   L"Steamless Mode was kept off to prevent duplicate or missing input. "
-                  L"Exit Steam, or add the Steam Controller to Steam's controller_blacklist "
-                  L"and restart Steam.");
+                  L"Exit Steam, or choose Debug: Steam coexistence in the tray menu and "
+                  L"apply the recommended controller-hiding option.");
     }
 }
 

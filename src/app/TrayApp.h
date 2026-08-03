@@ -1,9 +1,11 @@
 #pragma once
 #include <Windows.h>
+#include <commctrl.h>
 #include <memory>
 #include <mutex>
 #include <string>
 #include "RemapWindow.h"
+#include "SteamStrategy.h"
 #include "SteamWatcher.h"
 
 class ControllerManager;
@@ -38,6 +40,10 @@ private:
     void LoadSettings();
     void SaveSettings();
     void OpenRemapWindow();
+    void ApplySteamStrategy(SteamStrategy strategy);
+    void CreateMenuTooltip();
+    void ShowMenuTooltip(UINT commandId);
+    void HideMenuTooltip();
 
     // The tray app never runs elevated (an elevated foreground window blocks
     // unelevated SendInput — Steam Input's desktop cursor — via UIPI).
@@ -66,6 +72,10 @@ private:
     HICON                              m_iconOff    = nullptr;
     HICON                              m_iconOn     = nullptr;
     AutoMode                           m_autoMode   = AutoMode::OffWhileSteam;
+    SteamStrategy                      m_steamStrategy = SteamStrategy::YieldToSteam;
+    HWND                               m_menuTooltip = nullptr;
+    TTTOOLINFOW                        m_menuTooltipInfo{};
+    std::wstring                       m_menuTooltipText;
     int                                m_acquireRetries = 0;
     bool                               m_elevationBalloonShown = false;
     bool                               m_startupEnabled   = false;
@@ -92,6 +102,9 @@ private:
     static constexpr UINT IDM_MODE_GAME     = 1012;
     static constexpr UINT IDM_OPENLOG       = 1013;
     static constexpr UINT IDM_NOTIFICATIONS = 1014;
+    static constexpr UINT IDM_STEAM_YIELD    = 1020;
+    static constexpr UINT IDM_STEAM_BLACKLIST = 1021;
+    static constexpr UINT IDM_STEAM_NOJOY    = 1022;
     static constexpr UINT WM_TRAY           = WM_APP + 1;
     static constexpr UINT WM_STEAMSTATE     = WM_APP + 2;
     static constexpr UINT WM_ALERT          = WM_APP + 3;

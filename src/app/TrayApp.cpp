@@ -3,9 +3,11 @@
 #include "ControllerPlatform.h"
 #include "DeviceRestart.h"
 #include "EventLog.h"
+#include "SteamStrategy.h"
 #include "steam/SteamController.h"
 #include "resource.h"
 #include <shellapi.h>
+#include <commctrl.h>
 #include <dbt.h>
 #include <winreg.h>
 #include <cstdio>
@@ -57,6 +59,7 @@ TrayApp::~TrayApp() {
     // Stop the watcher before anything else so its callback can't post to a
     // window (or reference a controller) that is being torn down.
     m_steamWatcher.Stop();
+    if (m_menuTooltip) DestroyWindow(m_menuTooltip);
     RemoveTrayIcon();
     g_app = nullptr;
 }
@@ -78,6 +81,8 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     m_hwnd = CreateWindowExW(0, WNDCLASS_NAME, L"SteamlessController",
                              0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, hInstance, nullptr);
     if (!m_hwnd) return false;
+
+    CreateMenuTooltip();
 
     // Register for HID device arrival/removal notifications.
     DEV_BROADCAST_DEVICEINTERFACE_W filter{};
@@ -104,6 +109,7 @@ bool TrayApp::Init(HINSTANCE hInstance) {
         });
 
     LoadSettings();
+    m_steamStrategy = SteamStrategies::DetectConfigured();
     // Converge the startup mechanism with the loaded mode — e.g. the first
     // elevated run after enabling in-game mode migrates the Run key to the
     // highest-privileges logon task (and back when the mode changes).
@@ -221,12 +227,35 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             m_notificationsEnabled ? "enabled" : "disabled");
             SaveSettings();
             break;
+        case IDM_STEAM_YIELD:
+            ApplySteamStrategy(SteamStrategy::YieldToSteam);
+            break;
+        case IDM_STEAM_BLACKLIST:
+            ApplySteamStrategy(SteamStrategy::ControllerBlacklist);
+            break;
+        case IDM_STEAM_NOJOY:
+            ApplySteamStrategy(SteamStrategy::NoJoy);
+            break;
         case IDM_EXIT:
             EventLog::Write("=== SteamlessController exiting (user request) ===");
             m_controller->DisableGameMode();
             PostQuitMessage(0);
             break;
         }
+        return 0;
+
+    case WM_MENUSELECT: {
+        const UINT flags = HIWORD(wp);
+        const UINT commandId = LOWORD(wp);
+        if (flags == 0xFFFF || (flags & MF_POPUP) != 0)
+            HideMenuTooltip();
+        else
+            ShowMenuTooltip(commandId);
+        return 0;
+    }
+
+    case WM_EXITMENULOOP:
+        HideMenuTooltip();
         return 0;
 
     case WM_STEAMSTATE: {
@@ -300,6 +329,100 @@ bool TrayApp::WantControl(SteamState state) const {
         return state != SteamState::InGame;
     default:                      return false;  // Manual: tray toggle decides
     }
+}
+
+void TrayApp::ApplySteamStrategy(SteamStrategy strategy) {
+    if (SteamStrategies::IsGameRunning()) {
+        const int answer = MessageBoxW(
+            m_hwnd,
+            L"A Steam game is running. Applying this option will close the game when "
+            L"Steam restarts. Apply it now?",
+            L"Restart Steam",
+            MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
+        if (answer != IDYES) return;
+    }
+
+    EventLog::Write("USER: applying Steam coexistence strategy %d",
+                    static_cast<int>(strategy));
+    KillTimer(m_hwnd, IDT_ACQUIRE);
+    m_acquireRetries = 0;
+    m_steamWatcher.Stop();
+
+    // Steam must close before config.vdf is edited, and releasing first gives
+    // lizard mode a chance to come back while neither application owns input.
+    m_controller->ReleaseDevices();
+    MSG stale{};
+    while (PeekMessageW(&stale, m_hwnd, WM_STEAMSTATE, WM_STEAMSTATE, PM_REMOVE)) {}
+
+    const SteamStrategies::ApplyResult result = SteamStrategies::ApplyAndRestart(strategy);
+    if (result.applied) m_steamStrategy = strategy;
+
+    m_steamWatcher.Start([this](SteamState state) {
+        PostMessageW(m_hwnd, WM_STEAMSTATE, static_cast<WPARAM>(state), 0);
+    });
+
+    if (!result.message.empty()) {
+        MessageBoxW(m_hwnd, result.message.c_str(),
+                    result.applied ? L"Steam restart warning" : L"Steam strategy error",
+                    MB_OK | (result.applied ? MB_ICONWARNING : MB_ICONERROR));
+    }
+}
+
+void TrayApp::CreateMenuTooltip() {
+    INITCOMMONCONTROLSEX controls{};
+    controls.dwSize = sizeof(controls);
+    controls.dwICC = ICC_WIN95_CLASSES;
+    InitCommonControlsEx(&controls);
+
+    m_menuTooltip = CreateWindowExW(
+        WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        m_hwnd, nullptr, m_hInstance, nullptr);
+    if (!m_menuTooltip) return;
+
+    SetWindowPos(m_menuTooltip, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SendMessageW(m_menuTooltip, TTM_SETMAXTIPWIDTH, 0, 430);
+    SendMessageW(m_menuTooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 30000);
+
+    m_menuTooltipInfo.cbSize = sizeof(m_menuTooltipInfo);
+    m_menuTooltipInfo.uFlags = TTF_TRACK | TTF_ABSOLUTE;
+    m_menuTooltipInfo.hwnd = m_hwnd;
+    m_menuTooltipInfo.uId = 1;
+    m_menuTooltipInfo.lpszText = const_cast<LPWSTR>(L"");
+    SendMessageW(m_menuTooltip, TTM_ADDTOOLW, 0,
+                 reinterpret_cast<LPARAM>(&m_menuTooltipInfo));
+}
+
+void TrayApp::ShowMenuTooltip(UINT commandId) {
+    SteamStrategy strategy;
+    switch (commandId) {
+    case IDM_STEAM_YIELD:     strategy = SteamStrategy::YieldToSteam; break;
+    case IDM_STEAM_BLACKLIST: strategy = SteamStrategy::ControllerBlacklist; break;
+    case IDM_STEAM_NOJOY:     strategy = SteamStrategy::NoJoy; break;
+    default:
+        HideMenuTooltip();
+        return;
+    }
+    if (!m_menuTooltip) return;
+
+    m_menuTooltipText = SteamStrategies::Tooltip(strategy);
+    m_menuTooltipInfo.lpszText = m_menuTooltipText.data();
+    SendMessageW(m_menuTooltip, TTM_UPDATETIPTEXTW, 0,
+                 reinterpret_cast<LPARAM>(&m_menuTooltipInfo));
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    SendMessageW(m_menuTooltip, TTM_TRACKPOSITION, 0,
+                 MAKELPARAM(cursor.x + 24, cursor.y + 20));
+    SendMessageW(m_menuTooltip, TTM_TRACKACTIVATE, TRUE,
+                 reinterpret_cast<LPARAM>(&m_menuTooltipInfo));
+}
+
+void TrayApp::HideMenuTooltip() {
+    if (m_menuTooltip)
+        SendMessageW(m_menuTooltip, TTM_TRACKACTIVATE, FALSE,
+                     reinterpret_cast<LPARAM>(&m_menuTooltipInfo));
 }
 
 void TrayApp::ApplySteamState(SteamState state) {
@@ -775,6 +898,21 @@ void TrayApp::ShowContextMenu() {
                 IDM_PLATFORM_PS, L"PlayStation");
     AppendMenuW(menu, MF_STRING | MF_POPUP,
                 reinterpret_cast<UINT_PTR>(platformMenu), L"Controller Platform");
+
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+    HMENU debugMenu = CreatePopupMenu();
+    AppendMenuW(debugMenu, MF_STRING, IDM_STEAM_YIELD, L"Yield to Steam");
+    AppendMenuW(debugMenu, MF_STRING, IDM_STEAM_BLACKLIST,
+                L"Hide Steam Controllers from Steam (recommended)");
+    AppendMenuW(debugMenu, MF_STRING, IDM_STEAM_NOJOY, L"Launch Steam with -nojoy");
+    CheckMenuRadioItem(debugMenu, IDM_STEAM_YIELD, IDM_STEAM_NOJOY,
+                       m_steamStrategy == SteamStrategy::YieldToSteam ? IDM_STEAM_YIELD
+                       : m_steamStrategy == SteamStrategy::ControllerBlacklist
+                           ? IDM_STEAM_BLACKLIST : IDM_STEAM_NOJOY,
+                       MF_BYCOMMAND);
+    AppendMenuW(menu, MF_STRING | MF_POPUP,
+                reinterpret_cast<UINT_PTR>(debugMenu), L"Debug: Steam coexistence");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 

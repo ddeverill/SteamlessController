@@ -91,6 +91,7 @@ add_executable(SteamlessController WIN32
     src/app/VirtualController.cpp
     src/app/TrackpadMouse.cpp
     src/app/SteamWatcher.cpp
+    src/app/SteamStrategy.cpp
     src/app/DeviceRestart.cpp
     src/app/EventLog.cpp
     src/app/RemapWindow.cpp
@@ -108,6 +109,10 @@ target_link_libraries(SteamlessController PRIVATE
     ole32
     shlwapi
     cfgmgr32
+    comctl32
+    shell32
+    wbemuuid
+    oleaut32
 )
 if (MSVC)
     target_compile_options(SteamlessController PRIVATE /W4 /WX /utf-8 /wd4828)
