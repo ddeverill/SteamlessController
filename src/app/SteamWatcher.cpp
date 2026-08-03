@@ -244,7 +244,9 @@ static bool IsControllerHiddenFromSteam(const SteamProcess& steam) {
         return ReportControllerHidden(false, "current controller session unavailable");
     const std::string session = log.substr(sessionPos);
 
-    constexpr const char* ids[] = {"28de/1302", "28de/1303", "28de/1304"};
+    constexpr const char* ids[] = {
+        "28de/1302", "28de/1303", "28de/1304", "28de/1305"
+    };
     bool hidden = false;
     for (const char* id : ids) {
         std::string type(id);

@@ -20,8 +20,8 @@ constexpr wchar_t STRATEGY_VALUE[] = L"SteamStrategy";
 constexpr wchar_t BASELINE_CAPTURED_VALUE[] = L"SteamBaselineCaptured";
 constexpr wchar_t BASELINE_BLACKLIST_VALUE[] = L"SteamBaselineBlacklistMask";
 constexpr wchar_t BASELINE_NOJOY_VALUE[] = L"SteamBaselineNoJoy";
-constexpr std::array<const char*, 3> STEAM_CONTROLLER_IDS = {
-    "28de/1302", "28de/1303", "28de/1304"
+constexpr std::array<const char*, 4> STEAM_CONTROLLER_IDS = {
+    "28de/1302", "28de/1303", "28de/1304", "28de/1305"
 };
 constexpr DWORD ALL_STEAM_CONTROLLER_IDS =
     (1u << STEAM_CONTROLLER_IDS.size()) - 1u;

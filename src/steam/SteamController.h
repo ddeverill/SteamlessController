@@ -9,9 +9,10 @@
 class SteamController {
 public:
     static constexpr uint16_t VALVE_VID        = 0x28DE;
-    static constexpr uint16_t SC2026_PID       = 0x1302;  // wired USB
-    static constexpr uint16_t SC2026_BT_PID    = 0x1303;  // Bluetooth LE (HID over GATT)
-    static constexpr uint16_t SC2026_DONGLE_PID = 0x1304; // wireless dongle ("Steam Controller Puck")
+    static constexpr uint16_t SC2026_PID        = 0x1302; // wired USB
+    static constexpr uint16_t SC2026_BT_PID     = 0x1303; // Bluetooth LE (HID over GATT)
+    static constexpr uint16_t SC2026_DONGLE_PID = 0x1304; // Proteus dongle ("Steam Controller Puck")
+    static constexpr uint16_t SC2026_NEREID_DONGLE_PID = 0x1305; // Nereid receiver
 
     // How the controller is linked to the PC. Bluetooth is detected from the
     // device interface path (HOGP service GUID / bthenum), the other two by PID.

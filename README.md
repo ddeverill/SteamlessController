@@ -32,7 +32,7 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 ### To run
 - Windows 10 or later (64-bit)
 - [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases/latest) driver installed
-- Steam Controller — wired USB (PID `0x1302`), wireless dongle (PID `0x1304`), or Bluetooth LE (PID `0x1303`, pair via Windows Bluetooth settings)
+- 2026 Steam Controller (Triton) — wired USB (PID `0x1302`), Bluetooth LE (PID `0x1303`, pair via Windows Bluetooth settings), Proteus/Puck receiver (PID `0x1304`), or Nereid receiver (PID `0x1305`)
 - Steam **closed**, or a coexistence strategy selected from the tray's debug menu
 
 ### To build
@@ -79,13 +79,13 @@ Steam normally opens the physical Steam Controller even while the client is idle
 The tray's **Debug: Steam coexistence** submenu can apply one of three strategies. Hover an option to see its tradeoffs; selecting one safely releases the controller, closes Steam, applies the setting, and relaunches Steam immediately. If a Steam game is running, the app asks before closing it.
 
 - **Restore Steam's original controller settings** is the explicit off switch. It restores the Valve PID blacklist and `-nojoy` state recorded before SteamlessController first changed them, then SteamlessController yields whenever Steam can see the physical controller.
-- **Reserve Steam Controller for Steamless** is recommended for Game Pass. It adds only the three Steam Controller product IDs to Steam's per-device blacklist, leaving Steam Input available for other controller types. Steam Controller-specific layouts, gyro, and touch menus are unavailable in Steam.
+- **Reserve Steam Controller for Steamless** is recommended for Game Pass. It adds only the four supported 2026 Steam Controller product IDs to Steam's per-device blacklist, leaving Steam Input available for other controller types. Steam Controller-specific layouts, gyro, and touch menus are unavailable in Steam.
 - **Disable all Steam controller support (`-nojoy`)** disables all Steam client controller support, including Steam Input and Big Picture controller navigation. The app adds the flag to Steam's existing Windows startup entry; launching Steam another way without the flag is detected and SteamlessController safely yields.
 
 The blacklist option backs up `config/config.vdf` to `config/config.vdf.steamlesscontroller.bak`, preserves unrelated blacklist entries, and manages this property inside the outer `InstallConfigStore` object:
 
 ```vdf
-"controller_blacklist" "28de/1302,28de/1303,28de/1304"
+"controller_blacklist" "28de/1302,28de/1303,28de/1304,28de/1305"
 ```
 
 SteamlessController verifies both the setting and Steam's current `logs/controller.txt` session before treating the blacklist as safe. For `-nojoy`, it verifies the running `steam.exe` command line through Windows Management Instrumentation. Missing or stale evidence always makes SteamlessController yield rather than risk duplicate input.
