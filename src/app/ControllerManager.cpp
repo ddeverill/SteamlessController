@@ -26,6 +26,7 @@ struct ControllerManager::Slot {
     std::thread                        readThread;
     std::atomic<bool>                  readRunning{false};
     bool                               gameModeActive = false;
+    SteamController::AccessClaim       accessClaim = SteamController::AccessClaim::Failed;
     int                                lastBatteryPercent = -1;  // -1 = never reported
 
     // When this slot was last found silent. Probing for a state report costs
@@ -242,6 +243,27 @@ void ControllerManager::ReleaseDevices() {
     NotifyStateChanged();
 }
 
+void ControllerManager::SetSteamPresent(bool present) {
+    if (m_steamPresent == present) return;
+    m_steamPresent = present;
+
+    if (!present) {
+        m_steamConflictAlertShown = false;
+        return;
+    }
+
+    const bool sharedModeActive = std::any_of(m_slots.begin(), m_slots.end(),
+        [](const auto& slot) {
+            return slot->gameModeActive
+                && slot->accessClaim == SteamController::AccessClaim::Shared;
+        });
+    if (!sharedModeActive) return;
+
+    EventLog::Write("GAMEMODE: Steam started during shared access; yielding to prevent duplicate input");
+    DisableGameMode();
+    NotifySteamConflict();
+}
+
 void ControllerManager::SetTrackpadMouseEnabled(bool enabled) {
     m_trackpadMouseEnabled = enabled;
     for (auto& slot : m_slots) {
@@ -381,26 +403,31 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
         return;
     }
 
+    slot.accessClaim = SteamController::AccessClaim::Failed;
     const auto claim = slot.sc->ClaimGameModeAccess();
     if (claim == SteamController::AccessClaim::Failed) {
         EventLog::Write("GAMEMODE: device reopen failed %ls", slot.path.c_str());
         return;
     }
     if (claim == SteamController::AccessClaim::Shared) {
-        // ERROR_SHARING_VIOLATION identifies no owner: on current Windows the
-        // puck can require shared access even with steam.exe absent. Steam
-        // Input can genuinely compete while a Steam game is active, though,
-        // so keep the conservative refusal for that state only.
-        if (m_steamGameRunning) {
-            EventLog::Write("GAMEMODE: exclusive claim blocked while a Steam game is running %ls",
+        // ERROR_SHARING_VIOLATION does not identify the existing owner. Live
+        // testing shows that sharing with an idle Steam client is still unsafe:
+        // whichever mapper starts second can produce duplicate input or starve
+        // the other reader. The Windows-only holder is benign, so shared access
+        // remains the compatibility path while Steam is absent.
+        if (m_steamPresent) {
+            EventLog::Write("GAMEMODE: shared access blocked while Steam is running %ls",
                             slot.path.c_str());
+            NotifySteamConflict();
             return;
         }
         EventLog::Write("GAMEMODE: exclusive claim unavailable; using shared access %ls",
                         slot.path.c_str());
     }
+    slot.accessClaim = claim;
     if (!slot.sc->DisableLizardMode()) {
         EventLog::Write("GAMEMODE: DisableLizardMode failed %ls", slot.path.c_str());
+        slot.accessClaim = SteamController::AccessClaim::Failed;
         slot.sc->ReleaseToShared();
         return;
     }
@@ -416,6 +443,7 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
         if (slot.vc->IsDriverMissing()) vigemMissingOut = true;
         slot.vc.reset();
         slot.sc->EnableLizardMode();
+        slot.accessClaim = SteamController::AccessClaim::Failed;
         return;
     }
 
@@ -443,7 +471,19 @@ void ControllerManager::DisableGameModeSlot(Slot& slot) {
     slot.sc->EnableLizardMode();
     // Reopen shared so Steam can obtain write access — game mode is no longer active.
     slot.sc->ReleaseToShared();
+    slot.accessClaim = SteamController::AccessClaim::Failed;
     slot.gameModeActive = false;
+}
+
+void ControllerManager::NotifySteamConflict() {
+    if (m_steamConflictAlertShown) return;
+    m_steamConflictAlertShown = true;
+    if (m_alertFn) {
+        m_alertFn(L"Steam is using the controller",
+                  L"Windows only granted shared controller access while Steam is running. "
+                  L"Steamless Mode was kept off to prevent duplicate or missing input. "
+                  L"Exit Steam completely, then enable Steamless Mode again.");
+    }
 }
 
 // ---------------------------------------------------------------------------

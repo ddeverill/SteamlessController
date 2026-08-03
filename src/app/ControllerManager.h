@@ -38,10 +38,9 @@ public:
     // fallback if this fails or the process dies harder than a C++ exception.
     void EmergencyRestoreAll() noexcept;
 
-    // Whether Steam currently reports an active game. Shared access is safe
-    // while the client is idle, but not while Steam Input may also be mapping
-    // the controller for a running game.
-    void SetSteamGameRunning(bool running) { m_steamGameRunning = running; }
+    // Shared HID access is only safe while Steam is absent. If Steam appears
+    // during a shared session, yield before both mappers can emit input.
+    void SetSteamPresent(bool present);
 
     void SetTrackpadMouseEnabled(bool enabled);
     void SetUseLeftTrackpad(bool enabled);
@@ -72,6 +71,7 @@ private:
     void StartReadLoop(Slot& slot);
     void StopReadLoop(Slot& slot);
     void ReadLoop(Slot* slot);
+    void NotifySteamConflict();
     void NotifyStateChanged(bool vigemMissing = false);
 
     StateChangedFn                     m_onStateChanged;
@@ -80,7 +80,8 @@ private:
     bool                               m_trackpadMouseEnabled = false;
     bool                               m_useLeftTrackpad      = false;
     bool                               m_backButtonsEnabled   = false;
-    bool                               m_steamGameRunning     = false;
+    bool                               m_steamPresent         = false;
+    bool                               m_steamConflictAlertShown = false;
     ControllerPlatform                 m_controllerPlatform   = ControllerPlatform::Xbox;
     BackButtonConfig                   m_backConfig;
 
