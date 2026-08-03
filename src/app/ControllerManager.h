@@ -38,12 +38,10 @@ public:
     // fallback if this fails or the process dies harder than a C++ exception.
     void EmergencyRestoreAll() noexcept;
 
-    // Whether steam.exe is currently running. Decides if game mode may settle
-    // for a shared handle: a write handle held while Steam is absent belongs to
-    // some benign system component, but one held while Steam is running is
-    // probably Steam itself, and driving the controller alongside it is worse
-    // than refusing — refusing is what escalates to a device cycle.
-    void SetSteamPresent(bool present) { m_steamPresent = present; }
+    // Whether Steam currently reports an active game. Shared access is safe
+    // while the client is idle, but not while Steam Input may also be mapping
+    // the controller for a running game.
+    void SetSteamGameRunning(bool running) { m_steamGameRunning = running; }
 
     void SetTrackpadMouseEnabled(bool enabled);
     void SetUseLeftTrackpad(bool enabled);
@@ -82,7 +80,7 @@ private:
     bool                               m_trackpadMouseEnabled = false;
     bool                               m_useLeftTrackpad      = false;
     bool                               m_backButtonsEnabled   = false;
-    bool                               m_steamPresent         = false;
+    bool                               m_steamGameRunning     = false;
     ControllerPlatform                 m_controllerPlatform   = ControllerPlatform::Xbox;
     BackButtonConfig                   m_backConfig;
 

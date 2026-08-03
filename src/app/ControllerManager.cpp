@@ -387,13 +387,12 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
         return;
     }
     if (claim == SteamController::AccessClaim::Shared) {
-        // A write handle held while Steam is running is most likely Steam's.
-        // Proceeding would put two processes on the same controller, both
-        // driving lizard mode; refusing is what escalates to a device cycle
-        // that takes the handle back. Only settle for shared when Steam is
-        // absent and the holder is some benign system component.
-        if (m_steamPresent) {
-            EventLog::Write("GAMEMODE: exclusive claim blocked while Steam is running %ls",
+        // ERROR_SHARING_VIOLATION identifies no owner: on current Windows the
+        // puck can require shared access even with steam.exe absent. Steam
+        // Input can genuinely compete while a Steam game is active, though,
+        // so keep the conservative refusal for that state only.
+        if (m_steamGameRunning) {
+            EventLog::Write("GAMEMODE: exclusive claim blocked while a Steam game is running %ls",
                             slot.path.c_str());
             return;
         }

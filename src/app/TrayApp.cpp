@@ -231,9 +231,9 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_STEAMSTATE: {
         const auto steamState = static_cast<SteamState>(wp);
-        // Outside ApplySteamState, which returns early in Manual mode — the
-        // shared-handle decision needs to know about Steam in every mode.
-        m_controller->SetSteamPresent(steamState != SteamState::NoSteam);
+        // Outside ApplySteamState, which returns early in Manual mode — a
+        // manual enable must still avoid competing with an active Steam game.
+        m_controller->SetSteamGameRunning(steamState == SteamState::InGame);
         ApplySteamState(steamState);
         return 0;
     }
