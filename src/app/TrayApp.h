@@ -65,7 +65,7 @@ private:
     UINT                               m_wmTaskbar  = 0;
     HICON                              m_iconOff    = nullptr;
     HICON                              m_iconOn     = nullptr;
-    AutoMode                           m_autoMode   = AutoMode::Manual;
+    AutoMode                           m_autoMode   = AutoMode::OffWhileSteam;
     int                                m_acquireRetries = 0;
     bool                               m_elevationBalloonShown = false;
     bool                               m_startupEnabled   = false;

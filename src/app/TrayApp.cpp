@@ -658,7 +658,7 @@ void TrayApp::LoadSettings() {
     };
 
     // 0 = Manual, 1 = OffWhileSteam, 2 = OffOnlyInGame (old builds stored 0/1).
-    const DWORD mode = readDw(L"AutoSteamMode", 0);
+    const DWORD mode = readDw(L"AutoSteamMode", 1);
     m_autoMode = mode == 2 ? AutoMode::OffOnlyInGame
                : mode == 1 ? AutoMode::OffWhileSteam
                            : AutoMode::Manual;
