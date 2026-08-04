@@ -1,19 +1,19 @@
 #pragma once
 #include <Windows.h>
+#include <commctrl.h>
 #include <memory>
 #include <mutex>
 #include <string>
 #include "RemapWindow.h"
+#include "SteamStrategy.h"
 #include "SteamWatcher.h"
 
 class ControllerManager;
 
-// Who decides when SteamlessController takes over the physical controller.
-enum class AutoMode {
-    Manual        = 0,  // tray toggle only
-    OffWhileSteam = 1,  // yield whenever steam.exe is running
-    OffOnlyInGame = 2,  // yield only while a game is running (needs admin to
-                        // wrest the device from a running Steam)
+// When Steamless yields under Steam's original controller settings.
+enum class HandoffMode {
+    WhileSteamRuns = 1,
+    OnlyInGame     = 2,
 };
 
 class TrayApp {
@@ -33,11 +33,22 @@ private:
     void UpdateTrayIcon(bool connected, bool gameModeActive, bool vigemMissing = false);
     void ShowViGEmBalloon();
     void ShowAlertBalloon(const std::wstring& title, const std::wstring& text);
+    void ShowInfoBalloon(const std::wstring& title, const std::wstring& text);
     void OpenEventLog();
     void ShowContextMenu();
+    void ToggleSteamlessMode();
     void LoadSettings();
     void SaveSettings();
     void OpenRemapWindow();
+    bool ApplySteamStrategy(SteamStrategy strategy,
+                            bool launchIfStopped = true,
+                            bool enableSteamless = true,
+                            bool rememberPreference = true,
+                            bool confirmRunningGame = true);
+    bool ConfirmToggleSteamRestart(bool enabling, SteamStrategy targetStrategy);
+    void CreateMenuTooltip();
+    void ShowMenuTooltip(UINT commandId);
+    void HideMenuTooltip();
 
     // The tray app never runs elevated (an elevated foreground window blocks
     // unelevated SendInput — Steam Input's desktop cursor — via UIPI).
@@ -52,8 +63,8 @@ private:
     void DeleteLegacyStartupTask();
     void UpdateStartupRegistration();
 
-    // Auto-mode plumbing.
-    void SetAutoMode(AutoMode mode);
+    // Automatic ownership plumbing.
+    void SetHandoffMode(HandoffMode mode);
     bool WantControl(SteamState state) const;
     void ApplySteamState(SteamState state);
     void TryAcquireController();
@@ -65,8 +76,19 @@ private:
     UINT                               m_wmTaskbar  = 0;
     HICON                              m_iconOff    = nullptr;
     HICON                              m_iconOn     = nullptr;
-    AutoMode                           m_autoMode   = AutoMode::Manual;
+    HandoffMode                        m_handoffMode = HandoffMode::WhileSteamRuns;
+    SteamStrategy                      m_steamStrategy = SteamStrategy::YieldToSteam;
+    SteamStrategy                      m_preferredSteamStrategy = SteamStrategy::YieldToSteam;
+    HWND                               m_menuTooltip = nullptr;
+    TTTOOLINFOW                        m_menuTooltipInfo{};
+    std::wstring                       m_menuTooltipText;
     int                                m_acquireRetries = 0;
+    bool                               m_waitingForWake = false;
+    bool                               m_suppressNextLeftUp = false;
+    bool                               m_steamlessEnabled = true;
+    bool                               m_confirmSteamRestart = true;
+    bool                               m_preferredStrategyLoaded = false;
+    bool                               m_enabledSettingLoaded = false;
     bool                               m_elevationBalloonShown = false;
     bool                               m_startupEnabled   = false;
     int                                m_startupMechanism = 0;  // 0 none, 1 Run key, 2 elevated task
@@ -87,15 +109,19 @@ private:
     static constexpr UINT IDM_BACKBUTTONS   = 1007;
     static constexpr UINT IDM_PLATFORM_XBOX = 1008;
     static constexpr UINT IDM_PLATFORM_PS   = 1009;
-    static constexpr UINT IDM_MODE_MANUAL   = 1010;
-    static constexpr UINT IDM_MODE_STEAM    = 1011;
-    static constexpr UINT IDM_MODE_GAME     = 1012;
+    static constexpr UINT IDM_HANDOFF_STEAM = 1011;
+    static constexpr UINT IDM_HANDOFF_GAME  = 1012;
     static constexpr UINT IDM_OPENLOG       = 1013;
     static constexpr UINT IDM_NOTIFICATIONS = 1014;
+    static constexpr UINT IDM_STEAM_YIELD    = 1020;
+    static constexpr UINT IDM_STEAM_BLACKLIST = 1021;
+    static constexpr UINT IDM_STEAM_NOJOY    = 1022;
     static constexpr UINT WM_TRAY           = WM_APP + 1;
     static constexpr UINT WM_STEAMSTATE     = WM_APP + 2;
     static constexpr UINT WM_ALERT          = WM_APP + 3;
     static constexpr UINT TRAY_UID          = 1;
     static constexpr UINT_PTR IDT_ACQUIRE   = 1;
+    static constexpr UINT_PTR IDT_TRAY_CLICK = 2;
     static constexpr int  MAX_ACQUIRE_CYCLES = 3;
+    static constexpr UINT WAKE_RETRY_MS = 750;
 };

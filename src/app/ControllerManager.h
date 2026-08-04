@@ -2,6 +2,7 @@
 #include "BackButtonConfig.h"
 #include "ControllerPlatform.h"
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -26,7 +27,13 @@ public:
     // read loops copy it without locking.
     void SetAlertCallback(AlertFn fn) { m_alertFn = std::move(fn); }
 
-    void EnableGameMode();
+    enum class EnableGameModeResult {
+        Enabled,
+        NoActiveController,
+        Blocked,
+    };
+
+    EnableGameModeResult EnableGameMode(uint32_t stateWaitMs = 250);
     void DisableGameMode();
     // Disables game mode then closes all device handles so another process
     // (e.g. Steam) can claim the controller. Safe to call when already disabled.
@@ -37,6 +44,10 @@ public:
     // no threads. The firmware's own revert timeout remains the final
     // fallback if this fails or the process dies harder than a C++ exception.
     void EmergencyRestoreAll() noexcept;
+
+    // Shared HID access is only safe while Steam cannot see the physical
+    // controller. If that changes, yield before both mappers can emit input.
+    void SetSteamMayOwnController(bool mayOwn);
 
     void SetTrackpadMouseEnabled(bool enabled);
     void SetUseLeftTrackpad(bool enabled);
@@ -62,11 +73,13 @@ private:
 
     void SyncDevices();
     void OpenSlot(const std::wstring& path);
-    void EnableGameModeSlot(Slot& slot, bool& vigemMissingOut);
+    EnableGameModeResult EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
+                                            uint32_t stateWaitMs);
     void DisableGameModeSlot(Slot& slot);
     void StartReadLoop(Slot& slot);
     void StopReadLoop(Slot& slot);
     void ReadLoop(Slot* slot);
+    void NotifySteamConflict();
     void NotifyStateChanged(bool vigemMissing = false);
 
     StateChangedFn                     m_onStateChanged;
@@ -75,6 +88,8 @@ private:
     bool                               m_trackpadMouseEnabled = false;
     bool                               m_useLeftTrackpad      = false;
     bool                               m_backButtonsEnabled   = false;
+    bool                               m_steamMayOwnController = false;
+    bool                               m_steamConflictAlertShown = false;
     ControllerPlatform                 m_controllerPlatform   = ControllerPlatform::Xbox;
     BackButtonConfig                   m_backConfig;
 
