@@ -78,16 +78,20 @@ static int CycleDevices() {
     const auto paths = SteamController::EnumerateAll();
     CycleLog("START: %zu interface(s) to cycle", paths.size());
 
-    for (const auto& path : paths) {
-        DWORD err = ERROR_SUCCESS;
-        const bool ok = DeviceRestart::RestartInterfaceDevice(path, &err);
-        // err is only non-zero on the disable-refused fallback path, so
-        // ok=true with err set means the cycle silently did nothing.
-        CycleLog("%s (transport=%s err=%lu) %ls",
-                 ok ? (err == ERROR_SUCCESS ? "CYCLED" : "FELL BACK TO RESTART") : "FAILED",
-                 SteamController::TransportName(SteamController::TransportFromPath(path)),
-                 err, path.c_str());
-        if (ok) any = true;
+    // One batch: every device down, one settle, every device back. Cycling
+    // them individually paid the settle once per interface, which on a
+    // four-slot receiver delayed the reclaim by seconds.
+    for (const auto& outcome : DeviceRestart::RestartInterfaceDevices(paths)) {
+        const char* verdict = !outcome.enabled     ? "LEFT DISABLED"
+                            : outcome.cycled       ? "CYCLED"
+                            : outcome.restartRequested ? "FELL BACK TO RESTART"
+                                                   : "FAILED";
+        CycleLog("%s (transport=%s err=%lu) %ls", verdict,
+                 SteamController::TransportName(
+                     SteamController::TransportFromPath(outcome.path)),
+                 outcome.error, outcome.path.c_str());
+        if (outcome.enabled && (outcome.cycled || outcome.restartRequested))
+            any = true;
     }
 
     CycleLog("DONE: exit=%d", any ? 0 : 1);

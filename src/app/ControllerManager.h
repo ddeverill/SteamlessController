@@ -62,6 +62,9 @@ public:
 
     bool IsConnected()              const { return !m_slots.empty(); }
     bool IsGameModeActive()         const;
+    // True while some connected slot is not in game mode — an empty receiver
+    // slot, or a controller that has not been switched on yet.
+    bool HasInactiveSlot()          const;
     bool IsTrackpadMouseEnabled()   const { return m_trackpadMouseEnabled; }
     bool IsUseLeftTrackpad()        const { return m_useLeftTrackpad; }
     bool IsBackButtonsEnabled()     const { return m_backButtonsEnabled; }

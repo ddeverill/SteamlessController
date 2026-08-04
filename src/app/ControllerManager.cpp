@@ -213,6 +213,11 @@ bool ControllerManager::IsGameModeActive() const {
         [](const auto& s) { return s->gameModeActive; });
 }
 
+bool ControllerManager::HasInactiveSlot() const {
+    return std::any_of(m_slots.begin(), m_slots.end(),
+        [](const auto& s) { return !s->gameModeActive; });
+}
+
 void ControllerManager::OnDeviceChange() {
     SyncDevices();
 }

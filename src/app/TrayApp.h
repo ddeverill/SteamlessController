@@ -104,8 +104,13 @@ private:
     // controller waking up produces no device-change event — the only way to
     // notice is to keep asking. The probe is short because a live slot streams
     // continuously and answers within a few reports.
-    static constexpr UINT WAKE_POLL_MS  = 2000;
-    static constexpr UINT WAKE_PROBE_MS = 80;
+    // Brisk while we have no controller at all — the user is waiting on it.
+    static constexpr UINT WAKE_POLL_IDLE_MS   = 2000;
+    // Relaxed once something is already in game mode: this is only watching
+    // for additional controllers joining, and each poll briefly blocks the UI
+    // thread once per still-empty slot.
+    static constexpr UINT WAKE_POLL_ACTIVE_MS = 5000;
+    static constexpr UINT WAKE_PROBE_MS       = 80;
     static constexpr int  MAX_ACQUIRE_CYCLES = 3;
     // Must outlast a full device cycle: the helper waits a second between
     // disable and enable, then a multi-slot receiver re-enumerates every
