@@ -134,6 +134,98 @@ std::vector<RestartOutcome> RestartInterfaceDevices(const std::vector<std::wstri
     return results;
 }
 
+namespace {
+
+std::wstring CycleTargetsPath() {
+    wchar_t local[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH)) return {};
+    const std::wstring dir = std::wstring(local) + L"\\SteamlessController";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\cycle-targets.txt";
+}
+
+// A handover left behind by a crashed run must not steer a later cycle at
+// devices nobody asked about.
+constexpr ULONGLONG kTargetsMaxAgeMs = 60'000;
+
+}  // namespace
+
+bool WriteCycleTargets(const std::vector<std::wstring>& paths) {
+    const std::wstring file = CycleTargetsPath();
+    if (file.empty()) return false;
+    if (paths.empty()) {
+        DeleteFileW(file.c_str());
+        return true;
+    }
+
+    std::wstring body;
+    for (auto const& path : paths) {
+        body += path;
+        body += L'\n';
+    }
+
+    HANDLE handle = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+
+    const wchar_t bom = 0xFEFF;
+    DWORD written = 0;
+    bool ok = WriteFile(handle, &bom, sizeof(bom), &written, nullptr) != 0
+           && WriteFile(handle, body.data(),
+                        static_cast<DWORD>(body.size() * sizeof(wchar_t)),
+                        &written, nullptr) != 0;
+    CloseHandle(handle);
+    if (!ok) DeleteFileW(file.c_str());
+    return ok;
+}
+
+std::vector<std::wstring> ConsumeCycleTargets() {
+    std::vector<std::wstring> paths;
+    const std::wstring file = CycleTargetsPath();
+    if (file.empty()) return paths;
+
+    WIN32_FILE_ATTRIBUTE_DATA attrs{};
+    if (!GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &attrs))
+        return paths;
+
+    ULARGE_INTEGER wrote{}, now{};
+    wrote.LowPart  = attrs.ftLastWriteTime.dwLowDateTime;
+    wrote.HighPart = attrs.ftLastWriteTime.dwHighDateTime;
+    FILETIME nowFt{};
+    GetSystemTimeAsFileTime(&nowFt);
+    now.LowPart  = nowFt.dwLowDateTime;
+    now.HighPart = nowFt.dwHighDateTime;
+    const ULONGLONG ageMs = now.QuadPart > wrote.QuadPart
+                          ? (now.QuadPart - wrote.QuadPart) / 10000ULL : 0ULL;
+
+    HANDLE handle = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle != INVALID_HANDLE_VALUE) {
+        std::wstring body;
+        wchar_t  buffer[512];
+        DWORD    read = 0;
+        while (ReadFile(handle, buffer, sizeof(buffer), &read, nullptr) && read > 0)
+            body.append(buffer, read / sizeof(wchar_t));
+        CloseHandle(handle);
+
+        if (!body.empty() && body.front() == 0xFEFF) body.erase(body.begin());
+        size_t start = 0;
+        while (start < body.size()) {
+            size_t end = body.find(L'\n', start);
+            if (end == std::wstring::npos) end = body.size();
+            std::wstring line = body.substr(start, end - start);
+            while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n'))
+                line.pop_back();
+            if (!line.empty()) paths.push_back(std::move(line));
+            start = end + 1;
+        }
+    }
+
+    DeleteFileW(file.c_str());
+    if (ageMs > kTargetsMaxAgeMs) paths.clear();
+    return paths;
+}
+
 bool RestartInterfaceDevice(const std::wstring& interfacePath, DWORD* errorOut) {
     const auto results = RestartInterfaceDevices({interfacePath});
     if (results.empty()) {

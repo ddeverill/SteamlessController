@@ -29,4 +29,16 @@ std::vector<RestartOutcome> RestartInterfaceDevices(const std::vector<std::wstri
 // Single-device convenience wrapper.
 bool RestartInterfaceDevice(const std::wstring& interfacePath, DWORD* errorOut = nullptr);
 
+// The tray app cannot pass arguments to the elevated helper — the scheduled
+// task runs it with none — so the interfaces worth cycling are handed over
+// through a file. Cycling only the contested interface, rather than every
+// Valve device present, keeps a reclaim from disturbing controllers that
+// were never contested, and on a multi-slot receiver it is several times
+// faster.
+bool WriteCycleTargets(const std::vector<std::wstring>& paths);
+
+// Reads and deletes the handover file. Empty when absent or stale, which
+// means "cycle everything" — the behaviour for a helper run by hand.
+std::vector<std::wstring> ConsumeCycleTargets();
+
 }

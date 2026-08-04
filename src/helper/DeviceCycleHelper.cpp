@@ -75,8 +75,13 @@ static bool RunToolHidden(std::wstring cmdline) {
 
 static int CycleDevices() {
     bool any = false;
-    const auto paths = SteamController::EnumerateAll();
-    CycleLog("START: %zu interface(s) to cycle", paths.size());
+    // The tray app names the contested interfaces when it fires us; an empty
+    // handover (or a run by hand) means cycle everything.
+    auto       paths    = DeviceRestart::ConsumeCycleTargets();
+    const bool targeted = !paths.empty();
+    if (!targeted) paths = SteamController::EnumerateAll();
+    CycleLog("START: %zu interface(s) to cycle (%s)", paths.size(),
+             targeted ? "targeted" : "all");
 
     // Deliberately one interface at a time, not one batch. Batching them was
     // measured and lost: it saved nothing (the class-installer disable calls

@@ -408,8 +408,14 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     }
     ++m_acquireRetries;
     m_lastCycleTick = nowTick;
-    EventLog::Write("AUTO: exclusive claim blocked — cycling device (attempt %d)", m_acquireRetries);
+    // Capture the contested interfaces before ReleaseDevices clears the slots.
+    // Cycling only these leaves any other controller untouched, and on a
+    // multi-slot receiver skips three empty slots' worth of teardown.
+    const auto targets = m_controller->BlockedSlotPaths();
+    EventLog::Write("AUTO: exclusive claim blocked — cycling %zu device(s) (attempt %d)",
+                    targets.size(), m_acquireRetries);
     m_controller->ReleaseDevices();
+    DeviceRestart::WriteCycleTargets(targets);
     if (!RestartControllerDevices()) return;  // helper unavailable — balloon shown
     // The cycle runs asynchronously via the helper task; the device-arrival
     // notification drives the claim, with this timer as the fallback. It must
@@ -424,8 +430,10 @@ bool TrayApp::RestartControllerDevices() {
     // the pairing (which lives up at the BTHLEDEVICE layer), and it
     // re-enumerates as fast as a USB replug.
     if (IsProcessElevated()) {
+        auto paths = DeviceRestart::ConsumeCycleTargets();
+        if (paths.empty()) paths = SteamController::EnumerateAll();
         bool anyRestarted = false;
-        for (const auto& path : SteamController::EnumerateAll())
+        for (const auto& path : paths)
             if (DeviceRestart::RestartInterfaceDevice(path))
                 anyRestarted = true;
         return anyRestarted;

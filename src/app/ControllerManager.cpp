@@ -34,6 +34,10 @@ struct ControllerManager::Slot {
     // thread for that timeout on every one of those attempts.
     std::chrono::steady_clock::time_point lastSilentAt{};
 
+    // Set when the last attempt was refused by an existing handle holder, so
+    // a cycle can target this interface instead of every device present.
+    bool lastAttemptBlocked = false;
+
     // Haptic edge-detection state for touch (movement ticks).
     bool    hapticWasRightTouching = false;
     bool    hapticWasLeftTouching  = false;
@@ -218,6 +222,13 @@ bool ControllerManager::HasInactiveSlot() const {
         [](const auto& s) { return !s->gameModeActive; });
 }
 
+std::vector<std::wstring> ControllerManager::BlockedSlotPaths() const {
+    std::vector<std::wstring> paths;
+    for (auto const& slot : m_slots)
+        if (slot->lastAttemptBlocked) paths.push_back(slot->path);
+    return paths;
+}
+
 void ControllerManager::OnDeviceChange() {
     SyncDevices();
 }
@@ -227,7 +238,9 @@ ControllerManager::GameModeOutcome ControllerManager::EnableGameMode(uint32_t st
     bool anyBlocked      = false;
     bool anyEnabled      = false;
     for (auto& slot : m_slots) {
-        switch (EnableGameModeSlot(*slot, anyVigemMissing, stateWaitMs)) {
+        const auto outcome = EnableGameModeSlot(*slot, anyVigemMissing, stateWaitMs);
+        slot->lastAttemptBlocked = (outcome == GameModeOutcome::Blocked);
+        switch (outcome) {
         case GameModeOutcome::Enabled:            anyEnabled = true; break;
         case GameModeOutcome::Blocked:            anyBlocked = true; break;
         case GameModeOutcome::NoActiveController: break;
