@@ -257,6 +257,16 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(m_hwnd, IDT_ACQUIRE);
             if (m_autoMode != AutoMode::Manual && WantControl(m_steamWatcher.GetState()))
                 TryAcquireController();
+        } else if (wp == IDT_ACQUIRE_VERDICT) {
+            KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
+            // The last cycle's re-arrival had a grace period to land. If it
+            // did, the controller is ours and there is nothing to report.
+            if (m_controller->IsGameModeActive()) return 0;
+            EventLog::Write("AUTO: giving up acquiring after %d device cycles", MAX_ACQUIRE_CYCLES);
+            if (m_notificationsEnabled)
+                ShowAlertBalloon(L"Could not take the controller",
+                                 L"Steam is holding the controller and did not release it. "
+                                 L"Closing Steam will hand it back.");
         }
         return 0;
 
@@ -309,6 +319,7 @@ void TrayApp::ApplySteamState(SteamState state) {
         TryAcquireController();
     } else {
         KillTimer(m_hwnd, IDT_ACQUIRE);
+        KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
         m_acquireRetries = 0;
         const bool hadControl = m_controller->IsGameModeActive();
         // Good citizen: restore lizard mode and close our HID handles so
@@ -324,7 +335,7 @@ void TrayApp::ApplySteamState(SteamState state) {
 
 void TrayApp::TryAcquireController() {
     m_controller->OnDeviceChange();
-    m_controller->EnableGameMode();
+    auto outcome = m_controller->EnableGameMode();
 
     // A short burst of rapid retries: right after a device cycle we race
     // Steam's re-enumeration for the exclusive open, and starting the claim
@@ -332,24 +343,32 @@ void TrayApp::TryAcquireController() {
     for (int i = 0; i < 10 && !m_controller->IsGameModeActive(); ++i) {
         Sleep(50);
         m_controller->OnDeviceChange();
-        m_controller->EnableGameMode();
+        outcome = m_controller->EnableGameMode();
     }
     if (m_controller->IsGameModeActive()) {
+        KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
         m_acquireRetries = 0;
         return;
     }
     if (!m_controller->IsConnected()) return;  // nothing plugged in — arrival will retrigger
 
+    // No slot is emitting state: the controller is off, asleep, or the
+    // receiver has no controller paired into it. Cycling the device cannot
+    // conjure one up, and doing it anyway restarts the receiver's devnodes
+    // (and can prompt for elevation) just because nothing is switched on.
+    // Wake-up arrives as a device-change event, which retriggers this.
+    if (outcome == ControllerManager::GameModeOutcome::NoActiveController)
+        return;
+
     // Steam holds a write handle, so our exclusive claim can't succeed while
     // its handle lives. Cycle the device to invalidate it and retry on
     // re-arrival (the timer is a fallback in case the arrival event is missed).
     if (m_acquireRetries >= MAX_ACQUIRE_CYCLES) {
-        EventLog::Write("AUTO: giving up acquiring after %d device cycles", MAX_ACQUIRE_CYCLES);
-        // Don't leave the user with a silently dead pad and no explanation.
-        if (m_notificationsEnabled)
-            ShowAlertBalloon(L"Could not take the controller",
-                             L"Steam is holding the controller and did not release it. "
-                             L"Closing Steam will hand it back.");
+        // Don't announce failure yet. The last cycle's re-arrival can still be
+        // in flight — on a four-interface receiver the round trip outran the
+        // retry timer, so the app cried failure a second before succeeding.
+        // Let the grace timer deliver the verdict instead.
+        SetTimer(m_hwnd, IDT_ACQUIRE_VERDICT, ACQUIRE_VERDICT_MS, nullptr);
         return;
     }
     ++m_acquireRetries;
@@ -357,8 +376,10 @@ void TrayApp::TryAcquireController() {
     m_controller->ReleaseDevices();
     if (!RestartControllerDevices()) return;  // helper unavailable — balloon shown
     // The cycle runs asynchronously via the helper task; the device-arrival
-    // notification drives the claim, with this timer as the fallback.
-    SetTimer(m_hwnd, IDT_ACQUIRE, 2500, nullptr);
+    // notification drives the claim, with this timer as the fallback. It must
+    // outlast a cycle: the helper waits a second between disable and enable,
+    // then a multi-slot receiver has to re-enumerate every interface.
+    SetTimer(m_hwnd, IDT_ACQUIRE, ACQUIRE_RETRY_MS, nullptr);
 }
 
 bool TrayApp::RestartControllerDevices() {

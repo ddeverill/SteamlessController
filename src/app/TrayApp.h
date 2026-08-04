@@ -96,6 +96,14 @@ private:
     static constexpr UINT WM_STEAMSTATE     = WM_APP + 2;
     static constexpr UINT WM_ALERT          = WM_APP + 3;
     static constexpr UINT TRAY_UID          = 1;
-    static constexpr UINT_PTR IDT_ACQUIRE   = 1;
+    static constexpr UINT_PTR IDT_ACQUIRE         = 1;
+    static constexpr UINT_PTR IDT_ACQUIRE_VERDICT = 2;
     static constexpr int  MAX_ACQUIRE_CYCLES = 3;
+    // Must outlast a full device cycle: the helper waits a second between
+    // disable and enable, then a multi-slot receiver re-enumerates every
+    // interface. At 2500 the app declared failure while the last cycle's
+    // arrival was still in flight.
+    static constexpr UINT ACQUIRE_RETRY_MS   = 4000;
+    // Grace after the final cycle before reporting failure to the user.
+    static constexpr UINT ACQUIRE_VERDICT_MS = 3000;
 };

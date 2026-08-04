@@ -26,7 +26,13 @@ public:
     // read loops copy it without locking.
     void SetAlertCallback(AlertFn fn) { m_alertFn = std::move(fn); }
 
-    void EnableGameMode();
+    // Why game mode did not come up, so callers can tell an idle receiver from
+    // a contested one. A puck publishes a slot interface whether or not a
+    // controller is paired into it, and cycling the device because nothing is
+    // switched on is pointless churn.
+    enum class GameModeOutcome { Enabled, NoActiveController, Blocked };
+
+    GameModeOutcome EnableGameMode();
     void DisableGameMode();
     // Disables game mode then closes all device handles so another process
     // (e.g. Steam) can claim the controller. Safe to call when already disabled.
@@ -69,7 +75,7 @@ private:
 
     void SyncDevices();
     void OpenSlot(const std::wstring& path);
-    void EnableGameModeSlot(Slot& slot, bool& vigemMissingOut);
+    GameModeOutcome EnableGameModeSlot(Slot& slot, bool& vigemMissingOut);
     void DisableGameModeSlot(Slot& slot);
     void StartReadLoop(Slot& slot);
     void StopReadLoop(Slot& slot);
