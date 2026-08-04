@@ -56,7 +56,7 @@ private:
     void SetAutoMode(AutoMode mode);
     bool WantControl(SteamState state) const;
     void ApplySteamState(SteamState state);
-    void TryAcquireController();
+    void TryAcquireController(uint32_t stateWaitMs = 250);
     bool RestartControllerDevices();
     void ShowElevationBalloon();
 
@@ -99,6 +99,13 @@ private:
     static constexpr UINT TRAY_UID          = 1;
     static constexpr UINT_PTR IDT_ACQUIRE         = 1;
     static constexpr UINT_PTR IDT_ACQUIRE_VERDICT = 2;
+    static constexpr UINT_PTR IDT_WAKE_POLL       = 3;
+    // A multi-slot receiver publishes every slot interface permanently, so a
+    // controller waking up produces no device-change event — the only way to
+    // notice is to keep asking. The probe is short because a live slot streams
+    // continuously and answers within a few reports.
+    static constexpr UINT WAKE_POLL_MS  = 2000;
+    static constexpr UINT WAKE_PROBE_MS = 80;
     static constexpr int  MAX_ACQUIRE_CYCLES = 3;
     // Must outlast a full device cycle: the helper waits a second between
     // disable and enable, then a multi-slot receiver re-enumerates every

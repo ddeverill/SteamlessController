@@ -217,12 +217,12 @@ void ControllerManager::OnDeviceChange() {
     SyncDevices();
 }
 
-ControllerManager::GameModeOutcome ControllerManager::EnableGameMode() {
+ControllerManager::GameModeOutcome ControllerManager::EnableGameMode(uint32_t stateWaitMs) {
     bool anyVigemMissing = false;
     bool anyBlocked      = false;
     bool anyEnabled      = false;
     for (auto& slot : m_slots) {
-        switch (EnableGameModeSlot(*slot, anyVigemMissing)) {
+        switch (EnableGameModeSlot(*slot, anyVigemMissing, stateWaitMs)) {
         case GameModeOutcome::Enabled:            anyEnabled = true; break;
         case GameModeOutcome::Blocked:            anyBlocked = true; break;
         case GameModeOutcome::NoActiveController: break;
@@ -365,7 +365,7 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 
     if (IsGameModeActive()) {
         bool dummy = false;
-        EnableGameModeSlot(*m_slots.back(), dummy);
+        EnableGameModeSlot(*m_slots.back(), dummy, 250);
     } else {
         // Restore lizard mode in case a previous session crashed without cleaning up.
         m_slots.back()->sc->EnableLizardMode();
@@ -377,7 +377,8 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 // ---------------------------------------------------------------------------
 
 ControllerManager::GameModeOutcome
-ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
+ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
+                                      uint32_t stateWaitMs) {
     if (slot.gameModeActive) return GameModeOutcome::Enabled;
     // The puck publishes a controller interface per slot and current firmware
     // rejects the lizard-mode command on an empty one, so only act on a slot
@@ -388,7 +389,7 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
     if (now - slot.lastSilentAt < kSilentSlotRetryGap)
         return GameModeOutcome::NoActiveController;
 
-    if (!slot.sc->WaitForStateReport(250)) {
+    if (!slot.sc->WaitForStateReport(stateWaitMs)) {
         slot.lastSilentAt = std::chrono::steady_clock::now();
         EventLog::Write("GAMEMODE: no state reports from slot (transport=%s), skipping %ls",
                         SteamController::TransportName(slot.transport), slot.path.c_str());

@@ -257,6 +257,11 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             KillTimer(m_hwnd, IDT_ACQUIRE);
             if (m_autoMode != AutoMode::Manual && WantControl(m_steamWatcher.GetState()))
                 TryAcquireController();
+        } else if (wp == IDT_WAKE_POLL) {
+            KillTimer(m_hwnd, IDT_WAKE_POLL);
+            // Cheap probe — we are only asking whether anything woke up.
+            if (m_autoMode != AutoMode::Manual && WantControl(m_steamWatcher.GetState()))
+                TryAcquireController(WAKE_PROBE_MS);
         } else if (wp == IDT_ACQUIRE_VERDICT) {
             KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
             // The last cycle's re-arrival had a grace period to land. If it
@@ -320,6 +325,7 @@ void TrayApp::ApplySteamState(SteamState state) {
     } else {
         KillTimer(m_hwnd, IDT_ACQUIRE);
         KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
+        KillTimer(m_hwnd, IDT_WAKE_POLL);
         m_acquireRetries = 0;
         m_lastCycleTick  = 0;
         const bool hadControl = m_controller->IsGameModeActive();
@@ -334,9 +340,9 @@ void TrayApp::ApplySteamState(SteamState state) {
     }
 }
 
-void TrayApp::TryAcquireController() {
+void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     m_controller->OnDeviceChange();
-    auto outcome = m_controller->EnableGameMode();
+    auto outcome = m_controller->EnableGameMode(stateWaitMs);
 
     // A short burst of rapid retries: right after a device cycle we race
     // Steam's re-enumeration for the exclusive open, and starting the claim
@@ -344,10 +350,11 @@ void TrayApp::TryAcquireController() {
     for (int i = 0; i < 10 && !m_controller->IsGameModeActive(); ++i) {
         Sleep(50);
         m_controller->OnDeviceChange();
-        outcome = m_controller->EnableGameMode();
+        outcome = m_controller->EnableGameMode(stateWaitMs);
     }
     if (m_controller->IsGameModeActive()) {
         KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
+        KillTimer(m_hwnd, IDT_WAKE_POLL);
         m_acquireRetries = 0;
         m_lastCycleTick  = 0;
         return;
@@ -355,12 +362,18 @@ void TrayApp::TryAcquireController() {
     if (!m_controller->IsConnected()) return;  // nothing plugged in — arrival will retrigger
 
     // No slot is emitting state: the controller is off, asleep, or the
-    // receiver has no controller paired into it. Cycling the device cannot
-    // conjure one up, and doing it anyway restarts the receiver's devnodes
-    // (and can prompt for elevation) just because nothing is switched on.
-    // Wake-up arrives as a device-change event, which retriggers this.
-    if (outcome == ControllerManager::GameModeOutcome::NoActiveController)
+    // receiver has no controller paired into it. Cycling cannot conjure one
+    // up, and doing it anyway restarts the receiver's devnodes (and can
+    // prompt for elevation) just because nothing is switched on.
+    //
+    // Poll instead of waiting for an event. A receiver keeps publishing all
+    // of its slot interfaces whether or not a controller is paired into one,
+    // so switching the controller on produces no WM_DEVICECHANGE at all —
+    // measured: 88 seconds of silence after the controller was turned on.
+    if (outcome == ControllerManager::GameModeOutcome::NoActiveController) {
+        SetTimer(m_hwnd, IDT_WAKE_POLL, WAKE_POLL_MS, nullptr);
         return;
+    }
 
     // A cycle is asynchronous — fired through Task Scheduler, and the helper
     // pauses a second between disable and enable. Every device arrival it

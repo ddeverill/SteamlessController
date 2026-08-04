@@ -32,7 +32,10 @@ public:
     // switched on is pointless churn.
     enum class GameModeOutcome { Enabled, NoActiveController, Blocked };
 
-    GameModeOutcome EnableGameMode();
+    // stateWaitMs is how long each slot is given to prove it is live. Short
+    // values are for polling a receiver whose controller is switched off —
+    // a live slot streams continuously, so it answers almost immediately.
+    GameModeOutcome EnableGameMode(uint32_t stateWaitMs = 250);
     void DisableGameMode();
     // Disables game mode then closes all device handles so another process
     // (e.g. Steam) can claim the controller. Safe to call when already disabled.
@@ -75,7 +78,8 @@ private:
 
     void SyncDevices();
     void OpenSlot(const std::wstring& path);
-    GameModeOutcome EnableGameModeSlot(Slot& slot, bool& vigemMissingOut);
+    GameModeOutcome EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
+                                       uint32_t stateWaitMs);
     void DisableGameModeSlot(Slot& slot);
     void StartReadLoop(Slot& slot);
     void StopReadLoop(Slot& slot);
