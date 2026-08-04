@@ -321,6 +321,7 @@ void TrayApp::ApplySteamState(SteamState state) {
         KillTimer(m_hwnd, IDT_ACQUIRE);
         KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
         m_acquireRetries = 0;
+        m_lastCycleTick  = 0;
         const bool hadControl = m_controller->IsGameModeActive();
         // Good citizen: restore lizard mode and close our HID handles so
         // Steam can claim the controller without contention.
@@ -348,6 +349,7 @@ void TrayApp::TryAcquireController() {
     if (m_controller->IsGameModeActive()) {
         KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
         m_acquireRetries = 0;
+        m_lastCycleTick  = 0;
         return;
     }
     if (!m_controller->IsConnected()) return;  // nothing plugged in — arrival will retrigger
@@ -359,6 +361,18 @@ void TrayApp::TryAcquireController() {
     // Wake-up arrives as a device-change event, which retriggers this.
     if (outcome == ControllerManager::GameModeOutcome::NoActiveController)
         return;
+
+    // A cycle is asynchronous — fired through Task Scheduler, and the helper
+    // pauses a second between disable and enable. Every device arrival it
+    // produces re-enters this function, so without a floor on the spacing we
+    // stack another cycle on top of one still in flight. Observed: game mode
+    // came up at :55.355 and our own second cycle ripped the device back out
+    // at :56.367. Wait for the one already running to finish instead.
+    const ULONGLONG nowTick = GetTickCount64();
+    if (m_lastCycleTick != 0 && nowTick - m_lastCycleTick < CYCLE_MIN_GAP_MS) {
+        SetTimer(m_hwnd, IDT_ACQUIRE, ACQUIRE_RETRY_MS, nullptr);
+        return;
+    }
 
     // Steam holds a write handle, so our exclusive claim can't succeed while
     // its handle lives. Cycle the device to invalidate it and retry on
@@ -372,6 +386,7 @@ void TrayApp::TryAcquireController() {
         return;
     }
     ++m_acquireRetries;
+    m_lastCycleTick = nowTick;
     EventLog::Write("AUTO: exclusive claim blocked — cycling device (attempt %d)", m_acquireRetries);
     m_controller->ReleaseDevices();
     if (!RestartControllerDevices()) return;  // helper unavailable — balloon shown

@@ -67,6 +67,7 @@ private:
     HICON                              m_iconOn     = nullptr;
     AutoMode                           m_autoMode   = AutoMode::Manual;
     int                                m_acquireRetries = 0;
+    ULONGLONG                          m_lastCycleTick  = 0;
     bool                               m_elevationBalloonShown = false;
     bool                               m_startupEnabled   = false;
     int                                m_startupMechanism = 0;  // 0 none, 1 Run key, 2 elevated task
@@ -106,4 +107,8 @@ private:
     static constexpr UINT ACQUIRE_RETRY_MS   = 4000;
     // Grace after the final cycle before reporting failure to the user.
     static constexpr UINT ACQUIRE_VERDICT_MS = 3000;
+    // Minimum spacing between device cycles. A cycle is asynchronous, so
+    // without this the arrivals it generates re-enter the acquire path and
+    // fire another one on top of it.
+    static constexpr ULONGLONG CYCLE_MIN_GAP_MS = 4000;
 };
