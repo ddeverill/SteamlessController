@@ -28,6 +28,12 @@ struct ControllerManager::Slot {
     bool                               gameModeActive = false;
     int                                lastBatteryPercent = -1;  // -1 = never reported
 
+    // When this slot was last found silent. Probing for a state report costs
+    // the full timeout on an empty puck slot, and the acquire path retries in
+    // a rapid burst — without this, three empty slots would block the UI
+    // thread for that timeout on every one of those attempts.
+    std::chrono::steady_clock::time_point lastSilentAt{};
+
     // Haptic edge-detection state for touch (movement ticks).
     bool    hapticWasRightTouching = false;
     bool    hapticWasLeftTouching  = false;
@@ -211,11 +217,23 @@ void ControllerManager::OnDeviceChange() {
     SyncDevices();
 }
 
-void ControllerManager::EnableGameMode() {
+ControllerManager::GameModeOutcome ControllerManager::EnableGameMode(uint32_t stateWaitMs) {
     bool anyVigemMissing = false;
-    for (auto& slot : m_slots)
-        EnableGameModeSlot(*slot, anyVigemMissing);
+    bool anyBlocked      = false;
+    bool anyEnabled      = false;
+    for (auto& slot : m_slots) {
+        switch (EnableGameModeSlot(*slot, anyVigemMissing, stateWaitMs)) {
+        case GameModeOutcome::Enabled:            anyEnabled = true; break;
+        case GameModeOutcome::Blocked:            anyBlocked = true; break;
+        case GameModeOutcome::NoActiveController: break;
+        }
+    }
     NotifyStateChanged(anyVigemMissing);
+    if (anyEnabled) return GameModeOutcome::Enabled;
+    // Only report Blocked when something actually stood in the way. Slots that
+    // are merely silent mean no controller is switched on, which no amount of
+    // device cycling will change.
+    return anyBlocked ? GameModeOutcome::Blocked : GameModeOutcome::NoActiveController;
 }
 
 void ControllerManager::DisableGameMode() {
@@ -347,7 +365,7 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 
     if (IsGameModeActive()) {
         bool dummy = false;
-        EnableGameModeSlot(*m_slots.back(), dummy);
+        EnableGameModeSlot(*m_slots.back(), dummy, 250);
     } else {
         // Restore lizard mode in case a previous session crashed without cleaning up.
         m_slots.back()->sc->EnableLizardMode();
@@ -358,17 +376,49 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 // Game mode per-slot helpers
 // ---------------------------------------------------------------------------
 
-void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
-    if (slot.gameModeActive) return;
-    if (!slot.sc->ClaimExclusive()) {
-        EventLog::Write("GAMEMODE: exclusive claim failed (another process holds a write handle) %ls",
+ControllerManager::GameModeOutcome
+ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
+                                      uint32_t stateWaitMs) {
+    if (slot.gameModeActive) return GameModeOutcome::Enabled;
+    // The puck publishes a controller interface per slot and current firmware
+    // rejects the lizard-mode command on an empty one, so only act on a slot
+    // that is actually emitting state. Recently-silent slots are skipped
+    // outright — see Slot::lastSilentAt.
+    static constexpr auto kSilentSlotRetryGap = std::chrono::milliseconds(1500);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - slot.lastSilentAt < kSilentSlotRetryGap)
+        return GameModeOutcome::NoActiveController;
+
+    if (!slot.sc->WaitForStateReport(stateWaitMs)) {
+        slot.lastSilentAt = std::chrono::steady_clock::now();
+        EventLog::Write("GAMEMODE: no state reports from slot (transport=%s), skipping %ls",
+                        SteamController::TransportName(slot.transport), slot.path.c_str());
+        return GameModeOutcome::NoActiveController;
+    }
+
+    const auto claim = slot.sc->ClaimGameModeAccess();
+    if (claim == SteamController::AccessClaim::Failed) {
+        EventLog::Write("GAMEMODE: device reopen failed %ls", slot.path.c_str());
+        return GameModeOutcome::Blocked;
+    }
+    if (claim == SteamController::AccessClaim::Shared) {
+        // A write handle held while Steam is running is most likely Steam's.
+        // Proceeding would put two processes on the same controller, both
+        // driving lizard mode; refusing is what escalates to a device cycle
+        // that takes the handle back. Only settle for shared when Steam is
+        // absent and the holder is some benign system component.
+        if (m_steamPresent) {
+            EventLog::Write("GAMEMODE: exclusive claim blocked while Steam is running %ls",
+                            slot.path.c_str());
+            return GameModeOutcome::Blocked;
+        }
+        EventLog::Write("GAMEMODE: exclusive claim unavailable; using shared access %ls",
                         slot.path.c_str());
-        return;
     }
     if (!slot.sc->DisableLizardMode()) {
         EventLog::Write("GAMEMODE: DisableLizardMode failed %ls", slot.path.c_str());
         slot.sc->ReleaseToShared();
-        return;
+        return GameModeOutcome::Blocked;
     }
 
     slot.vc = std::make_unique<VirtualController>(
@@ -382,7 +432,7 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
         if (slot.vc->IsDriverMissing()) vigemMissingOut = true;
         slot.vc.reset();
         slot.sc->EnableLizardMode();
-        return;
+        return GameModeOutcome::Blocked;
     }
 
     if (m_controllerPlatform == ControllerPlatform::PlayStation)
@@ -396,6 +446,7 @@ void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
     slot.trackpad.SetUseLeftTrackpad(m_useLeftTrackpad);
     slot.trackpad.SetBackButtonsEnabled(m_backButtonsEnabled);
     StartReadLoop(slot);
+    return GameModeOutcome::Enabled;
 }
 
 void ControllerManager::DisableGameModeSlot(Slot& slot) {
@@ -493,14 +544,12 @@ void ControllerManager::ReadLoop(Slot* slot) {
         // Battery status — update DS4 battery level; no further processing needed.
         if (buf[0] == SteamController::REPORT_BATTERY_STATUS) {
             if (n >= 3) {
-                // USB/dongle payload order is [percent, chargeState]; over
-                // Bluetooth the firmware sends the same two bytes swapped —
-                // observed BT reports held a constant 1 (CHARGE_STATE_DISCHARGING)
-                // in buf[1] while buf[2] tracked the real charge level.
-                uint8_t percent     = buf[1];
-                uint8_t chargeState = buf[2];
-                if (slot->transport == SteamController::Transport::Bluetooth)
-                    std::swap(percent, chargeState);
+                // Payload is [chargeState, percent] on every transport, not
+                // the [percent, chargeState] originally assumed. Confirmed on
+                // the dongle too: reports read 1/92 and 1/91 — a constant 1
+                // (CHARGE_STATE_DISCHARGING) followed by the real level.
+                const uint8_t chargeState = buf[1];
+                const uint8_t percent     = buf[2];
                 if (slot->vc)
                     slot->vc->SetBatteryState(percent, chargeState);
                 if (slot->lastBatteryPercent != static_cast<int>(percent)) {

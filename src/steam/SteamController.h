@@ -12,6 +12,7 @@ public:
     static constexpr uint16_t SC2026_PID       = 0x1302;  // wired USB
     static constexpr uint16_t SC2026_BT_PID    = 0x1303;  // Bluetooth LE (HID over GATT)
     static constexpr uint16_t SC2026_DONGLE_PID = 0x1304; // wireless dongle ("Steam Controller Puck")
+    static constexpr uint16_t SC2026_NEREID_PID = 0x1305; // Nereid receiver
 
     // How the controller is linked to the PC. Bluetooth is detected from the
     // device interface path (HOGP service GUID / bthenum), the other two by PID.
@@ -21,6 +22,13 @@ public:
 
     // HID Usage Page for the vendor collection that carries all game input.
     static constexpr uint16_t VENDOR_USAGE_PAGE = 0xFF00;
+    static constexpr uint16_t CONTROLLER_USAGE  = 0x0001;
+
+    enum class AccessClaim {
+        Failed,
+        Shared,
+        Exclusive,
+    };
 
     // Input report IDs (device → host)
     static constexpr uint8_t REPORT_STATE         = 0x45;  // BLE/no-quaternion state report
@@ -155,6 +163,11 @@ public:
         return id == REPORT_STATE || id == REPORT_STATE_LEGACY;
     }
 
+    // Read until a live controller-state report arrives or the timeout expires.
+    // The puck exposes empty slot interfaces, and current firmware may reject
+    // feature commands until the active slot has produced an input report.
+    bool WaitForStateReport(uint32_t timeoutMs);
+
     // Two-step sequence: clears digital mappings + sets trackpads to NONE.
     // Starts the background rumble thread.
     bool DisableLizardMode();
@@ -162,10 +175,9 @@ public:
     // Restores default mappings. Should be called before process exit.
     bool EnableLizardMode();
 
-    // Reopen the device handle with FILE_SHARE_READ only, preventing other
-    // processes (e.g. Steam) from obtaining write access. Call before
-    // DisableLizardMode() when entering game mode.
-    bool ClaimExclusive();
+    // Prefer a write-exclusive handle, falling back to shared access when a
+    // compatible system handle is already open. Call before DisableLizardMode().
+    AccessClaim ClaimGameModeAccess();
 
     // Reopen the device handle with full share flags, allowing other processes
     // to open the device for write. Call after EnableLizardMode() when leaving

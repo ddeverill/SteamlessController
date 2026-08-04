@@ -56,7 +56,7 @@ private:
     void SetAutoMode(AutoMode mode);
     bool WantControl(SteamState state) const;
     void ApplySteamState(SteamState state);
-    void TryAcquireController();
+    void TryAcquireController(uint32_t stateWaitMs = 250);
     bool RestartControllerDevices();
     void ShowElevationBalloon();
 
@@ -67,6 +67,7 @@ private:
     HICON                              m_iconOn     = nullptr;
     AutoMode                           m_autoMode   = AutoMode::Manual;
     int                                m_acquireRetries = 0;
+    ULONGLONG                          m_lastCycleTick  = 0;
     bool                               m_elevationBalloonShown = false;
     bool                               m_startupEnabled   = false;
     int                                m_startupMechanism = 0;  // 0 none, 1 Run key, 2 elevated task
@@ -96,6 +97,25 @@ private:
     static constexpr UINT WM_STEAMSTATE     = WM_APP + 2;
     static constexpr UINT WM_ALERT          = WM_APP + 3;
     static constexpr UINT TRAY_UID          = 1;
-    static constexpr UINT_PTR IDT_ACQUIRE   = 1;
+    static constexpr UINT_PTR IDT_ACQUIRE         = 1;
+    static constexpr UINT_PTR IDT_ACQUIRE_VERDICT = 2;
+    static constexpr UINT_PTR IDT_WAKE_POLL       = 3;
+    // A multi-slot receiver publishes every slot interface permanently, so a
+    // controller waking up produces no device-change event — the only way to
+    // notice is to keep asking. The probe is short because a live slot streams
+    // continuously and answers within a few reports.
+    static constexpr UINT WAKE_POLL_MS  = 2000;
+    static constexpr UINT WAKE_PROBE_MS = 80;
     static constexpr int  MAX_ACQUIRE_CYCLES = 3;
+    // Must outlast a full device cycle: the helper waits a second between
+    // disable and enable, then a multi-slot receiver re-enumerates every
+    // interface. At 2500 the app declared failure while the last cycle's
+    // arrival was still in flight.
+    static constexpr UINT ACQUIRE_RETRY_MS   = 4000;
+    // Grace after the final cycle before reporting failure to the user.
+    static constexpr UINT ACQUIRE_VERDICT_MS = 3000;
+    // Minimum spacing between device cycles. A cycle is asynchronous, so
+    // without this the arrivals it generates re-enter the acquire path and
+    // fire another one on top of it.
+    static constexpr ULONGLONG CYCLE_MIN_GAP_MS = 4000;
 };

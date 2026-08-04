@@ -13,7 +13,8 @@
 // Enumeration
 // ---------------------------------------------------------------------------
 
-std::vector<std::wstring> HidDevice::Enumerate(uint16_t vid, uint16_t pid, uint16_t usagePage) {
+std::vector<std::wstring> HidDevice::Enumerate(uint16_t vid, uint16_t pid,
+                                               uint16_t usagePage, uint16_t usage) {
     GUID hidGuid;
     HidD_GetHidGuid(&hidGuid);
 
@@ -57,7 +58,8 @@ std::vector<std::wstring> HidDevice::Enumerate(uint16_t vid, uint16_t pid, uint1
             if (HidD_GetPreparsedData(h, &preparsed)) {
                 HIDP_CAPS caps{};
                 if (HidP_GetCaps(preparsed, &caps) == HIDP_STATUS_SUCCESS)
-                    match = (caps.UsagePage == usagePage);
+                    match = caps.UsagePage == usagePage
+                         && (usage == 0 || caps.Usage == usage);
                 HidD_FreePreparsedData(preparsed);
             } else {
                 match = false;
@@ -104,8 +106,8 @@ bool HidDevice::Open(const std::wstring& path) {
     Close();
 
     // Shared open for idle tracking — Steam can coexist while game mode is off.
-    // ClaimExclusive() downgrades the share mode to FILE_SHARE_READ when game
-    // mode activates, blocking Steam from obtaining write access at that point.
+    // ClaimGameModeAccess() prefers FILE_SHARE_READ when game mode activates,
+    // blocking Steam from obtaining write access when the OS permits it.
     m_handle = CreateFileW(path.c_str(),
                            GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE,

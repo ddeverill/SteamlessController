@@ -26,7 +26,16 @@ public:
     // read loops copy it without locking.
     void SetAlertCallback(AlertFn fn) { m_alertFn = std::move(fn); }
 
-    void EnableGameMode();
+    // Why game mode did not come up, so callers can tell an idle receiver from
+    // a contested one. A puck publishes a slot interface whether or not a
+    // controller is paired into it, and cycling the device because nothing is
+    // switched on is pointless churn.
+    enum class GameModeOutcome { Enabled, NoActiveController, Blocked };
+
+    // stateWaitMs is how long each slot is given to prove it is live. Short
+    // values are for polling a receiver whose controller is switched off —
+    // a live slot streams continuously, so it answers almost immediately.
+    GameModeOutcome EnableGameMode(uint32_t stateWaitMs = 250);
     void DisableGameMode();
     // Disables game mode then closes all device handles so another process
     // (e.g. Steam) can claim the controller. Safe to call when already disabled.
@@ -37,6 +46,13 @@ public:
     // no threads. The firmware's own revert timeout remains the final
     // fallback if this fails or the process dies harder than a C++ exception.
     void EmergencyRestoreAll() noexcept;
+
+    // Whether steam.exe is currently running. Decides if game mode may settle
+    // for a shared handle: a write handle held while Steam is absent belongs to
+    // some benign system component, but one held while Steam is running is
+    // probably Steam itself, and driving the controller alongside it is worse
+    // than refusing — refusing is what escalates to a device cycle.
+    void SetSteamPresent(bool present) { m_steamPresent = present; }
 
     void SetTrackpadMouseEnabled(bool enabled);
     void SetUseLeftTrackpad(bool enabled);
@@ -62,7 +78,8 @@ private:
 
     void SyncDevices();
     void OpenSlot(const std::wstring& path);
-    void EnableGameModeSlot(Slot& slot, bool& vigemMissingOut);
+    GameModeOutcome EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
+                                       uint32_t stateWaitMs);
     void DisableGameModeSlot(Slot& slot);
     void StartReadLoop(Slot& slot);
     void StopReadLoop(Slot& slot);
@@ -75,6 +92,7 @@ private:
     bool                               m_trackpadMouseEnabled = false;
     bool                               m_useLeftTrackpad      = false;
     bool                               m_backButtonsEnabled   = false;
+    bool                               m_steamPresent         = false;
     ControllerPlatform                 m_controllerPlatform   = ControllerPlatform::Xbox;
     BackButtonConfig                   m_backConfig;
 

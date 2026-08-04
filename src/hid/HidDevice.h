@@ -7,9 +7,11 @@
 
 class HidDevice {
 public:
-    // Returns device paths for all HID interfaces matching vid/pid/usagePage.
-    // Pass usagePage=0 to return all matching interfaces.
-    static std::vector<std::wstring> Enumerate(uint16_t vid, uint16_t pid, uint16_t usagePage = 0);
+    // Returns device paths for all HID interfaces matching vid/pid/usagePage/usage.
+    // Pass usagePage=0 to return all matching interfaces; usage=0 matches any usage.
+    static std::vector<std::wstring> Enumerate(uint16_t vid, uint16_t pid,
+                                                uint16_t usagePage = 0,
+                                                uint16_t usage = 0);
 
     HidDevice() = default;
     ~HidDevice() { Close(); }

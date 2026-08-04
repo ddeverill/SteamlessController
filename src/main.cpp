@@ -92,16 +92,51 @@ static std::vector<IfaceInfo> EnumerateAllValveDevices() {
             HidD_FreePreparsedData(preparsed);
         }
 
+        CloseHandle(h);
+
+        // Can a write-exclusive handle be had? A "no" here is exactly why game
+        // mode used to refuse a perfectly good controller, so it is worth
+        // seeing per interface instead of inferring it from a later failure.
+        HANDLE exclusive = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                       FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                       FILE_FLAG_OVERLAPPED, nullptr);
+        const DWORD exclusiveErr =
+            exclusive == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+        if (exclusive != INVALID_HANDLE_VALUE) CloseHandle(exclusive);
+
+        // Which slot is actually live? The puck publishes four controller
+        // interfaces and only an occupied one emits state reports.
+        const bool controllerIface =
+            info.usagePage == SteamController::VENDOR_USAGE_PAGE
+            && info.usage == SteamController::CONTROLLER_USAGE;
+        size_t  reportLen = 0;
+        uint8_t reportId  = 0;
+        if (controllerIface) {
+            HidDevice probe;
+            if (probe.Open(path)) {
+                uint8_t report[64]{};
+                reportLen = probe.ReadInputReport(report, sizeof(report), 250);
+                if (reportLen > 0) reportId = report[0];
+            }
+        }
+
         const bool vendor = (info.usagePage == SteamController::VENDOR_USAGE_PAGE);
         printf("  [%zu]%s PID=%04X  Usage=%04X:%04X  In=%u Out=%u Feat=%u  fw=0x%04X  %s\n"
                "      \"%ls\"  serial=%ls\n"
-               "      path: %ls\n",
+               "      exclusive=%s",
                out.size(), vendor ? "*" : " ", attrs.ProductID,
                info.usagePage, info.usage, inLen, outLen, featLen,
                attrs.VersionNumber, GuessTransport(path),
-               productBuf, serialBuf, path.c_str());
+               productBuf, serialBuf,
+               exclusiveErr == ERROR_SUCCESS ? "yes" : "no");
+        if (exclusiveErr != ERROR_SUCCESS)
+            printf(" (error %lu)", exclusiveErr);
+        if (reportLen > 0)
+            printf("  live=0x%02X/%zu bytes", reportId, reportLen);
+        else if (controllerIface)
+            printf("  live=none (empty slot?)");
+        printf("\n      path: %ls\n", path.c_str());
 
-        CloseHandle(h);
         out.push_back(std::move(info));
     }
     printf("  (* = vendor collection 0x%04X — the game-input interface)\n\n",
@@ -178,10 +213,18 @@ static bool RunCalibration(SteamController& ctrl) {
 
     // Apply force-show overrides before marking axes.
     auto forceShow = [](size_t i) -> bool {
-        if (FORCE_SHOW_BYTES_10_11 && (i == 10 || i == 11)) return true;
-        if (FORCE_SHOW_BYTES_12_13 && (i == 12 || i == 13)) return true;
-        if (FORCE_SHOW_BYTES_14_15 && (i == 14 || i == 15)) return true;
-        if (FORCE_SHOW_BYTES_16_17 && (i == 16 || i == 17)) return true;
+        if constexpr (FORCE_SHOW_BYTES_10_11) {
+            if (i == 10 || i == 11) return true;
+        }
+        if constexpr (FORCE_SHOW_BYTES_12_13) {
+            if (i == 12 || i == 13) return true;
+        }
+        if constexpr (FORCE_SHOW_BYTES_14_15) {
+            if (i == 14 || i == 15) return true;
+        }
+        if constexpr (FORCE_SHOW_BYTES_16_17) {
+            if (i == 16 || i == 17) return true;
+        }
         return false;
     };
 
@@ -316,7 +359,10 @@ int main(int argc, char** argv) {
     signal(SIGINT,  OnSignal);
     signal(SIGTERM, OnSignal);
 
-    const bool enumOnly = (argc > 1 && strcmp(argv[1], "--enum") == 0);
+    // --enumerate-only is accepted as an alias so instructions written against
+    // the puck investigation keep working.
+    const bool enumOnly = argc > 1 && (strcmp(argv[1], "--enum") == 0
+                                    || strcmp(argv[1], "--enumerate-only") == 0);
     const bool imuMode  = (argc > 1 && strcmp(argv[1], "--imu")  == 0);
 
     printf("=== SteamProbe — 2026 Steam Controller discovery tool ===\n\n");
@@ -339,6 +385,9 @@ int main(int argc, char** argv) {
         ? PromptIndex(ifaces.size() - 1, defaultIdx)
         : defaultIdx;
     printf("Opening [%zu] (%s)...\n\n", chosen, GuessTransport(ifaces[chosen].path));
+
+    if (argc > 1 && strcmp(argv[1], "--enumerate-only") == 0)
+        return 0;
 
     SteamController controller;
     g_controller = &controller;
