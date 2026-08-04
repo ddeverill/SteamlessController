@@ -22,9 +22,6 @@ AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
-; Setup and Uninstall must not replace/remove the tray app while it is still
-; watching Steam or holding the controller.
-AppMutex=SteamlessController_SingleInstance
 SourceDir=..
 ; "ArchitecturesAllowed=x64compatible" specifies that Setup cannot run
 ; on anything but x64 and Windows 11 on Arm.
@@ -67,27 +64,4 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 
 [UninstallRun]
 Filename: "{app}\SteamlessDeviceCycle.exe"; Parameters: "--unregister"; RunOnceId: "RemoveCycleTask"; Flags: waituntilterminated runhidden
-
-[Code]
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var
-  ResultCode: Integer;
-begin
-  if CurUninstallStep = usUninstall then
-  begin
-    { Restore the user's original Steam blacklist/startup state before the
-      executable and its recorded baseline are removed. Abort leaves the app
-      installed so cleanup can be retried instead of silently orphaning a
-      persistent Steam setting. }
-    if (not Exec(ExpandConstant('{app}\{#MyAppExeName}'),
-                 '--uninstall-cleanup', '', SW_HIDE,
-                 ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-    begin
-      MsgBox('SteamlessController could not restore Steam''s original controller settings. ' +
-             'Steam was restarted with its previous settings; please close Steam and retry uninstall.',
-             mbError, MB_OK);
-      Abort;
-    end;
-  end;
-end;
 

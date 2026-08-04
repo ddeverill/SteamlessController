@@ -2,7 +2,6 @@
 #include "BackButtonConfig.h"
 #include "ControllerPlatform.h"
 #include <atomic>
-#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -27,13 +26,7 @@ public:
     // read loops copy it without locking.
     void SetAlertCallback(AlertFn fn) { m_alertFn = std::move(fn); }
 
-    enum class EnableGameModeResult {
-        Enabled,
-        NoActiveController,
-        Blocked,
-    };
-
-    EnableGameModeResult EnableGameMode(uint32_t stateWaitMs = 250);
+    void EnableGameMode();
     void DisableGameMode();
     // Disables game mode then closes all device handles so another process
     // (e.g. Steam) can claim the controller. Safe to call when already disabled.
@@ -45,9 +38,12 @@ public:
     // fallback if this fails or the process dies harder than a C++ exception.
     void EmergencyRestoreAll() noexcept;
 
-    // Shared HID access is only safe while Steam cannot see the physical
-    // controller. If that changes, yield before both mappers can emit input.
-    void SetSteamMayOwnController(bool mayOwn);
+    // Whether steam.exe is currently running. Decides if game mode may settle
+    // for a shared handle: a write handle held while Steam is absent belongs to
+    // some benign system component, but one held while Steam is running is
+    // probably Steam itself, and driving the controller alongside it is worse
+    // than refusing — refusing is what escalates to a device cycle.
+    void SetSteamPresent(bool present) { m_steamPresent = present; }
 
     void SetTrackpadMouseEnabled(bool enabled);
     void SetUseLeftTrackpad(bool enabled);
@@ -73,13 +69,11 @@ private:
 
     void SyncDevices();
     void OpenSlot(const std::wstring& path);
-    EnableGameModeResult EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
-                                            uint32_t stateWaitMs);
+    void EnableGameModeSlot(Slot& slot, bool& vigemMissingOut);
     void DisableGameModeSlot(Slot& slot);
     void StartReadLoop(Slot& slot);
     void StopReadLoop(Slot& slot);
     void ReadLoop(Slot* slot);
-    void NotifySteamConflict();
     void NotifyStateChanged(bool vigemMissing = false);
 
     StateChangedFn                     m_onStateChanged;
@@ -88,8 +82,7 @@ private:
     bool                               m_trackpadMouseEnabled = false;
     bool                               m_useLeftTrackpad      = false;
     bool                               m_backButtonsEnabled   = false;
-    bool                               m_steamMayOwnController = false;
-    bool                               m_steamConflictAlertShown = false;
+    bool                               m_steamPresent         = false;
     ControllerPlatform                 m_controllerPlatform   = ControllerPlatform::Xbox;
     BackButtonConfig                   m_backConfig;
 

@@ -8,10 +8,9 @@
 // reported immediately (yield the controller fast), transitions to a LOWER
 // value are debounced (don't grab it during a Steam restart or game relaunch).
 enum class SteamState {
-    NoSteam          = 0,  // steam.exe not running
-    ControllerHidden = 1,  // Steam is running but its active session ignored the controller
-    SteamIdle        = 2,  // Steam running, no game active (RunningAppID == 0)
-    InGame           = 3,  // Steam running a game
+    NoSteam   = 0,  // steam.exe not running
+    SteamIdle = 1,  // Steam running, no game active (RunningAppID == 0)
+    InGame    = 2,  // Steam running a game
 };
 
 // Watches the Steam process and its RunningAppID registry value, reporting

@@ -54,8 +54,7 @@ static constexpr uint8_t HAPTIC_COMMAND_CLICK = 2;
 
 std::vector<std::wstring> SteamController::EnumerateAll() {
     std::vector<std::wstring> result;
-    for (uint16_t pid : { SC2026_PID, SC2026_BT_PID, SC2026_DONGLE_PID,
-                          SC2026_NEREID_DONGLE_PID })
+    for (uint16_t pid : { SC2026_PID, SC2026_BT_PID, SC2026_DONGLE_PID })
         for (auto const& path : HidDevice::Enumerate(
                  VALVE_VID, pid, VENDOR_USAGE_PAGE, CONTROLLER_USAGE))
             result.push_back(path);
@@ -73,8 +72,7 @@ SteamController::Transport SteamController::TransportFromPath(const std::wstring
         p.find(L"bthledevice") != std::wstring::npos ||
         p.find(L"bthenum") != std::wstring::npos)
         return Transport::Bluetooth;
-    if (p.find(L"pid_1304") != std::wstring::npos ||
-        p.find(L"pid_1305") != std::wstring::npos)
+    if (p.find(L"pid_1304") != std::wstring::npos)
         return Transport::Dongle;
     if (p.find(L"pid_1302") != std::wstring::npos ||
         p.find(L"pid_1303") != std::wstring::npos)
@@ -94,8 +92,8 @@ const char* SteamController::TransportName(Transport t) {
 bool SteamController::Open() {
     auto paths = EnumerateAll();
     if (paths.empty()) {
-        printf("No Steam Controller found (wired PID=%04X or dongle PIDs=%04X/%04X).\n",
-               SC2026_PID, SC2026_DONGLE_PID, SC2026_NEREID_DONGLE_PID);
+        printf("No Steam Controller found (wired PID=%04X or dongle PID=%04X).\n",
+               SC2026_PID, SC2026_DONGLE_PID);
         return false;
     }
 

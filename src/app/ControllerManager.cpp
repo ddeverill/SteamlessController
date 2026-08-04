@@ -26,7 +26,6 @@ struct ControllerManager::Slot {
     std::thread                        readThread;
     std::atomic<bool>                  readRunning{false};
     bool                               gameModeActive = false;
-    SteamController::AccessClaim       accessClaim = SteamController::AccessClaim::Failed;
     int                                lastBatteryPercent = -1;  // -1 = never reported
 
     // When this slot was last found silent. Probing for a state report costs
@@ -34,7 +33,6 @@ struct ControllerManager::Slot {
     // a rapid burst — without this, three empty slots would block the UI
     // thread for that timeout on every one of those attempts.
     std::chrono::steady_clock::time_point lastSilentAt{};
-    bool                                  silentLogged = false;
 
     // Haptic edge-detection state for touch (movement ticks).
     bool    hapticWasRightTouching = false;
@@ -219,18 +217,11 @@ void ControllerManager::OnDeviceChange() {
     SyncDevices();
 }
 
-ControllerManager::EnableGameModeResult
-ControllerManager::EnableGameMode(uint32_t stateWaitMs) {
+void ControllerManager::EnableGameMode() {
     bool anyVigemMissing = false;
-    bool anyBlocked = false;
-    for (auto& slot : m_slots) {
-        const auto result = EnableGameModeSlot(*slot, anyVigemMissing, stateWaitMs);
-        if (result == EnableGameModeResult::Blocked) anyBlocked = true;
-    }
+    for (auto& slot : m_slots)
+        EnableGameModeSlot(*slot, anyVigemMissing);
     NotifyStateChanged(anyVigemMissing);
-    if (IsGameModeActive()) return EnableGameModeResult::Enabled;
-    return anyBlocked ? EnableGameModeResult::Blocked
-                      : EnableGameModeResult::NoActiveController;
 }
 
 void ControllerManager::DisableGameMode() {
@@ -249,27 +240,6 @@ void ControllerManager::ReleaseDevices() {
     // which closes the HID handle, allowing another process to open it.
     m_slots.clear();
     NotifyStateChanged();
-}
-
-void ControllerManager::SetSteamMayOwnController(bool mayOwn) {
-    if (m_steamMayOwnController == mayOwn) return;
-    m_steamMayOwnController = mayOwn;
-
-    if (!mayOwn) {
-        m_steamConflictAlertShown = false;
-        return;
-    }
-
-    const bool sharedModeActive = std::any_of(m_slots.begin(), m_slots.end(),
-        [](const auto& slot) {
-            return slot->gameModeActive
-                && slot->accessClaim == SteamController::AccessClaim::Shared;
-        });
-    if (!sharedModeActive) return;
-
-    EventLog::Write("GAMEMODE: Steam started during shared access; yielding to prevent duplicate input");
-    DisableGameMode();
-    NotifySteamConflict();
 }
 
 void ControllerManager::SetTrackpadMouseEnabled(bool enabled) {
@@ -383,7 +353,7 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 
     if (IsGameModeActive()) {
         bool dummy = false;
-        EnableGameModeSlot(*m_slots.back(), dummy, 250);
+        EnableGameModeSlot(*m_slots.back(), dummy);
     } else {
         // Restore lizard mode in case a previous session crashed without cleaning up.
         m_slots.back()->sc->EnableLizardMode();
@@ -394,59 +364,46 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 // Game mode per-slot helpers
 // ---------------------------------------------------------------------------
 
-ControllerManager::EnableGameModeResult
-ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
-                                      uint32_t stateWaitMs) {
-    if (slot.gameModeActive) return EnableGameModeResult::Enabled;
+void ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut) {
+    if (slot.gameModeActive) return;
     // The puck publishes a controller interface per slot and current firmware
     // rejects the lizard-mode command on an empty one, so only act on a slot
     // that is actually emitting state. Recently-silent slots are skipped
     // outright — see Slot::lastSilentAt.
-    static constexpr auto kSilentSlotRetryGap = std::chrono::milliseconds(500);
+    static constexpr auto kSilentSlotRetryGap = std::chrono::milliseconds(1500);
     const auto now = std::chrono::steady_clock::now();
-    if (now - slot.lastSilentAt < kSilentSlotRetryGap)
-        return EnableGameModeResult::NoActiveController;
+    if (now - slot.lastSilentAt < kSilentSlotRetryGap) return;
 
-    if (!slot.sc->WaitForStateReport(stateWaitMs)) {
+    if (!slot.sc->WaitForStateReport(250)) {
         slot.lastSilentAt = std::chrono::steady_clock::now();
-        if (!slot.silentLogged) {
-            slot.silentLogged = true;
-            EventLog::Write("GAMEMODE: no state reports from slot (transport=%s), waiting %ls",
-                            SteamController::TransportName(slot.transport), slot.path.c_str());
-        }
-        return EnableGameModeResult::NoActiveController;
+        EventLog::Write("GAMEMODE: no state reports from slot (transport=%s), skipping %ls",
+                        SteamController::TransportName(slot.transport), slot.path.c_str());
+        return;
     }
-    if (slot.silentLogged)
-        EventLog::Write("GAMEMODE: state reports resumed %ls", slot.path.c_str());
-    slot.silentLogged = false;
 
-    slot.accessClaim = SteamController::AccessClaim::Failed;
     const auto claim = slot.sc->ClaimGameModeAccess();
     if (claim == SteamController::AccessClaim::Failed) {
         EventLog::Write("GAMEMODE: device reopen failed %ls", slot.path.c_str());
-        return EnableGameModeResult::Blocked;
+        return;
     }
     if (claim == SteamController::AccessClaim::Shared) {
-        // ERROR_SHARING_VIOLATION does not identify the existing owner. Live
-        // testing shows that sharing with an idle Steam client is still unsafe:
-        // whichever mapper starts second can produce duplicate input or starve
-        // the other reader. The Windows-only holder is benign, so shared access
-        // remains the compatibility path while Steam is absent.
-        if (m_steamMayOwnController) {
-            EventLog::Write("GAMEMODE: shared access blocked because Steam may own %ls",
+        // A write handle held while Steam is running is most likely Steam's.
+        // Proceeding would put two processes on the same controller, both
+        // driving lizard mode; refusing is what escalates to a device cycle
+        // that takes the handle back. Only settle for shared when Steam is
+        // absent and the holder is some benign system component.
+        if (m_steamPresent) {
+            EventLog::Write("GAMEMODE: exclusive claim blocked while Steam is running %ls",
                             slot.path.c_str());
-            NotifySteamConflict();
-            return EnableGameModeResult::Blocked;
+            return;
         }
         EventLog::Write("GAMEMODE: exclusive claim unavailable; using shared access %ls",
                         slot.path.c_str());
     }
-    slot.accessClaim = claim;
     if (!slot.sc->DisableLizardMode()) {
         EventLog::Write("GAMEMODE: DisableLizardMode failed %ls", slot.path.c_str());
-        slot.accessClaim = SteamController::AccessClaim::Failed;
         slot.sc->ReleaseToShared();
-        return EnableGameModeResult::Blocked;
+        return;
     }
 
     slot.vc = std::make_unique<VirtualController>(
@@ -460,8 +417,7 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
         if (slot.vc->IsDriverMissing()) vigemMissingOut = true;
         slot.vc.reset();
         slot.sc->EnableLizardMode();
-        slot.accessClaim = SteamController::AccessClaim::Failed;
-        return EnableGameModeResult::Blocked;
+        return;
     }
 
     if (m_controllerPlatform == ControllerPlatform::PlayStation)
@@ -475,7 +431,6 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
     slot.trackpad.SetUseLeftTrackpad(m_useLeftTrackpad);
     slot.trackpad.SetBackButtonsEnabled(m_backButtonsEnabled);
     StartReadLoop(slot);
-    return EnableGameModeResult::Enabled;
 }
 
 void ControllerManager::DisableGameModeSlot(Slot& slot) {
@@ -489,20 +444,7 @@ void ControllerManager::DisableGameModeSlot(Slot& slot) {
     slot.sc->EnableLizardMode();
     // Reopen shared so Steam can obtain write access — game mode is no longer active.
     slot.sc->ReleaseToShared();
-    slot.accessClaim = SteamController::AccessClaim::Failed;
     slot.gameModeActive = false;
-}
-
-void ControllerManager::NotifySteamConflict() {
-    if (m_steamConflictAlertShown) return;
-    m_steamConflictAlertShown = true;
-    if (m_alertFn) {
-        m_alertFn(L"Steam is using the controller",
-                  L"Windows only granted shared controller access while Steam is running. "
-                  L"Steamless Mode was kept off to prevent duplicate or missing input. "
-                  L"Exit Steam, or choose Debug: Steam coexistence in the tray menu and "
-                  L"apply the recommended controller-hiding option.");
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -586,10 +528,14 @@ void ControllerManager::ReadLoop(Slot* slot) {
         // Battery status — update DS4 battery level; no further processing needed.
         if (buf[0] == SteamController::REPORT_BATTERY_STATUS) {
             if (n >= 3) {
-                // TritonBatteryStatus_t starts with charge state, then level,
-                // on every transport.
-                const uint8_t chargeState = buf[1];
-                const uint8_t percent     = buf[2];
+                // USB/dongle payload order is [percent, chargeState]; over
+                // Bluetooth the firmware sends the same two bytes swapped —
+                // observed BT reports held a constant 1 (CHARGE_STATE_DISCHARGING)
+                // in buf[1] while buf[2] tracked the real charge level.
+                uint8_t percent     = buf[1];
+                uint8_t chargeState = buf[2];
+                if (slot->transport == SteamController::Transport::Bluetooth)
+                    std::swap(percent, chargeState);
                 if (slot->vc)
                     slot->vc->SetBatteryState(percent, chargeState);
                 if (slot->lastBatteryPercent != static_cast<int>(percent)) {
