@@ -78,10 +78,20 @@ static int CycleDevices() {
     const auto paths = SteamController::EnumerateAll();
     CycleLog("START: %zu interface(s) to cycle", paths.size());
 
-    // One batch: every device down, one settle, every device back. Cycling
-    // them individually paid the settle once per interface, which on a
-    // four-slot receiver delayed the reclaim by seconds.
-    for (const auto& outcome : DeviceRestart::RestartInterfaceDevices(paths)) {
+    // Deliberately one interface at a time, not one batch. Batching them was
+    // measured and lost: it saved nothing (the class-installer disable calls
+    // dominate, not the settle) and it broke the reclaim outright. Cycling
+    // sequentially brings the occupied slot back last and alone, so the app
+    // gets an uncontested shot at it — it won that race by 45ms. Released
+    // together, all four arrive at once, the app spends its time probing the
+    // empty ones, and Steam takes the live one first.
+    std::vector<DeviceRestart::RestartOutcome> outcomes;
+    for (const auto& path : paths) {
+        auto one = DeviceRestart::RestartInterfaceDevices({ path });
+        if (!one.empty()) outcomes.push_back(std::move(one.front()));
+    }
+
+    for (const auto& outcome : outcomes) {
         const char* verdict = !outcome.enabled     ? "LEFT DISABLED"
                             : outcome.cycled       ? "CYCLED"
                             : outcome.restartRequested ? "FELL BACK TO RESTART"
