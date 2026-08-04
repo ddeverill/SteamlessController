@@ -62,12 +62,6 @@ public:
 
     bool IsConnected()              const { return !m_slots.empty(); }
     bool IsGameModeActive()         const;
-    // True while some connected slot is not in game mode — an empty receiver
-    // slot, or a controller that has not been switched on yet.
-    bool HasInactiveSlot()          const;
-    // Interfaces whose most recent attempt was refused by whoever already
-    // holds them. These are the only ones a device cycle needs to touch.
-    std::vector<std::wstring> BlockedSlotPaths() const;
     bool IsTrackpadMouseEnabled()   const { return m_trackpadMouseEnabled; }
     bool IsUseLeftTrackpad()        const { return m_useLeftTrackpad; }
     bool IsBackButtonsEnabled()     const { return m_backButtonsEnabled; }

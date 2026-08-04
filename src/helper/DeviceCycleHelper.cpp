@@ -75,38 +75,19 @@ static bool RunToolHidden(std::wstring cmdline) {
 
 static int CycleDevices() {
     bool any = false;
-    // The tray app names the contested interfaces when it fires us; an empty
-    // handover (or a run by hand) means cycle everything.
-    auto       paths    = DeviceRestart::ConsumeCycleTargets();
-    const bool targeted = !paths.empty();
-    if (!targeted) paths = SteamController::EnumerateAll();
-    CycleLog("START: %zu interface(s) to cycle (%s)", paths.size(),
-             targeted ? "targeted" : "all");
+    const auto paths = SteamController::EnumerateAll();
+    CycleLog("START: %zu interface(s) to cycle", paths.size());
 
-    // Deliberately one interface at a time, not one batch. Batching them was
-    // measured and lost: it saved nothing (the class-installer disable calls
-    // dominate, not the settle) and it broke the reclaim outright. Cycling
-    // sequentially brings the occupied slot back last and alone, so the app
-    // gets an uncontested shot at it — it won that race by 45ms. Released
-    // together, all four arrive at once, the app spends its time probing the
-    // empty ones, and Steam takes the live one first.
-    std::vector<DeviceRestart::RestartOutcome> outcomes;
     for (const auto& path : paths) {
-        auto one = DeviceRestart::RestartInterfaceDevices({ path });
-        if (!one.empty()) outcomes.push_back(std::move(one.front()));
-    }
-
-    for (const auto& outcome : outcomes) {
-        const char* verdict = !outcome.enabled     ? "LEFT DISABLED"
-                            : outcome.cycled       ? "CYCLED"
-                            : outcome.restartRequested ? "FELL BACK TO RESTART"
-                                                   : "FAILED";
-        CycleLog("%s (transport=%s err=%lu) %ls", verdict,
-                 SteamController::TransportName(
-                     SteamController::TransportFromPath(outcome.path)),
-                 outcome.error, outcome.path.c_str());
-        if (outcome.enabled && (outcome.cycled || outcome.restartRequested))
-            any = true;
+        DWORD err = ERROR_SUCCESS;
+        const bool ok = DeviceRestart::RestartInterfaceDevice(path, &err);
+        // err is only non-zero on the disable-refused fallback path, so
+        // ok=true with err set means the cycle silently did nothing.
+        CycleLog("%s (transport=%s err=%lu) %ls",
+                 ok ? (err == ERROR_SUCCESS ? "CYCLED" : "FELL BACK TO RESTART") : "FAILED",
+                 SteamController::TransportName(SteamController::TransportFromPath(path)),
+                 err, path.c_str());
+        if (ok) any = true;
     }
 
     CycleLog("DONE: exit=%d", any ? 0 : 1);
