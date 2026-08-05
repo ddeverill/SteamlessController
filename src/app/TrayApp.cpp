@@ -487,9 +487,13 @@ void TrayApp::RemoveTrayIcon() {
 }
 
 void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool vigemMissing) {
-    if (vigemMissing) { ShowViGEmBalloon(); return; }
+    if (vigemMissing) ShowViGEmBalloon();
+    else              m_vigemBalloonShown = false;
 
+    // Fall through rather than returning early — the icon and tooltip still need
+    // to track the controller while the driver is unavailable.
     const wchar_t* tip = gameModeActive ? L"Steamless Controller — Steamless Mode ON"
+                       : vigemMissing   ? L"Steamless Controller — ViGEmBus driver unavailable"
                        : connected      ? L"Steamless Controller — Connected (Steamless Mode OFF)"
                                         : L"Steamless Controller — No controller found";
 
@@ -523,7 +527,14 @@ void TrayApp::OpenEventLog() {
                   EventLog::FilePath().c_str(), nullptr, SW_SHOWNORMAL);
 }
 
+// Latched: every failed game-mode enable calls back into UpdateTrayIcon, which
+// during an acquire-retry loop is several times a second — without this the user
+// gets a wall of identical balloons. UpdateTrayIcon clears the latch once the
+// driver is reachable again, so a genuine mid-session disappearance still warns.
 void TrayApp::ShowViGEmBalloon() {
+    if (m_vigemBalloonShown) return;
+    m_vigemBalloonShown = true;
+
     NOTIFYICONDATAW nid{};
     nid.cbSize           = sizeof(nid);
     nid.hWnd             = m_hwnd;
@@ -531,7 +542,9 @@ void TrayApp::ShowViGEmBalloon() {
     nid.uFlags           = NIF_INFO;
     nid.dwInfoFlags      = NIIF_WARNING;
     wcscpy_s(nid.szInfoTitle, L"Driver required");
-    wcscpy_s(nid.szInfo,      L"ViGEmBus is not installed. Click here to download it.");
+    wcscpy_s(nid.szInfo,
+             L"ViGEmBus is unavailable — not installed, or disabled in Device "
+             L"Manager under System devices. Click here to download it.");
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 

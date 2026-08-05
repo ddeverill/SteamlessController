@@ -639,8 +639,26 @@ VIGEM_ERROR vigem_target_add(PVIGEM_CLIENT vigem, PVIGEM_TARGET target)
 
 				//
 				// Don't leave device connected if the wait call failed
-				// 
-				error = vigem_target_remove(vigem, target);
+				//
+				// LOCAL PATCH (SteamlessController): as shipped, this cleanup is a
+				// no-op. IOCTL_VIGEM_PLUGIN_TARGET above already succeeded, so the
+				// child device exists, but State is only set to CONNECTED on the two
+				// success paths above — so vigem_target_remove() trips its own
+				// "State != VIGEM_TARGET_CONNECTED" guard and returns without ever
+				// sending IOCTL_VIGEM_UNPLUG_TARGET. The device is then orphaned in
+				// the bus with no owning process until the machine reboots or the bus
+				// is restarted. SerialNo still holds the slot that was plugged in, so
+				// marking the target connected lets the unplug actually go out.
+				//
+				// The error code is restored afterwards: a successful unplug would
+				// otherwise make vigem_target_add() report VIGEM_ERROR_NONE (and
+				// register the target in pTargetsList below) for a device that is no
+				// longer plugged in. VIGEM_ERROR_TARGET_NOT_PLUGGED_IN is what the
+				// unpatched code effectively returned here.
+				//
+				target->State = VIGEM_TARGET_CONNECTED;
+				(void)vigem_target_remove(vigem, target);
+				error = VIGEM_ERROR_TARGET_NOT_PLUGGED_IN;
 				break;
 			}
 		}
