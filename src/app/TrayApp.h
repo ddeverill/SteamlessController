@@ -76,6 +76,7 @@ private:
     int                                m_acquireRetries = 0;
     ULONGLONG                          m_lastCycleTick  = 0;
     bool                               m_elevationBalloonShown = false;
+    bool                               m_vigemBalloonShown     = false;
     bool                               m_startupEnabled   = false;
     int                                m_startupMechanism = 0;  // 0 none, 1 Run key, 2 elevated task
     bool                               m_notificationsEnabled = true;  // disconnect/stall balloons

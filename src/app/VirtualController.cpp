@@ -150,10 +150,16 @@ VirtualController::VirtualController(ControllerPlatform platform, RumbleCallback
     : m_platform(platform), m_rumbleCallback(std::move(rumbleCallback))
 {
     m_client = vigem_alloc();
-    if (!m_client) { printf("[ViGEm] alloc failed\n"); return; }
+    if (!m_client) {
+        m_failStage = "vigem_alloc";
+        printf("[ViGEm] alloc failed\n");
+        return;
+    }
 
     VIGEM_ERROR err = vigem_connect(static_cast<PVIGEM_CLIENT>(m_client));
     if (!VIGEM_SUCCESS(err)) {
+        m_failStage = "vigem_connect";
+        m_lastError = static_cast<uint32_t>(err);
         if (err == VIGEM_ERROR_BUS_NOT_FOUND || err == VIGEM_ERROR_BUS_ACCESS_FAILED)
             m_driverMissing = true;
         vigem_free(static_cast<PVIGEM_CLIENT>(m_client));
@@ -164,11 +170,17 @@ VirtualController::VirtualController(ControllerPlatform platform, RumbleCallback
     m_target = (platform == ControllerPlatform::PlayStation)
         ? vigem_target_ds4_alloc()
         : vigem_target_x360_alloc();
-    if (!m_target) { printf("[ViGEm] target alloc failed\n"); return; }
+    if (!m_target) {
+        m_failStage = "vigem_target_alloc";
+        printf("[ViGEm] target alloc failed\n");
+        return;
+    }
 
     err = vigem_target_add(static_cast<PVIGEM_CLIENT>(m_client),
                            static_cast<PVIGEM_TARGET>(m_target));
     if (!VIGEM_SUCCESS(err)) {
+        m_failStage = "vigem_target_add";
+        m_lastError = static_cast<uint32_t>(err);
         printf("[ViGEm] target_add failed: 0x%08X\n", err);
         vigem_target_free(static_cast<PVIGEM_TARGET>(m_target));
         m_target = nullptr;
@@ -186,6 +198,8 @@ VirtualController::VirtualController(ControllerPlatform platform, RumbleCallback
             X360Notification,
             this);
         if (!VIGEM_SUCCESS(err)) {
+            m_failStage = "vigem_target_x360_register_notification";
+            m_lastError = static_cast<uint32_t>(err);
             printf("[ViGEm] notification registration failed: 0x%08X\n", err);
             vigem_target_remove(static_cast<PVIGEM_CLIENT>(m_client),
                                 static_cast<PVIGEM_TARGET>(m_target));

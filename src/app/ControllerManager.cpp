@@ -427,7 +427,8 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
             if (sc->IsOpen()) sc->SetRumble(largeMotor, smallMotor);
         });
     if (!slot.vc->IsValid()) {
-        EventLog::Write("GAMEMODE: ViGEm virtual controller failed (driverMissing=%d)",
+        EventLog::Write("GAMEMODE: ViGEm virtual controller failed (stage=%s, err=0x%08X, driverMissing=%d)",
+                        slot.vc->FailStage(), slot.vc->LastError(),
                         slot.vc->IsDriverMissing() ? 1 : 0);
         if (slot.vc->IsDriverMissing()) vigemMissingOut = true;
         slot.vc.reset();

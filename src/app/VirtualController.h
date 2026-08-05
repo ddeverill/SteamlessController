@@ -19,6 +19,12 @@ public:
     bool IsValid()        const { return m_valid; }
     bool IsDriverMissing() const { return m_driverMissing; }
 
+    // Why construction failed. Only meaningful when !IsValid(); FailStage() names
+    // the ViGEm call that failed and LastError() carries its VIGEM_ERROR code
+    // (0 when the failing call returns no code, e.g. the allocators).
+    const char* FailStage() const { return m_failStage; }
+    uint32_t    LastError() const { return m_lastError; }
+
     void Update(const uint8_t* buf, size_t n, const BackButtonConfig& backCfg, bool backMouseEnabled);
     void OnRumble(uint8_t largeMotor, uint8_t smallMotor);
 
@@ -40,6 +46,8 @@ private:
     RumbleCallback m_rumbleCallback;
     bool   m_valid        = false;
     bool   m_driverMissing = false;
+    const char* m_failStage = "none";
+    uint32_t    m_lastError = 0;
 
     // DS4 touchpad tracking
     bool     m_trackpadMouseEnabled    = false;
