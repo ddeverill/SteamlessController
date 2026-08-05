@@ -167,10 +167,22 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case IDM_TOGGLE:
-            if (m_controller->IsGameModeActive())
-                m_controller->DisableGameMode();
-            else
-                m_controller->EnableGameMode();
+            // Only reachable in manual mode (grayed otherwise), so the click
+            // is the sole source of intent — record it and take the same
+            // acquire/release path the auto modes use. A second click while an
+            // acquisition is still cycling cancels it rather than restarting.
+            if (m_wantControl) {
+                ReleaseControl();
+            } else {
+                // Taking the device back from a running Steam needs the
+                // elevated helper. Settle the one-time UAC prompt on this
+                // click instead of letting it ambush the first cycle.
+                if (!IsProcessElevated())
+                    EnsureCycleTaskRegistered();
+                m_wantControl    = true;
+                m_acquireRetries = 0;
+                TryAcquireController();
+            }
             break;
         case IDM_TRACKPAD:
             m_controller->SetTrackpadMouseEnabled(!m_controller->IsTrackpadMouseEnabled());
@@ -255,19 +267,19 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (wp == IDT_ACQUIRE) {
             KillTimer(m_hwnd, IDT_ACQUIRE);
-            if (m_autoMode != AutoMode::Manual && WantControl(m_steamWatcher.GetState()))
+            if (m_wantControl)
                 TryAcquireController();
         } else if (wp == IDT_WAKE_POLL) {
             KillTimer(m_hwnd, IDT_WAKE_POLL);
             // Cheap probe — we are only asking whether anything woke up.
-            if (m_autoMode != AutoMode::Manual && WantControl(m_steamWatcher.GetState()))
+            if (m_wantControl)
                 TryAcquireController(WAKE_PROBE_MS);
         } else if (wp == IDT_ACQUIRE_VERDICT) {
             KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
             // The last cycle's re-arrival had a grace period to land. If it
             // did, the controller is ours and there is nothing to report.
             if (m_controller->IsGameModeActive()) return 0;
-            EventLog::Write("AUTO: giving up acquiring after %d device cycles", MAX_ACQUIRE_CYCLES);
+            EventLog::Write("ACQUIRE: giving up after %d device cycles", MAX_ACQUIRE_CYCLES);
             if (m_notificationsEnabled)
                 ShowAlertBalloon(L"Could not take the controller",
                                  L"Steam is holding the controller and did not release it. "
@@ -279,10 +291,9 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
             m_controller->OnDeviceChange();
             // A controller arriving (plugged in, or re-arriving after a device
-            // cycle) should be acquired without a manual toggle when the
-            // active auto mode wants control right now.
-            if (wp == DBT_DEVICEARRIVAL && m_autoMode != AutoMode::Manual
-                    && WantControl(m_steamWatcher.GetState()))
+            // cycle) should be acquired straight away whenever control is
+            // wanted — this is what wins the reopen race against Steam.
+            if (wp == DBT_DEVICEARRIVAL && m_wantControl)
                 TryAcquireController();
         }
         return TRUE;
@@ -301,7 +312,12 @@ void TrayApp::SetAutoMode(AutoMode mode) {
     m_acquireRetries = 0;
     SaveSettings();
     UpdateStartupRegistration();
-    if (mode != AutoMode::Manual)
+    if (mode == AutoMode::Manual)
+        // Manual takes its intent from the tray toggle. Adopt whatever is in
+        // effect right now rather than acquiring or releasing behind the
+        // user's back just because they changed mode.
+        m_wantControl = m_controller->IsGameModeActive();
+    else
         ApplySteamState(m_steamWatcher.GetState());
 }
 
@@ -320,24 +336,33 @@ void TrayApp::ApplySteamState(SteamState state) {
                     static_cast<int>(state),
                     WantControl(state) ? "take control" : "yield");
     if (WantControl(state)) {
+        m_wantControl    = true;
         m_acquireRetries = 0;
         TryAcquireController();
     } else {
-        KillTimer(m_hwnd, IDT_ACQUIRE);
-        KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
-        KillTimer(m_hwnd, IDT_WAKE_POLL);
-        m_acquireRetries = 0;
-        m_lastCycleTick  = 0;
-        const bool hadControl = m_controller->IsGameModeActive();
-        // Good citizen: restore lizard mode and close our HID handles so
-        // Steam can claim the controller without contention.
-        m_controller->ReleaseDevices();
-        // Steam only (re)opens controllers on device-arrival events. If it is
-        // already running and we held the device, it never saw one — cycle
-        // the device so Steam adopts it immediately.
-        if (hadControl && state != SteamState::NoSteam)
-            RestartControllerDevices();
+        ReleaseControl();
     }
+}
+
+// Hand the controller back. Shared by the auto modes yielding to Steam and by
+// the manual toggle being switched off — in both cases the user is done with
+// us and Steam should be able to pick the pad straight back up.
+void TrayApp::ReleaseControl() {
+    KillTimer(m_hwnd, IDT_ACQUIRE);
+    KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
+    KillTimer(m_hwnd, IDT_WAKE_POLL);
+    m_wantControl    = false;
+    m_acquireRetries = 0;
+    m_lastCycleTick  = 0;
+    const bool hadControl = m_controller->IsGameModeActive();
+    // Good citizen: restore lizard mode and close our HID handles so
+    // Steam can claim the controller without contention.
+    m_controller->ReleaseDevices();
+    // Steam only (re)opens controllers on device-arrival events. If it is
+    // already running and we held the device, it never saw one — cycle
+    // the device so Steam adopts it immediately.
+    if (hadControl && m_steamWatcher.GetState() != SteamState::NoSteam)
+        RestartControllerDevices();
 }
 
 void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
@@ -400,7 +425,7 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     }
     ++m_acquireRetries;
     m_lastCycleTick = nowTick;
-    EventLog::Write("AUTO: exclusive claim blocked — cycling device (attempt %d)", m_acquireRetries);
+    EventLog::Write("ACQUIRE: exclusive claim blocked — cycling device (attempt %d)", m_acquireRetries);
     m_controller->ReleaseDevices();
     if (!RestartControllerDevices()) return;  // helper unavailable — balloon shown
     // The cycle runs asynchronously via the helper task; the device-arrival
@@ -777,8 +802,12 @@ void TrayApp::ShowContextMenu() {
     // Manual toggle is disabled while an auto mode owns the decision — when
     // grayed, the label itself says why.
     const bool manual = (m_autoMode == AutoMode::Manual);
-    std::wstring toggleLabel = gameModeOn ? L"Disable Steamless Mode"
-                                          : L"Enable Steamless Mode";
+    // In manual mode the label tracks intent, not the current handle state:
+    // acquiring can spend several seconds cycling the device, and during that
+    // window the toggle's job is to offer a cancel.
+    const bool toggleOn = manual ? m_wantControl : gameModeOn;
+    std::wstring toggleLabel = toggleOn ? L"Disable Steamless Mode"
+                                        : L"Enable Steamless Mode";
     if (!connected)
         toggleLabel += L" (no controller detected)";
     else if (!manual)

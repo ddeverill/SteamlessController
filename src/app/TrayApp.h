@@ -52,11 +52,12 @@ private:
     void DeleteLegacyStartupTask();
     void UpdateStartupRegistration();
 
-    // Auto-mode plumbing.
+    // Control plumbing, shared by every mode.
     void SetAutoMode(AutoMode mode);
     bool WantControl(SteamState state) const;
     void ApplySteamState(SteamState state);
     void TryAcquireController(uint32_t stateWaitMs = 250);
+    void ReleaseControl();
     bool RestartControllerDevices();
     void ShowElevationBalloon();
 
@@ -66,6 +67,12 @@ private:
     HICON                              m_iconOff    = nullptr;
     HICON                              m_iconOn     = nullptr;
     AutoMode                           m_autoMode   = AutoMode::Manual;
+    // Do we want the controller right now? Acquiring is asynchronous — a
+    // blocked claim escalates to a device cycle that lands seconds later as a
+    // WM_DEVICECHANGE — so intent has to outlive the call that started it.
+    // Auto modes derive this from Steam's state; manual mode from the tray
+    // toggle, which is otherwise nowhere on record.
+    bool                               m_wantControl    = false;
     int                                m_acquireRetries = 0;
     ULONGLONG                          m_lastCycleTick  = 0;
     bool                               m_elevationBalloonShown = false;
