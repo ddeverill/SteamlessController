@@ -42,6 +42,12 @@ struct ControllerManager::Slot {
     // again on release, so rebinding a paddle mid-hold still releases cleanly.
     BackButtonBinding paddleHeld[4];
 
+    // Auto-repeat for held key bindings. When the next repeat is due, and the
+    // gap to use after that — both captured at press time from the user's
+    // keyboard settings, so the rate cannot shift mid-hold.
+    std::chrono::steady_clock::time_point paddleRepeatAt[4]{};
+    std::chrono::milliseconds             paddleRepeatGap[4]{};
+
     // Haptic edge-detection state for touch (movement ticks).
     bool    hapticWasRightTouching = false;
     bool    hapticWasLeftTouching  = false;
@@ -823,7 +829,12 @@ void ControllerManager::ReadLoop(Slot* slot) {
                 const auto& e = edges[i];
                 if (e.cur == e.prev) continue;
                 if (e.cur) {
-                    if (SendPaddleInput(e.binding, true)) slot->paddleHeld[i] = e.binding;
+                    if (SendPaddleInput(e.binding, true)) {
+                        slot->paddleHeld[i]     = e.binding;
+                        slot->paddleRepeatGap[i] = KeyRepeatInterval();
+                        slot->paddleRepeatAt[i]  =
+                            std::chrono::steady_clock::now() + KeyRepeatDelay();
+                    }
                 } else {
                     // Release what the press sent, not what the binding says
                     // now — the two differ if the user rebound mid-hold.
@@ -831,6 +842,22 @@ void ControllerManager::ReadLoop(Slot* slot) {
                     slot->paddleHeld[i] = BackButtonBinding{};
                 }
             }
+        }
+
+        // Auto-repeat held keys. A physical keyboard repeats because its own
+        // firmware keeps sending the key, not because Windows tracks the key as
+        // down, so injected input has to reproduce that itself. Keys only —
+        // mice do not repeat when held, and gamepad bindings are held state in
+        // the pad report, where a repeat would be meaningless.
+        for (size_t i = 0; i < std::size(slot->paddleHeld); ++i) {
+            const auto& held = slot->paddleHeld[i];
+            if (held.kind != BackButtonBinding::Kind::Key) continue;
+
+            const auto now = std::chrono::steady_clock::now();
+            if (now < slot->paddleRepeatAt[i]) continue;
+
+            SendKeyInput(held.code, true);
+            slot->paddleRepeatAt[i] = now + slot->paddleRepeatGap[i];
         }
 
         // Button capture for the remap window (press-to-bind).
