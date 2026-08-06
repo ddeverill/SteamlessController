@@ -68,7 +68,7 @@ public:
 
     // Called by RemapWindow when a row enters/exits listening state.
     // Callback fires on the read thread — use PostMessage to marshal to the UI thread.
-    void StartButtonCapture(std::function<void(BackButtonAction)> callback);
+    void StartButtonCapture(std::function<void(const BackButtonBinding&)> callback);
     void StopButtonCapture();
 
 private:
@@ -94,7 +94,7 @@ private:
     ControllerPlatform                 m_controllerPlatform   = ControllerPlatform::Xbox;
     BackButtonConfig                   m_backConfig;
 
-    std::atomic<bool>                        m_capturing{false};
-    std::mutex                               m_captureMutex;
-    std::function<void(BackButtonAction)>    m_captureCallback;
+    std::atomic<bool>                            m_capturing{false};
+    std::mutex                                   m_captureMutex;
+    std::function<void(const BackButtonBinding&)> m_captureCallback;
 };

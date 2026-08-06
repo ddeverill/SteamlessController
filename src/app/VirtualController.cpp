@@ -27,8 +27,10 @@ static VOID CALLBACK X360Notification(
         static_cast<VirtualController*>(userData)->OnRumble(largeMotor, smallMotor);
 }
 
-static void ApplyBackActionX360(BackButtonAction action, XUSB_REPORT& r) {
-    switch (action) {
+// Keys and mouse buttons are delivered by ControllerManager via SendInput, not
+// through the virtual pad, so they fall through as "no gamepad input".
+static void ApplyBackActionX360(const BackButtonBinding& binding, XUSB_REPORT& r) {
+    switch (binding.AsAction()) {
     case BackButtonAction::A:         r.wButtons |= XUSB_GAMEPAD_A;              break;
     case BackButtonAction::B:         r.wButtons |= XUSB_GAMEPAD_B;              break;
     case BackButtonAction::X:         r.wButtons |= XUSB_GAMEPAD_X;              break;
@@ -333,9 +335,9 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
             r.bThumbRX = s16ToU8(rx);
             r.bThumbRY = static_cast<uint8_t>(255u - s16ToU8(ry));
 
-            // Back paddles
-            auto applyBack = [&](BackButtonAction action) {
-                switch (action) {
+            // Back paddles. As above, non-gamepad bindings fall through.
+            auto applyBack = [&](const BackButtonBinding& binding) {
+                switch (binding.AsAction()) {
                 case BackButtonAction::A:         r.wButtons |= DS4_BUTTON_CROSS;          break;
                 case BackButtonAction::B:         r.wButtons |= DS4_BUTTON_CIRCLE;         break;
                 case BackButtonAction::X:         r.wButtons |= DS4_BUTTON_SQUARE;         break;

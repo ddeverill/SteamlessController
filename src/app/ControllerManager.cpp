@@ -116,6 +116,8 @@ struct ControllerManager::Slot {
 static bool DetectCapture(const uint8_t* cur, const uint8_t* prev,
                           BackButtonAction& out)
 {
+    // Controller input only ever yields a built-in action; the caller wraps the
+    // result. Keyboard and mouse capture arrive through the UI, not this loop.
     using BA = BackButtonAction;
 
     // Helper: rising edge on a single bit in a byte.
@@ -304,7 +306,7 @@ void ControllerManager::SetControllerPlatform(ControllerPlatform platform) {
     }
 }
 
-void ControllerManager::StartButtonCapture(std::function<void(BackButtonAction)> callback) {
+void ControllerManager::StartButtonCapture(std::function<void(const BackButtonBinding&)> callback) {
     std::lock_guard<std::mutex> lk(m_captureMutex);
     m_captureCallback = std::move(callback);
     m_capturing = true;
@@ -779,7 +781,7 @@ void ControllerManager::ReadLoop(Slot* slot) {
         // Fire mouse button events for back paddles mapped to LeftMouseButton/RightMouseButton.
         // Uses edge detection so we only send DOWN on press and UP on release.
         if (hasPrev) {
-            struct PaddleEdge { bool cur; bool prev; BackButtonAction action; };
+            struct PaddleEdge { bool cur; bool prev; const BackButtonBinding& binding; };
             const PaddleEdge edges[] = {
                 { n>4 && (buf[4]&SteamController::BTN_L4)!=0, (prevBuf[4]&SteamController::BTN_L4)!=0, m_backConfig.l4 },
                 { n>4 && (buf[4]&SteamController::BTN_L5)!=0, (prevBuf[4]&SteamController::BTN_L5)!=0, m_backConfig.l5 },
@@ -789,10 +791,10 @@ void ControllerManager::ReadLoop(Slot* slot) {
             for (const auto& e : edges) {
                 if (e.cur == e.prev) continue;
                 DWORD flag = 0;
-                if (e.action == BackButtonAction::LeftMouseButton) {
+                if (e.binding.IsAction(BackButtonAction::LeftMouseButton)) {
                     flag = e.cur ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
                     slot->paddleMouseLeftDown = e.cur;
-                } else if (e.action == BackButtonAction::RightMouseButton) {
+                } else if (e.binding.IsAction(BackButtonAction::RightMouseButton)) {
                     flag = e.cur ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
                     slot->paddleMouseRightDown = e.cur;
                 }
@@ -807,7 +809,8 @@ void ControllerManager::ReadLoop(Slot* slot) {
             if (DetectCapture(buf, prevBuf, captured)) {
                 m_capturing = false;
                 std::lock_guard<std::mutex> lk(m_captureMutex);
-                if (m_captureCallback) m_captureCallback(captured);
+                if (m_captureCallback)
+                    m_captureCallback(BackButtonBinding::FromAction(captured));
             }
         }
 
