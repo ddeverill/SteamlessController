@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <string>
 #include "app/DeviceRestart.h"
+#include "app/HandleFinder.h"
 #include "steam/SteamController.h"
 
 // The helper runs windowless from Task Scheduler, so a failed cycle is
@@ -78,17 +79,105 @@ static int CycleDevices() {
     const auto paths = SteamController::EnumerateAll();
     CycleLog("START: %zu interface(s) to cycle", paths.size());
 
+    // Summarised for the tray app, which has to explain any failure to the
+    // user. Best outcome wins: if even one interface genuinely went down,
+    // handles were broken and this was not a do-nothing cycle.
+    DeviceRestart::CycleResult summary;
+
     for (const auto& path : paths) {
-        DWORD err = ERROR_SUCCESS;
-        const bool ok = DeviceRestart::RestartInterfaceDevice(path, &err);
-        // err is only non-zero on the disable-refused fallback path, so
-        // ok=true with err set means the cycle silently did nothing.
-        CycleLog("%s (transport=%s err=%lu) %ls",
-                 ok ? (err == ERROR_SUCCESS ? "CYCLED" : "FELL BACK TO RESTART") : "FAILED",
-                 SteamController::TransportName(SteamController::TransportFromPath(path)),
-                 err, path.c_str());
+        DeviceRestart::CycleResult r;
+        const bool ok = DeviceRestart::RestartInterfaceDevice(path, r);
+
+        // A veto means some process is sitting on the device and nothing we can
+        // do to the devnode will dislodge it — so the only useful thing left is
+        // to say who. PnP will not tell us, hence the handle scan. Confined to
+        // this path because it is expensive and this process exits right after.
+        if (r.HeldByAnotherProcess()) {
+            // Publish the veto verdict before the scan starts. The tray app
+            // reads this file on its own timer, and a slow scan must not leave
+            // it looking at the previous cycle's result.
+            r.ticks = GetTickCount64();
+            DeviceRestart::WriteCycleStatus(r);
+
+            const auto scan = HandleFinder::FindDeviceHolders(path);
+
+            // Two holders are always in this list and neither is worth telling
+            // the user about.
+            //
+            // steam.exe holds the controller by design and is demonstrably not
+            // the blocker — it yields on query-remove. Naming it would
+            // resurrect the exact bad advice this path exists to replace.
+            //
+            // SteamlessController.exe is us: the tray app's retry timer fires
+            // mid-cycle and reopens the device before the cycle it asked for
+            // has finished. "Close SteamlessController" is not advice anyone
+            // can act on. (That reopen is a real problem in its own right, not
+            // just a reporting wart — it means we may be vetoing our own
+            // cycle.)
+            static const wchar_t* kNotWorthNaming[] = {
+                L"steam.exe", L"SteamlessController.exe", L"SteamlessDeviceCycle.exe",
+            };
+            std::vector<HandleFinder::Holder> culprits;
+            for (const auto& h : scan.holders) {
+                bool skip = false;
+                for (const wchar_t* name : kNotWorthNaming)
+                    if (_wcsicmp(h.image.c_str(), name) == 0) { skip = true; break; }
+                if (!skip) culprits.push_back(h);
+            }
+            r.holders    = HandleFinder::DescribeHolders(culprits);
+            r.holdersAll = HandleFinder::DescribeHolders(scan.holders);
+
+            // Kept as a ready-made line so the tray app can put it straight
+            // into the event log the user can actually reach and send.
+            wchar_t info[512];
+            swprintf_s(info,
+                       L"%s in %lu ms, candidates=%u, queried=%u, target='%s'",
+                       scan.completed ? L"completed" : L"hit deadline",
+                       scan.elapsedMs, scan.examined, scan.queried,
+                       scan.targetName.empty() ? L"(unresolved)" : scan.targetName.c_str());
+            r.scanInfo = info;
+
+            CycleLog("SCAN: %ls typeIndex=%u", r.scanInfo.c_str(), scan.typeIndex);
+
+            CycleLog("HOLDERS: all=[%ls] reportable=[%ls]%s",
+                     r.holdersAll.empty() ? L"none" : r.holdersAll.c_str(),
+                     r.holders.empty()    ? L"none" : r.holders.c_str(),
+                     scan.completed ? "" : "  (scan incomplete — list may be partial)");
+        }
+
+        if (r.kind == DeviceRestart::CycleKind::RestartOnly
+                && r.vetoType != PNP_VetoTypeUnknown) {
+            CycleLog("%s (transport=%s err=%lu veto=%s '%ls') %ls",
+                     DeviceRestart::CycleKindName(r.kind),
+                     SteamController::TransportName(SteamController::TransportFromPath(path)),
+                     r.error, DeviceRestart::VetoTypeName(r.vetoType),
+                     r.vetoName.c_str(), path.c_str());
+        } else {
+            CycleLog("%s (transport=%s err=%lu) %ls",
+                     DeviceRestart::CycleKindName(r.kind),
+                     SteamController::TransportName(SteamController::TransportFromPath(path)),
+                     r.error, path.c_str());
+        }
+
+        // Keep the most informative verdict: a real cycle outranks a fallback,
+        // and among fallbacks one that named a blocker outranks a silent one.
+        const bool better = r.kind > summary.kind
+            || (r.kind == summary.kind
+                && summary.vetoType == PNP_VetoTypeUnknown
+                && r.vetoType != PNP_VetoTypeUnknown);
+        if (better) summary = r;
         if (ok) any = true;
     }
+
+    if (summary.kind == DeviceRestart::CycleKind::Removed
+            && summary.error == ERROR_DEVICE_NOT_AVAILABLE)
+        CycleLog("WARNING: the device was removed but has not re-appeared yet; "
+                 "a rescan or replug may be needed");
+    if (summary.BrokeNoHandles())
+        CycleLog("NOTE: no handle was invalidated — repeating this cycle cannot help");
+
+    summary.ticks = GetTickCount64();
+    DeviceRestart::WriteCycleStatus(summary);
 
     CycleLog("DONE: exit=%d", any ? 0 : 1);
     return any ? 0 : 1;
@@ -166,8 +255,28 @@ static int UnregisterTask() {
     return RunToolHidden(std::move(cmd)) ? 0 : 1;
 }
 
+// Run the holder scan on its own, without needing the controller to be stuck.
+// The scan is the one piece here that cannot be reasoned about from its output
+// alone — an empty list has several causes — so it needs to be runnable on
+// demand rather than only in the failure it is meant to explain.
+static int FindHoldersOnly() {
+    CycleLog("FIND: holder scan requested directly");
+    for (const auto& path : SteamController::EnumerateAll()) {
+        const auto scan = HandleFinder::FindDeviceHolders(path);
+        CycleLog("FIND: %s in %lu ms, target='%ls' typeIndex=%u candidates=%u queried=%u",
+                 scan.completed ? "completed" : "HIT DEADLINE",
+                 scan.elapsedMs, scan.targetName.c_str(),
+                 scan.typeIndex, scan.examined, scan.queried);
+        const std::wstring holders = HandleFinder::DescribeHolders(scan.holders);
+        CycleLog("FIND: holders=[%ls] %ls",
+                 holders.empty() ? L"none" : holders.c_str(), path.c_str());
+    }
+    return 0;
+}
+
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR cmdLine, int) {
-    if (cmdLine && wcsstr(cmdLine, L"--register"))   return RegisterTask();
-    if (cmdLine && wcsstr(cmdLine, L"--unregister")) return UnregisterTask();
+    if (cmdLine && wcsstr(cmdLine, L"--register"))     return RegisterTask();
+    if (cmdLine && wcsstr(cmdLine, L"--unregister"))   return UnregisterTask();
+    if (cmdLine && wcsstr(cmdLine, L"--find-holders")) return FindHoldersOnly();
     return CycleDevices();
 }

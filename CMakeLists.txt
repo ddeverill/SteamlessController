@@ -53,6 +53,7 @@ endif()
 add_executable(SteamlessDeviceCycle WIN32
     src/helper/DeviceCycleHelper.cpp
     src/app/DeviceRestart.cpp
+    src/app/HandleFinder.cpp
 )
 target_link_libraries(SteamlessDeviceCycle PRIVATE SteamController cfgmgr32)
 if (MSVC)
@@ -94,6 +95,7 @@ add_executable(SteamlessController WIN32
     src/app/SteamWatcher.cpp
     src/app/DeviceRestart.cpp
     src/app/EventLog.cpp
+    src/app/HandleFinder.cpp
     src/app/RemapWindow.cpp
     resources/app.rc
 )

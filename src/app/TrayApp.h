@@ -3,6 +3,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include "DeviceRestart.h"
 #include "RemapWindow.h"
 #include "SteamWatcher.h"
 
@@ -59,6 +60,9 @@ private:
     void TryAcquireController(uint32_t stateWaitMs = 250);
     void ReleaseControl();
     bool RestartControllerDevices();
+    bool RefreshCycleStatus();
+    bool LastCycleBrokeNothing();
+    void ReportAcquireFailure();
     void ShowElevationBalloon();
 
     HWND                               m_hwnd       = nullptr;
@@ -75,6 +79,8 @@ private:
     bool                               m_wantControl    = false;
     int                                m_acquireRetries = 0;
     ULONGLONG                          m_lastCycleTick  = 0;
+    // Verdict of the most recent device cycle, read back from the helper.
+    DeviceRestart::CycleResult         m_lastCycleStatus;
     bool                               m_elevationBalloonShown = false;
     bool                               m_vigemBalloonShown     = false;
     bool                               m_startupEnabled   = false;

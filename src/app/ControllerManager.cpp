@@ -472,13 +472,16 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
         return GameModeOutcome::Blocked;
     }
     if (claim == SteamController::AccessClaim::Shared) {
-        // A write handle held while Steam is running is most likely Steam's.
-        // Proceeding would put two processes on the same controller, both
-        // driving lizard mode; refusing is what escalates to a device cycle
-        // that takes the handle back. Only settle for shared when Steam is
-        // absent and the holder is some benign system component.
+        // Someone else holds a write handle. While Steam is running it is
+        // most likely Steam's — but nothing here can tell one holder from
+        // another, so the message says only what is actually known. Proceeding
+        // would put two processes on the same controller, both driving lizard
+        // mode; refusing is what escalates to a device cycle that takes the
+        // handle back. Only settle for shared when Steam is absent and the
+        // holder is some benign system component.
         if (m_steamPresent) {
-            EventLog::Write("GAMEMODE: exclusive claim blocked while Steam is running %ls",
+            EventLog::Write("GAMEMODE: exclusive claim blocked — another process holds a "
+                            "write handle (Steam running) %ls",
                             slot.path.c_str());
             return GameModeOutcome::Blocked;
         }

@@ -275,11 +275,7 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // The last cycle's re-arrival had a grace period to land. If it
             // did, the controller is ours and there is nothing to report.
             if (m_controller->IsGameModeActive()) return 0;
-            EventLog::Write("ACQUIRE: giving up after %d device cycles", MAX_ACQUIRE_CYCLES);
-            if (m_notificationsEnabled)
-                ShowAlertBalloon(L"Could not take the controller",
-                                 L"Steam is holding the controller and did not release it. "
-                                 L"Closing Steam will hand it back.");
+            ReportAcquireFailure();
         }
         return 0;
 
@@ -408,6 +404,19 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
         return;
     }
 
+    // A cycle that could not take the devnode down proves the next one will do
+    // exactly as much: nothing. Stop rather than burning the remaining attempts
+    // on a restart that is known to leave every handle alive — that cost 26
+    // seconds and three pointless device restarts before it was measured.
+    if (m_acquireRetries > 0 && LastCycleBrokeNothing()) {
+        EventLog::Write("ACQUIRE: last cycle invalidated no handles (%s) — not cycling again",
+                        DeviceRestart::CycleKindName(m_lastCycleStatus.kind));
+        // Still let the verdict timer deliver the news: the last cycle's
+        // re-arrival can be in flight and may yet hand us the controller.
+        SetTimer(m_hwnd, IDT_ACQUIRE_VERDICT, ACQUIRE_VERDICT_MS, nullptr);
+        return;
+    }
+
     // Steam holds a write handle, so our exclusive claim can't succeed while
     // its handle lives. Cycle the device to invalidate it and retry on
     // re-arrival (the timer is a fallback in case the arrival event is missed).
@@ -431,6 +440,97 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     SetTimer(m_hwnd, IDT_ACQUIRE, ACQUIRE_RETRY_MS, nullptr);
 }
 
+// Pick up the verdict of the cycle we last started. It runs in the elevated
+// helper, so the answer comes back through a file — and anything stamped
+// before our cycle began belongs to an earlier attempt and says nothing about
+// this one.
+bool TrayApp::RefreshCycleStatus() {
+    if (m_lastCycleTick == 0) return false;
+    DeviceRestart::CycleResult status;
+    if (!DeviceRestart::ReadCycleStatus(status)) return false;
+    // Ticks are milliseconds since boot, so a file left by a previous boot is
+    // not comparable to ours. One stamped in the future has to be from a
+    // longer-running earlier session — the ordinary case after a reboot, and
+    // one that would otherwise pass the staleness test below.
+    if (status.ticks > GetTickCount64()) return false;
+    if (status.ticks < m_lastCycleTick) return false;
+    m_lastCycleStatus = status;
+    return true;
+}
+
+bool TrayApp::LastCycleBrokeNothing() {
+    return RefreshCycleStatus() && m_lastCycleStatus.BrokeNoHandles();
+}
+
+// Explain the failure in terms of what actually happened. The app used to
+// blame Steam unconditionally, which was wrong whenever some other process
+// was sitting on the device — the case that is impossible to diagnose from
+// the outside and the most likely one to leave a user stuck.
+void TrayApp::ReportAcquireFailure() {
+    RefreshCycleStatus();
+    const DeviceRestart::CycleResult& st = m_lastCycleStatus;
+
+    // Everything the scan learned goes in this log, not just the conclusion:
+    // the unfiltered holder list and how much of the system the scan actually
+    // covered. This is the log "Open Event Log" opens, so it is the one that
+    // reaches a maintainer when a user reports a controller they cannot take
+    // back — and by then the process holding it is long gone.
+    if (!st.scanInfo.empty())
+        EventLog::Write("ACQUIRE: holder scan %ls", st.scanInfo.c_str());
+    if (!st.holdersAll.empty())
+        EventLog::Write("ACQUIRE: processes holding the device open: %ls "
+                        "(steam.exe and SteamlessController.exe are expected here)",
+                        st.holdersAll.c_str());
+    else if (!st.scanInfo.empty())
+        EventLog::Write("ACQUIRE: no process holding the device could be identified "
+                        "— a protected process, or the scan did not reach it");
+
+    if (st.HeldByAnotherProcess()) {
+        EventLog::Write("ACQUIRE: giving up — another process holds the device "
+                        "(veto=%s holders=%ls)",
+                        DeviceRestart::VetoTypeName(st.vetoType),
+                        st.holders.empty() ? L"(none identified)" : st.holders.c_str());
+        if (!m_notificationsEnabled) return;
+        std::wstring text;
+        // A replug is worth offering: Windows will not take the device down
+        // while a handle is held, at this node or any parent, but pulling the
+        // cable is a surprise removal that no software veto can stop.
+        if (!st.holders.empty())
+            text = st.holders
+                 + L" has the controller open, and Windows will not restart the "
+                   L"device while it is held. Close it, or unplug and replug the "
+                   L"controller.";
+        else if (st.VetoNamesTheHolder())
+            text = L"\"" + st.vetoName
+                 + L"\" has the controller open, and Windows will not restart the "
+                   L"device while it is held. Close it, or unplug and replug the "
+                   L"controller.";
+        else
+            text = L"Another program has the controller open, and Windows will not "
+                   L"restart the device while it is held. Close any other controller "
+                   L"tools, or unplug and replug the controller.";
+        ShowAlertBalloon(L"Could not take the controller", text);
+        return;
+    }
+
+    if (st.ticks != 0 && st.BrokeNoHandles()) {
+        EventLog::Write("ACQUIRE: giving up — the cycle never took the device down (%s err=%lu)",
+                        DeviceRestart::CycleKindName(st.kind), st.error);
+        if (m_notificationsEnabled)
+            ShowAlertBalloon(L"Could not take the controller",
+                             L"Windows would not restart the controller device, so it "
+                             L"could not be taken from Steam. Unplugging and replugging "
+                             L"it will hand it over.");
+        return;
+    }
+
+    EventLog::Write("ACQUIRE: giving up after %d device cycles", MAX_ACQUIRE_CYCLES);
+    if (m_notificationsEnabled)
+        ShowAlertBalloon(L"Could not take the controller",
+                         L"Steam is holding the controller and did not release it. "
+                         L"Closing Steam will hand it back.");
+}
+
 bool TrayApp::RestartControllerDevices() {
     // On the rare elevated run, cycle directly. This works on every transport
     // including Bluetooth: the devnode being restarted is the HID child, not
@@ -438,9 +538,21 @@ bool TrayApp::RestartControllerDevices() {
     // re-enumerates as fast as a USB replug.
     if (IsProcessElevated()) {
         bool anyRestarted = false;
-        for (const auto& path : SteamController::EnumerateAll())
-            if (DeviceRestart::RestartInterfaceDevice(path))
+        DeviceRestart::CycleResult summary;
+        for (const auto& path : SteamController::EnumerateAll()) {
+            DeviceRestart::CycleResult r;
+            if (DeviceRestart::RestartInterfaceDevice(path, r))
                 anyRestarted = true;
+            const bool better = r.kind > summary.kind
+                || (r.kind == summary.kind
+                    && summary.vetoType == PNP_VetoTypeUnknown
+                    && r.vetoType != PNP_VetoTypeUnknown);
+            if (better) summary = r;
+        }
+        // Same status file the helper writes, so the verdict logic below does
+        // not care which path performed the cycle.
+        summary.ticks = GetTickCount64();
+        DeviceRestart::WriteCycleStatus(summary);
         return anyRestarted;
     }
 

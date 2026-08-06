@@ -1,6 +1,7 @@
 #include "DeviceRestart.h"
 #include <SetupAPI.h>
 #include <cfgmgr32.h>
+#include <cstdio>
 
 namespace DeviceRestart {
 
@@ -23,13 +24,107 @@ static bool IsDevNodeDisabled(DEVINST devInst) {
     return (status & DN_HAS_PROBLEM) != 0 && problem == CM_PROB_DISABLED;
 }
 
+const char* CycleKindName(CycleKind kind) {
+    switch (kind) {
+        case CycleKind::Cycled:      return "CYCLED";
+        case CycleKind::Removed:     return "REMOVED AND RE-ADDED";
+        case CycleKind::RestartOnly: return "FELL BACK TO RESTART";
+        default:                     return "FAILED";
+    }
+}
+
+const char* VetoTypeName(PNP_VETO_TYPE type) {
+    switch (type) {
+        case PNP_VetoLegacyDevice:          return "legacy device";
+        case PNP_VetoPendingClose:          return "handle closing";
+        case PNP_VetoWindowsApp:            return "application";
+        case PNP_VetoWindowsService:        return "service";
+        case PNP_VetoOutstandingOpen:       return "open handle";
+        case PNP_VetoDevice:                return "device";
+        case PNP_VetoDriver:                return "driver";
+        case PNP_VetoIllegalDeviceRequest:  return "illegal request";
+        case PNP_VetoInsufficientPower:     return "insufficient power";
+        case PNP_VetoNonDisableable:        return "not disableable";
+        case PNP_VetoLegacyDriver:          return "legacy driver";
+        case PNP_VetoInsufficientRights:    return "insufficient rights";
+        default:                            return "unknown";
+    }
+}
+
+enum class RemoveOutcome { Error, Vetoed, Removed, RemovedButMissing };
+
+// Ask PnP to take the node out of the device tree.
+//
+// This is the only documented way to learn *why* a device will not go down: a
+// refusal comes back as CR_REMOVE_VETOED carrying a veto type, which is what
+// lets the app say "something is holding the controller" instead of assuming
+// Steam is. Windows' own "Safely Remove Hardware" reports blockers this way.
+//
+// It is not a dry run — a granted query-remove really does remove the node, so
+// this puts it back by re-enumerating the parent. That is a feature, not a
+// hazard to work around: this only ever runs after a disable was already
+// refused, and a granted removal breaks every open handle, which is exactly
+// what the failed disable was supposed to do.
+static RemoveOutcome QueryRemoveAndRestore(DEVINST devInst, CycleResult& out) {
+    // Both of these have to be captured up front: once the node is gone, the
+    // DEVINST is stale and there is nothing left to ask.
+    wchar_t instanceId[MAX_DEVICE_ID_LEN] = {};
+    if (CM_Get_Device_IDW(devInst, instanceId, ARRAYSIZE(instanceId), 0) != CR_SUCCESS)
+        return RemoveOutcome::Error;
+
+    DEVINST parent = 0;
+    const bool haveParent = CM_Get_Parent(&parent, devInst, 0) == CR_SUCCESS;
+
+    wchar_t       vetoName[MAX_PATH] = {};
+    PNP_VETO_TYPE vetoType           = PNP_VetoTypeUnknown;
+    const CONFIGRET cr = CM_Query_And_Remove_SubTreeW(
+        devInst, &vetoType, vetoName, ARRAYSIZE(vetoName), CM_REMOVE_UI_NOT_OK);
+
+    if (cr == CR_REMOVE_VETOED) {
+        out.vetoType = vetoType;
+        out.vetoName = vetoName;
+        return RemoveOutcome::Vetoed;
+    }
+    if (cr != CR_SUCCESS)
+        return RemoveOutcome::Error;
+
+    // Removed. Bring it back by re-enumerating the parent — or the whole tree
+    // if the parent could not be resolved, which is slower but always works.
+    DEVINST rescanRoot = parent;
+    if (!haveParent && CM_Locate_DevNodeW(&rescanRoot, nullptr, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS)
+        return RemoveOutcome::RemovedButMissing;
+
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (attempt) Sleep(500);
+        CM_Reenumerate_DevNode(rescanRoot, CM_REENUMERATE_SYNCHRONOUS);
+        DEVINST back = 0;
+        if (CM_Locate_DevNodeW(&back, instanceId, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS)
+            return RemoveOutcome::Removed;
+    }
+    return RemoveOutcome::RemovedButMissing;
+}
+
 // Take the devnode down and bring it back, invalidating every open handle to
 // it — including the one Steam holds, which is the whole point of a cycle.
 //
 // Disable/enable rather than the politer DICS_PROPCHANGE "restart", because
 // on a Bluetooth HID child that restart reports success while leaving the
-// device and Steam's handle untouched. A disable asks nobody's permission,
-// so it is the only thing that reliably breaks the handle.
+// device and Steam's handle untouched.
+//
+// A disable is not, however, unconditional — it asks, and it can be refused.
+// Measured against a process holding an open handle that never yields: the
+// disable of this node is vetoed (ERROR_GEN_FAILURE after a ~6s query round
+// trip), and so is a query-remove of this node *and* of the USB parent — both
+// CR_REMOVE_VETOED / PNP_VetoOutstandingOpen after ~5.4s, with the parent's
+// veto naming this child as the blocker. Consent propagates up the tree, so no
+// devnode teardown reachable from user mode evicts such a handle. (Disabling
+// the USB parent proves nothing either way: that node answers
+// ERROR_NOT_SUPPORTED immediately, meaning "not disableable", not "vetoed".)
+//
+// What makes the cycle work against Steam is that Steam cooperates: it yields
+// the device on DBT_DEVICEQUERYREMOVE and reopens on arrival, which is why the
+// reopen is a race rather than a standoff. Against an uncooperative holder
+// there is no eviction path, only detection — see the veto probe below.
 //
 // SetupDiCallClassInstaller's return value cannot be trusted here: a disable
 // that Windows genuinely performed still came back as ERROR_INVALID_DATA on
@@ -37,7 +132,7 @@ static bool IsDevNodeDisabled(DEVINST devInst) {
 // truth, and the re-enable is never gated on what the disable claimed —
 // getting that wrong strands the controller switched off, needing Device
 // Manager to recover, which is far worse than failing to cycle at all.
-static bool CycleDevNode(HDEVINFO devs, SP_DEVINFO_DATA& devInfo, DWORD* errorOut) {
+static void CycleDevNode(HDEVINFO devs, SP_DEVINFO_DATA& devInfo, CycleResult& out) {
     // Some devices reject a global scope change and only accept a
     // config-specific one, so try both before believing a disable was refused.
     if (!SetDeviceState(devs, devInfo, DICS_DISABLE, DICS_FLAG_GLOBAL))
@@ -64,30 +159,51 @@ static bool CycleDevNode(HDEVINFO devs, SP_DEVINFO_DATA& devInfo, DWORD* errorOu
     if (!enabled) {
         // The controller is stranded disabled — the caller must surface this,
         // it is not a quiet failure.
-        if (errorOut) *errorOut = GetLastError();
-        return false;
+        out.kind  = CycleKind::Failed;
+        out.error = GetLastError();
+        return;
     }
 
-    if (!wentDown) {
-        // Nothing was taken down, so no handle was broken. Fall back to
-        // asking for a plain restart, which is enough on USB.
-        if (errorOut) *errorOut = ERROR_NOT_SUPPORTED;
-        return SetDeviceState(devs, devInfo, DICS_PROPCHANGE, DICS_FLAG_GLOBAL);
+    if (wentDown) {
+        out.kind = CycleKind::Cycled;
+        return;
     }
 
-    return true;
+    // Nothing was taken down, so no handle was broken. Find out why, and take
+    // the removal route if PnP will grant it — a plain restart here is known
+    // to change nothing at all.
+    out.error = ERROR_NOT_SUPPORTED;
+    switch (QueryRemoveAndRestore(devInfo.DevInst, out)) {
+        case RemoveOutcome::Removed:
+            out.kind  = CycleKind::Removed;
+            out.error = ERROR_SUCCESS;
+            return;
+        case RemoveOutcome::RemovedButMissing:
+            // Handles did die with the node, so as a cycle this worked, but the
+            // device has not come back yet. Report it so the caller can say so.
+            out.kind  = CycleKind::Removed;
+            out.error = ERROR_DEVICE_NOT_AVAILABLE;
+            return;
+        default:
+            break;
+    }
+
+    // Vetoed or unanswerable — fall back to asking for a plain restart, which
+    // is enough on USB when nothing else holds the device.
+    out.kind = SetDeviceState(devs, devInfo, DICS_PROPCHANGE, DICS_FLAG_GLOBAL)
+                   ? CycleKind::RestartOnly
+                   : CycleKind::Failed;
 }
 
-bool RestartInterfaceDevice(const std::wstring& interfacePath, DWORD* errorOut) {
-    if (errorOut) *errorOut = ERROR_SUCCESS;
+bool RestartInterfaceDevice(const std::wstring& interfacePath, CycleResult& result) {
+    result = CycleResult{};
 
     HDEVINFO devs = SetupDiCreateDeviceInfoList(nullptr, nullptr);
     if (devs == INVALID_HANDLE_VALUE) {
-        if (errorOut) *errorOut = GetLastError();
+        result.error = GetLastError();
         return false;
     }
 
-    bool ok = false;
     SP_DEVICE_INTERFACE_DATA ifData{};
     ifData.cbSize = sizeof(ifData);
     if (SetupDiOpenDeviceInterfaceW(devs, interfacePath.c_str(), 0, &ifData)) {
@@ -97,17 +213,93 @@ bool RestartInterfaceDevice(const std::wstring& interfacePath, DWORD* errorOut) 
         devInfo.cbSize = sizeof(devInfo);
         SetupDiGetDeviceInterfaceDetailW(devs, &ifData, nullptr, 0, nullptr, &devInfo);
 
-        if (devInfo.DevInst != 0) {
-            ok = CycleDevNode(devs, devInfo, errorOut);
-        } else if (errorOut) {
-            *errorOut = GetLastError();
-        }
-    } else if (errorOut) {
-        *errorOut = GetLastError();
+        if (devInfo.DevInst != 0)
+            CycleDevNode(devs, devInfo, result);
+        else
+            result.error = GetLastError();
+    } else {
+        result.error = GetLastError();
     }
 
     SetupDiDestroyDeviceInfoList(devs);
+    result.ticks = GetTickCount64();
+    return result.kind != CycleKind::Failed;
+}
+
+bool RestartInterfaceDevice(const std::wstring& interfacePath, DWORD* errorOut) {
+    CycleResult result;
+    const bool ok = RestartInterfaceDevice(interfacePath, result);
+    if (errorOut) *errorOut = result.error;
     return ok;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-process status handoff
+// ---------------------------------------------------------------------------
+
+static std::wstring StatusPath() {
+    wchar_t local[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH)) return L"";
+    const std::wstring dir = std::wstring(local) + L"\\SteamlessController";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\cycle.status";
+}
+
+bool WriteCycleStatus(const CycleResult& result) {
+    const std::wstring path = StatusPath();
+    if (path.empty()) return false;
+
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"w, ccs=UTF-8") != 0 || !f) return false;
+
+    fwprintf(f, L"kind=%d\n",    static_cast<int>(result.kind));
+    fwprintf(f, L"error=%lu\n",  result.error);
+    fwprintf(f, L"veto=%d\n",    static_cast<int>(result.vetoType));
+    fwprintf(f, L"ticks=%llu\n", result.ticks);
+    fwprintf(f, L"name=%s\n",       result.vetoName.c_str());
+    fwprintf(f, L"holders=%s\n",    result.holders.c_str());
+    fwprintf(f, L"holdersAll=%s\n", result.holdersAll.c_str());
+    fwprintf(f, L"scan=%s\n",       result.scanInfo.c_str());
+    fclose(f);
+    return true;
+}
+
+bool ReadCycleStatus(CycleResult& result) {
+    const std::wstring path = StatusPath();
+    if (path.empty()) return false;
+
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"r, ccs=UTF-8") != 0 || !f) return false;
+
+    result = CycleResult{};
+    wchar_t line[512];
+    while (fgetws(line, ARRAYSIZE(line), f)) {
+        // Trim the trailing newline so a value never carries it.
+        const size_t len = wcslen(line);
+        if (len && line[len - 1] == L'\n') line[len - 1] = L'\0';
+
+        int         value = 0;
+        unsigned long ul  = 0;
+        unsigned long long ull = 0;
+        if (swscanf_s(line, L"kind=%d", &value) == 1)
+            result.kind = static_cast<CycleKind>(value);
+        else if (swscanf_s(line, L"error=%lu", &ul) == 1)
+            result.error = ul;
+        else if (swscanf_s(line, L"veto=%d", &value) == 1)
+            result.vetoType = static_cast<PNP_VETO_TYPE>(value);
+        else if (swscanf_s(line, L"ticks=%llu", &ull) == 1)
+            result.ticks = ull;
+        else if (wcsncmp(line, L"name=", 5) == 0)
+            result.vetoName = line + 5;
+        else if (wcsncmp(line, L"holdersAll=", 11) == 0)
+            result.holdersAll = line + 11;
+        else if (wcsncmp(line, L"holders=", 8) == 0)
+            result.holders = line + 8;
+        else if (wcsncmp(line, L"scan=", 5) == 0)
+            result.scanInfo = line + 5;
+    }
+    fclose(f);
+    return true;
 }
 
 }
