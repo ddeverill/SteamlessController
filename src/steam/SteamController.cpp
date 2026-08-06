@@ -379,8 +379,15 @@ SteamController::RumbleFrame SteamController::CurrentRumbleFrameLocked(
 // commands arrive faster — a drained backlog feels like a crunchy burst.
 static constexpr auto kTrackpadHapticMinGap = std::chrono::milliseconds(50);
 
+// Side byte on the haptic output reports: 1 = right pad, 2 = left pad —
+// confirmed on hardware. (The 1-based form of the original controller's
+// 0 = right / 1 = left channel ordering; it was assumed reversed until a
+// two-thumb test made the swap audible.)
+static constexpr uint8_t HAPTIC_SIDE_RIGHT = 0x01;
+static constexpr uint8_t HAPTIC_SIDE_LEFT  = 0x02;
+
 void SteamController::PulseTrackpadHaptic(bool left, bool strongClick) {
-    const uint8_t side    = left ? 0x01 : 0x02;
+    const uint8_t side    = left ? HAPTIC_SIDE_LEFT : HAPTIC_SIDE_RIGHT;
     const uint8_t command = strongClick ? HAPTIC_COMMAND_CLICK : HAPTIC_COMMAND_TICK;
     // Clicks always send — they're the priority event — but they still stamp
     // the send time so a movement tick can't pile on right after.
@@ -395,7 +402,7 @@ bool SteamController::TickTrackpadMovement(bool left) {
     if (now - last < kTrackpadHapticMinGap)
         return false;  // previous waveform likely still playing — drop, don't queue
     last = now;
-    const uint8_t side = left ? 0x01 : 0x02;
+    const uint8_t side = left ? HAPTIC_SIDE_LEFT : HAPTIC_SIDE_RIGHT;
     return SendTrackpadCommandOutput(side, HAPTIC_COMMAND_TICK, 0);
 }
 
