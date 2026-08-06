@@ -13,12 +13,8 @@ static void SendMouseButton(DWORD flags) {
 
 void TrackpadMouse::Reset() {
     if (m_prevClick) SendMouseButton(MOUSEEVENTF_LEFTUP);
-    if (m_prevL4)    SendMouseButton(MOUSEEVENTF_LEFTUP);
-    if (m_prevR4)    SendMouseButton(MOUSEEVENTF_LEFTUP);
     m_touching  = false;
     m_prevClick = false;
-    m_prevL4    = false;
-    m_prevR4    = false;
     m_prevX     = 0;
     m_prevY     = 0;
     m_remX      = 0.0f;
@@ -26,21 +22,8 @@ void TrackpadMouse::Reset() {
 }
 
 void TrackpadMouse::Update(const uint8_t* buf, size_t n) {
-    // L4 (upper-left paddle) and R4 (upper-right paddle) → left mouse click.
-    // This works independently of trackpad mouse mode.
-    if (m_backButtonsEnabled && n > 4) {
-        bool l4 = (buf[4] & SteamController::BTN_L4) != 0;
-        bool r4 = (n > 2) && (buf[2] & SteamController::BTN_R4) != 0;
-        if (l4 != m_prevL4) {
-            SendMouseButton(l4 ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP);
-            m_prevL4 = l4;
-        }
-        if (r4 != m_prevR4) {
-            SendMouseButton(r4 ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP);
-            m_prevR4 = r4;
-        }
-    }
-
+    // Back paddles mapped to a mouse button are handled by ControllerManager,
+    // alongside every other paddle binding.
     if (n < 30 || !m_trackpadEnabled) return;
 
     const uint8_t b2 = buf[4];

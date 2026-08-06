@@ -25,7 +25,7 @@ public:
     const char* FailStage() const { return m_failStage; }
     uint32_t    LastError() const { return m_lastError; }
 
-    void Update(const uint8_t* buf, size_t n, const BackButtonConfig& backCfg, bool backMouseEnabled);
+    void Update(const uint8_t* buf, size_t n, const BackButtonConfig& backCfg);
     void OnRumble(uint8_t largeMotor, uint8_t smallMotor);
 
     // DS4-only: update battery level shown in the DS4 report.

@@ -57,14 +57,12 @@ public:
     void SetTrackpadMouseEnabled(bool enabled);
     void SetUseLeftTrackpad(bool enabled);
     void SetBackButtonConfig(const BackButtonConfig& cfg);
-    void SetBackButtonsEnabled(bool enabled);
     void SetControllerPlatform(ControllerPlatform platform);
 
     bool IsConnected()              const { return !m_slots.empty(); }
     bool IsGameModeActive()         const;
     bool IsTrackpadMouseEnabled()   const { return m_trackpadMouseEnabled; }
     bool IsUseLeftTrackpad()        const { return m_useLeftTrackpad; }
-    bool IsBackButtonsEnabled()     const { return m_backButtonsEnabled; }
     ControllerPlatform GetControllerPlatform() const { return m_controllerPlatform; }
     const BackButtonConfig& GetBackButtonConfig() const { return m_backConfig; }
 
@@ -81,6 +79,7 @@ private:
     GameModeOutcome EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
                                        uint32_t stateWaitMs);
     void DisableGameModeSlot(Slot& slot);
+    void ReleasePaddleMouseButtons(Slot& slot);
     void StartReadLoop(Slot& slot);
     void StopReadLoop(Slot& slot);
     void ReadLoop(Slot* slot);
@@ -91,7 +90,6 @@ private:
     std::vector<std::unique_ptr<Slot>> m_slots;
     bool                               m_trackpadMouseEnabled = false;
     bool                               m_useLeftTrackpad      = false;
-    bool                               m_backButtonsEnabled   = false;
     bool                               m_steamPresent         = false;
     ControllerPlatform                 m_controllerPlatform   = ControllerPlatform::Xbox;
     BackButtonConfig                   m_backConfig;

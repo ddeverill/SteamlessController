@@ -104,7 +104,7 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 <div id="body">
   <div>
     <h2>Back Button Mapping</h2>
-    <p class="instr">Click <b>Rebind</b> on a button, then press any gamepad button on your controller. The new binding shows up here instantly.</p>
+    <p class="instr">Click <b>Rebind</b> on a button, then press any gamepad button on your controller. The new binding shows up here instantly. Pick <b>Off</b> to stop a paddle doing anything at all.</p>
   </div>
   <div class="group">
     <div class="group-label">LEFT GRIP</div>
@@ -127,11 +127,12 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 
 <script>
 'use strict';
-// ---- Defaults (each back button maps to itself = natural behavior) ----
-var DEFAULTS = {L4:'none',L5:'none',R4:'none',R5:'none'};
+// ---- Defaults (upper paddles left-click, lower paddles unbound) ----
+// Keep in sync with BackButtonConfig in BackButtonConfig.h.
+var DEFAULTS = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none'};
 
 // ---- State ----
-var bindings = {L4:'none',L5:'none',R4:'none',R5:'none'};
+var bindings = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none'};
 var listening = null;
 var flash = null;
 var flashTimer = null;
@@ -157,6 +158,7 @@ var INPUTS = [
   {id:'view',      glyph:'VEW',     label:'View',        bg:'#2a3a2a',fg:'#9ac89a'},
   {id:'L3',        glyph:'L3',      label:'L3 Stick',    bg:'#37485a',fg:'#cdd9e3'},
   {id:'R3',        glyph:'R3',      label:'R3 Stick',    bg:'#37485a',fg:'#cdd9e3'},
+  {id:'none',      glyph:'OFF',     label:'Off',         bg:'#1e2d3d',fg:'#5a7a9a'},
 ];
 var byId = {};
 INPUTS.forEach(function(t){byId[t.id]=t;});
@@ -167,6 +169,7 @@ var PICKER_ROWS = [
   ['LB','LT','RB','RT'],
   ['Up','Down','Left','Right'],
   ['L3','R3','menu','view','leftMouse','rightMouse'],
+  ['none'],
 ];
 
 var ROWS = [
@@ -223,7 +226,7 @@ function resetRow(rowId){
 }
 function resetDefaults(){
   cancelListening();
-  bindings={L4:'none',L5:'none',R4:'none',R5:'none'};
+  bindings={L4:DEFAULTS.L4,L5:DEFAULTS.L5,R4:DEFAULTS.R4,R5:DEFAULTS.R5};
   flash=null;
   clearTimeout(flashTimer);
   renderAll();
@@ -246,9 +249,7 @@ function renderRow(def){
   var isL=listening===def.id, isF=flash===def.id;
   el.className='row'+(isL?' listening':isF?' flash':'');
   var curBind=bindings[def.id];
-  var tgt=(curBind==='none'||!byId[curBind])
-    ? {id:'none',glyph:def.id,label:'Default (natural)',bg:'#1e2d3d',fg:'#5a7a9a'}
-    : byId[curBind];
+  var tgt=byId[curBind]||byId['none'];
   var rightHTML;
   if(isL){
     rightHTML='<div class="listen-right">'+
@@ -275,7 +276,7 @@ function renderRow(def){
       return '<div class="picker-row">'+pills+'</div>';
     }).join('');
     pickerHTML='<div class="picker">'+
-      '<div class="picker-label">NO CONTROLLER? PICK MANUALLY</div>'+
+      '<div class="picker-label">OR PICK MANUALLY</div>'+
       '<div class="picker-rows">'+pickerRows+'</div></div>';
   }
   el.innerHTML='<div class="row-top">'+

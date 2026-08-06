@@ -12,7 +12,7 @@ enum class BackButtonAction : uint8_t {
     LB, RB, LT, RT,
     // Row 3 — d-pad
     DPadUp, DPadDown, DPadLeft, DPadRight,
-    // Row 4 — stick clicks, menu buttons, mouse buttons, and "none" (natural behavior)
+    // Row 4 — stick clicks, menu buttons, mouse buttons, and "none" (paddle does nothing)
     LeftMouseButton, RightMouseButton,
     None,
     Menu, View,
@@ -21,10 +21,11 @@ enum class BackButtonAction : uint8_t {
 };
 
 struct BackButtonConfig {
-    // Default: each back paddle uses its natural behavior (mouse click when that mode is on).
-    BackButtonAction l4 = BackButtonAction::None;
+    // Default: the upper paddles left-click the mouse (this used to be the
+    // "Back Buttons as Mouse Click" tray toggle), the lower paddles are unbound.
+    BackButtonAction l4 = BackButtonAction::LeftMouseButton;
     BackButtonAction l5 = BackButtonAction::None;
-    BackButtonAction r4 = BackButtonAction::None;
+    BackButtonAction r4 = BackButtonAction::LeftMouseButton;
     BackButtonAction r5 = BackButtonAction::None;
 };
 
