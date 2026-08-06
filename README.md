@@ -18,7 +18,7 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 - System tray icon shows connection and mode status
 - **Steamless Mode** — disables lizard mode and exposes controller as Xbox 360 gamepad
 - **Trackpad Mouse** — use the right (or left) trackpad as a mouse cursor
-- **Back Buttons for Clicking** — map R4/R5 (or L4/L5) to left/right mouse click
+- **Back Buttons for Clicking** — the upper paddles (L4/R4) left-click by default; rebind any paddle to a gamepad button, right click, or Off
 - **Use Left Trackpad Instead** — mirror all trackpad/back-button functionality to the left side for left-handed users
 - **Start with Windows** — launch automatically at login
 - Settings persist across restarts

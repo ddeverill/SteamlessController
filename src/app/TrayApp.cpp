@@ -191,10 +191,6 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case IDM_REMAP_BACK:
             OpenRemapWindow();
             break;
-        case IDM_BACKBUTTONS:
-            m_controller->SetBackButtonsEnabled(!m_controller->IsBackButtonsEnabled());
-            SaveSettings();
-            break;
         case IDM_LEFT_TRACKPAD:
             m_controller->SetUseLeftTrackpad(!m_controller->IsUseLeftTrackpad());
             SaveSettings();
@@ -749,17 +745,30 @@ void TrayApp::LoadSettings() {
                : mode == 1 ? AutoMode::OffWhileSteam
                            : AutoMode::Manual;
     m_controller->SetTrackpadMouseEnabled(readDw(L"TrackpadMouse",   0) != 0);
-    m_controller->SetBackButtonsEnabled  (readDw(L"BackButtons",     0) != 0);
     m_controller->SetUseLeftTrackpad     (readDw(L"UseLeftTrackpad", 0) != 0);
     m_controller->SetControllerPlatform  (readDw(L"ControllerPlatform", 0) != 0
                                           ? ControllerPlatform::PlayStation
                                           : ControllerPlatform::Xbox);
 
+    // Existing installs keep exactly the bindings they had — the new
+    // click-by-default only applies to fresh installs, which never reach here
+    // and so take the BackButtonConfig defaults.
     BackButtonConfig cfg;
     cfg.l4 = static_cast<BackButtonAction>(readDw(L"BackBtnL4", static_cast<DWORD>(BackButtonAction::None)));
     cfg.l5 = static_cast<BackButtonAction>(readDw(L"BackBtnL5", static_cast<DWORD>(BackButtonAction::None)));
     cfg.r4 = static_cast<BackButtonAction>(readDw(L"BackBtnR4", static_cast<DWORD>(BackButtonAction::None)));
     cfg.r5 = static_cast<BackButtonAction>(readDw(L"BackBtnR5", static_cast<DWORD>(BackButtonAction::None)));
+
+    // Migrate the retired "Back Buttons as Mouse Click" toggle into real
+    // bindings. The toggle used to hijack L4/R4 for a left click and silently
+    // discard whatever they were bound to, so only fill in the paddles that
+    // have no binding of their own — an explicit mapping was the user's intent
+    // all along and starts working again now that nothing overrides it.
+    const bool migrateBackMouse = readDw(L"BackButtons", 0) != 0;
+    if (migrateBackMouse) {
+        if (cfg.l4 == BackButtonAction::None) cfg.l4 = BackButtonAction::LeftMouseButton;
+        if (cfg.r4 == BackButtonAction::None) cfg.r4 = BackButtonAction::LeftMouseButton;
+    }
     m_controller->SetBackButtonConfig(cfg);
 
     m_notificationsEnabled = readDw(L"ShowNotifications", 1) != 0;
@@ -771,6 +780,17 @@ void TrayApp::LoadSettings() {
     m_startupEnabled   = m_startupMechanism != 0;
 
     RegCloseKey(key);
+
+    // Persist the migrated bindings and drop the retired value, so the fill-in
+    // above runs exactly once and a later choice of "Off" is not resurrected.
+    if (migrateBackMouse) {
+        SaveSettings();
+        HKEY writeKey;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_KEY, 0, KEY_SET_VALUE, &writeKey) == ERROR_SUCCESS) {
+            RegDeleteValueW(writeKey, L"BackButtons");
+            RegCloseKey(writeKey);
+        }
+    }
 }
 
 void TrayApp::SaveSettings() {
@@ -789,7 +809,6 @@ void TrayApp::SaveSettings() {
     writeDw(L"StartupMechanism",    static_cast<DWORD>(m_startupMechanism));
     writeDw(L"ShowNotifications",   m_notificationsEnabled ? 1 : 0);
     writeDw(L"TrackpadMouse",       m_controller->IsTrackpadMouseEnabled()  ? 1 : 0);
-    writeDw(L"BackButtons",         m_controller->IsBackButtonsEnabled()    ? 1 : 0);
     writeDw(L"UseLeftTrackpad",     m_controller->IsUseLeftTrackpad()       ? 1 : 0);
     writeDw(L"ControllerPlatform",  m_controller->GetControllerPlatform() == ControllerPlatform::PlayStation ? 1 : 0);
 
@@ -806,7 +825,6 @@ void TrayApp::ShowContextMenu() {
     bool connected    = m_controller->IsConnected();
     bool gameModeOn   = m_controller->IsGameModeActive();
     bool trackpadOn   = m_controller->IsTrackpadMouseEnabled();
-    bool backMouseOn  = m_controller->IsBackButtonsEnabled();
     bool leftPad      = m_controller->IsUseLeftTrackpad();
     bool startupOn    = m_startupEnabled;
 
@@ -842,9 +860,6 @@ void TrayApp::ShowContextMenu() {
 
     AppendMenuW(menu, MF_STRING | (trackpadOn ? MF_CHECKED : MF_UNCHECKED),
                 IDM_TRACKPAD, L"Enable Trackpad Mouse");
-
-    AppendMenuW(menu, MF_STRING | (backMouseOn ? MF_CHECKED : MF_UNCHECKED),
-                IDM_BACKBUTTONS, L"Back Buttons as Mouse Click");
 
     AppendMenuW(menu, MF_STRING | (leftPad ? MF_CHECKED : MF_UNCHECKED),
                 IDM_LEFT_TRACKPAD, L"Use Left Trackpad Instead");

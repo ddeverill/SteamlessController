@@ -34,6 +34,11 @@ struct ControllerManager::Slot {
     // thread for that timeout on every one of those attempts.
     std::chrono::steady_clock::time_point lastSilentAt{};
 
+    // Mouse buttons currently held down by a back paddle, so leaving game mode
+    // mid-press releases them instead of stranding the button down.
+    bool    paddleMouseLeftDown  = false;
+    bool    paddleMouseRightDown = false;
+
     // Haptic edge-detection state for touch (movement ticks).
     bool    hapticWasRightTouching = false;
     bool    hapticWasLeftTouching  = false;
@@ -197,6 +202,7 @@ ControllerManager::~ControllerManager() {
         if (slot->gameModeActive) {
             StopReadLoop(*slot);
             slot->trackpad.Reset();
+            ReleasePaddleMouseButtons(*slot);
             slot->vc.reset();
             slot->gameModeActive = false;
         }
@@ -276,10 +282,17 @@ void ControllerManager::SetBackButtonConfig(const BackButtonConfig& cfg) {
     // change takes effect on the very next report.
 }
 
-void ControllerManager::SetBackButtonsEnabled(bool enabled) {
-    m_backButtonsEnabled = enabled;
-    for (auto& slot : m_slots)
-        slot->trackpad.SetBackButtonsEnabled(enabled);
+void ControllerManager::ReleasePaddleMouseButtons(Slot& slot) {
+    auto send = [](DWORD flags) {
+        INPUT inp{};
+        inp.type       = INPUT_MOUSE;
+        inp.mi.dwFlags = flags;
+        SendInput(1, &inp, sizeof(INPUT));
+    };
+    if (slot.paddleMouseLeftDown)  send(MOUSEEVENTF_LEFTUP);
+    if (slot.paddleMouseRightDown) send(MOUSEEVENTF_RIGHTUP);
+    slot.paddleMouseLeftDown  = false;
+    slot.paddleMouseRightDown = false;
 }
 
 void ControllerManager::SetControllerPlatform(ControllerPlatform platform) {
@@ -443,9 +456,9 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
     EventLog::Write("GAMEMODE: enabled %ls", slot.path.c_str());
     slot.gameModeActive = true;
     slot.trackpad.Reset();
+    ReleasePaddleMouseButtons(slot);
     slot.trackpad.SetTrackpadEnabled(m_trackpadMouseEnabled);
     slot.trackpad.SetUseLeftTrackpad(m_useLeftTrackpad);
-    slot.trackpad.SetBackButtonsEnabled(m_backButtonsEnabled);
     StartReadLoop(slot);
     return GameModeOutcome::Enabled;
 }
@@ -457,6 +470,7 @@ void ControllerManager::DisableGameModeSlot(Slot& slot) {
     if (slot.sc->IsOpen())
         slot.sc->SetRumble(0, 0);
     slot.trackpad.Reset();
+    ReleasePaddleMouseButtons(slot);
     slot.vc.reset();
     slot.sc->EnableLizardMode();
     // Reopen shared so Steam can obtain write access — game mode is no longer active.
@@ -563,7 +577,7 @@ void ControllerManager::ReadLoop(Slot* slot) {
 
         if (!SteamController::IsStateReportId(buf[0])) continue;
 
-        if (slot->vc) slot->vc->Update(buf, n, m_backConfig, m_backButtonsEnabled);
+        if (slot->vc) slot->vc->Update(buf, n, m_backConfig);
         slot->trackpad.Update(buf, n);
 
         // Trackpad haptics.
@@ -764,8 +778,7 @@ void ControllerManager::ReadLoop(Slot* slot) {
 
         // Fire mouse button events for back paddles mapped to LeftMouseButton/RightMouseButton.
         // Uses edge detection so we only send DOWN on press and UP on release.
-        // Skipped when backButtonsEnabled — TrackpadMouse already handles L4/R4 in that mode.
-        if (!m_backButtonsEnabled && hasPrev) {
+        if (hasPrev) {
             struct PaddleEdge { bool cur; bool prev; BackButtonAction action; };
             const PaddleEdge edges[] = {
                 { n>4 && (buf[4]&SteamController::BTN_L4)!=0, (prevBuf[4]&SteamController::BTN_L4)!=0, m_backConfig.l4 },
@@ -776,8 +789,13 @@ void ControllerManager::ReadLoop(Slot* slot) {
             for (const auto& e : edges) {
                 if (e.cur == e.prev) continue;
                 DWORD flag = 0;
-                if      (e.action == BackButtonAction::LeftMouseButton)  flag = e.cur ? MOUSEEVENTF_LEFTDOWN  : MOUSEEVENTF_LEFTUP;
-                else if (e.action == BackButtonAction::RightMouseButton) flag = e.cur ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
+                if (e.action == BackButtonAction::LeftMouseButton) {
+                    flag = e.cur ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+                    slot->paddleMouseLeftDown = e.cur;
+                } else if (e.action == BackButtonAction::RightMouseButton) {
+                    flag = e.cur ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
+                    slot->paddleMouseRightDown = e.cur;
+                }
                 if (flag) { INPUT inp{}; inp.type = INPUT_MOUSE; inp.mi.dwFlags = flag; SendInput(1, &inp, sizeof(INPUT)); }
             }
         }

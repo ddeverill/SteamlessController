@@ -278,7 +278,7 @@ void VirtualController::SetTrackpadMouseClaim(bool enabled, bool useLeftTrackpad
 }
 
 void VirtualController::Update(const uint8_t* buf, size_t n,
-                               const BackButtonConfig& backCfg, bool backMouseEnabled) {
+                               const BackButtonConfig& backCfg) {
     if (!m_valid) return;
 
     if (m_platform == ControllerPlatform::PlayStation) {
@@ -356,11 +356,11 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
                 }
             };
             if (n > 4) {
-                if (!backMouseEnabled && (buf[4] & SteamController::BTN_L4)) applyBack(backCfg.l4);
+                if (buf[4] & SteamController::BTN_L4) applyBack(backCfg.l4);
                 if (buf[4] & SteamController::BTN_L5) applyBack(backCfg.l5);
             }
             if (n > 2) {
-                if (!backMouseEnabled && (buf[2] & SteamController::BTN_R4)) applyBack(backCfg.r4);
+                if (buf[2] & SteamController::BTN_R4) applyBack(backCfg.r4);
             }
             if (n > 3) {
                 if (buf[3] & SteamController::BTN_R5) applyBack(backCfg.r5);
@@ -465,11 +465,11 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
         XUSB_REPORT report = TranslateX360(buf, n);
 
         if (n > 4) {
-            if (!backMouseEnabled && (buf[4] & SteamController::BTN_L4)) ApplyBackActionX360(backCfg.l4, report);
+            if (buf[4] & SteamController::BTN_L4) ApplyBackActionX360(backCfg.l4, report);
             if (buf[4] & SteamController::BTN_L5) ApplyBackActionX360(backCfg.l5, report);
         }
         if (n > 2) {
-            if (!backMouseEnabled && (buf[2] & SteamController::BTN_R4)) ApplyBackActionX360(backCfg.r4, report);
+            if (buf[2] & SteamController::BTN_R4) ApplyBackActionX360(backCfg.r4, report);
         }
         if (n > 3) {
             if (buf[3] & SteamController::BTN_R5) ApplyBackActionX360(backCfg.r5, report);
