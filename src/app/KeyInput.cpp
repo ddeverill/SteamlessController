@@ -151,3 +151,21 @@ void SendKeyInput(uint16_t vk, bool down) {
     if (!down)       input.ki.dwFlags |= KEYEVENTF_KEYUP;
     SendInput(1, &input, sizeof(INPUT));
 }
+
+std::chrono::milliseconds KeyRepeatDelay() {
+    // 0-3, meaning roughly 250ms to 1000ms in 250ms steps.
+    DWORD setting = 1;
+    if (!SystemParametersInfoW(SPI_GETKEYBOARDDELAY, 0, &setting, 0) || setting > 3)
+        setting = 1;
+    return std::chrono::milliseconds(250 * (static_cast<int>(setting) + 1));
+}
+
+std::chrono::milliseconds KeyRepeatInterval() {
+    // 0-31, meaning roughly 2.5 to 30 repeats per second. Windows documents only
+    // the endpoints, so interpolate the rate between them.
+    DWORD setting = 31;
+    if (!SystemParametersInfoW(SPI_GETKEYBOARDSPEED, 0, &setting, 0) || setting > 31)
+        setting = 31;
+    const double perSecond = 2.5 + (30.0 - 2.5) * (static_cast<double>(setting) / 31.0);
+    return std::chrono::milliseconds(static_cast<long long>(1000.0 / perSecond + 0.5));
+}
