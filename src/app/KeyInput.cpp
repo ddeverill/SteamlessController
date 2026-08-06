@@ -1,4 +1,5 @@
 #include "KeyInput.h"
+#include "InputInjection.h"
 #include <Windows.h>
 #include <iterator>
 
@@ -149,7 +150,7 @@ void SendKeyInput(uint16_t vk, bool down) {
     input.ki.dwFlags = KEYEVENTF_SCANCODE;
     if (sc.extended) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
     if (!down)       input.ki.dwFlags |= KEYEVENTF_KEYUP;
-    SendInput(1, &input, sizeof(INPUT));
+    InputInjection::Send(input, "key");
 }
 
 std::chrono::milliseconds KeyRepeatDelay() {
