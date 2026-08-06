@@ -1,5 +1,6 @@
 #include "ControllerManager.h"
 #include "EventLog.h"
+#include "InputInjection.h"
 #include "VirtualController.h"
 #include "TrackpadMouse.h"
 #include "KeyInput.h"
@@ -300,7 +301,7 @@ static bool SendPaddleInput(const BackButtonBinding& binding, bool down) {
         INPUT inp{};
         inp.type       = INPUT_MOUSE;
         inp.mi.dwFlags = flags;
-        SendInput(1, &inp, sizeof(INPUT));
+        InputInjection::Send(inp, "paddle-mouse");
     };
 
     switch (binding.kind) {
@@ -327,7 +328,7 @@ static bool SendPaddleInput(const BackButtonBinding& binding, bool down) {
         default:
             return false;
         }
-        SendInput(1, &inp, sizeof(INPUT));
+        InputInjection::Send(inp, "paddle-mouse");
         return true;
     }
 
@@ -514,6 +515,11 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
     slot.vc->SetTrackpadMouseClaim(m_trackpadMouseEnabled, m_useLeftTrackpad);
 
     EventLog::Write("GAMEMODE: enabled %ls", slot.path.c_str());
+    // Takeover is the moment users report the trackpad arriving dead, and what
+    // decides whether injection can land is whatever window happens to be in
+    // front right then — so record it here rather than reconstructing it later.
+    if (m_trackpadMouseEnabled)
+        InputInjection::LogEnvironment("game mode taken");
     slot.gameModeActive = true;
     slot.trackpad.Reset();
     ReleaseHeldPaddleInputs(slot);
@@ -557,6 +563,7 @@ void ControllerManager::ReadLoop(Slot* slot) {
     uint8_t buf[64];
     uint8_t prevBuf[64] = {};
     bool    hasPrev     = false;
+    bool    loggedShape = false;
     auto    lastKeepalive    = std::chrono::steady_clock::now();
     auto    lastReport       = std::chrono::steady_clock::now();
     bool    stalled          = false;
@@ -636,6 +643,22 @@ void ControllerManager::ReadLoop(Slot* slot) {
         }
 
         if (!SteamController::IsStateReportId(buf[0])) continue;
+
+        // Report shape, once per read loop. The trackpad mouse needs a longer
+        // report than the haptics do, so a transport that reports short loses
+        // cursor movement while every buzz still fires — the same thing a
+        // blocked SendInput looks like from the user's side, and only this
+        // line tells them apart.
+        if (!loggedShape) {
+            loggedShape = true;
+            EventLog::Write("REPORT: state id=0x%02X len=%zu (transport=%s)",
+                            buf[0], n,
+                            SteamController::TransportName(slot->transport));
+            if (n < 30)
+                EventLog::Write("REPORT: %zu bytes is under the 30 the trackpad "
+                                "mouse requires — trackpad movement is being "
+                                "dropped before it reaches SendInput", n);
+        }
 
         if (slot->vc) slot->vc->Update(buf, n, m_backConfig);
         slot->trackpad.Update(buf, n);

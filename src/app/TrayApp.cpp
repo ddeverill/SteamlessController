@@ -3,6 +3,7 @@
 #include "ControllerPlatform.h"
 #include "DeviceRestart.h"
 #include "EventLog.h"
+#include "InputInjection.h"
 #include "steam/SteamController.h"
 #include "resource.h"
 #include <shellapi.h>
@@ -93,15 +94,19 @@ bool TrayApp::Init(HINSTANCE hInstance) {
         [this](bool connected, bool gameModeActive, bool vigemMissing) {
             UpdateTrayIcon(connected, gameModeActive, vigemMissing);
         });
-    m_controller->SetAlertCallback(
-        [this](const std::wstring& title, const std::wstring& text) {
-            {
-                std::lock_guard<std::mutex> lk(m_alertMutex);
-                m_alertTitle = title;
-                m_alertText  = text;
-            }
-            PostMessageW(m_hwnd, WM_ALERT, 0, 0);
-        });
+    auto raiseAlert = [this](const std::wstring& title, const std::wstring& text) {
+        {
+            std::lock_guard<std::mutex> lk(m_alertMutex);
+            m_alertTitle = title;
+            m_alertText  = text;
+        }
+        PostMessageW(m_hwnd, WM_ALERT, 0, 0);
+    };
+    m_controller->SetAlertCallback(raiseAlert);
+    // Blocked input reaches the user the same way a dead controller does: it
+    // presents identically — nothing happens — and the cause is something only
+    // this app is in a position to name.
+    InputInjection::SetAlertCallback(raiseAlert);
 
     LoadSettings();
     // Converge the startup mechanism with the loaded mode — e.g. the first

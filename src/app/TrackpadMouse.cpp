@@ -1,6 +1,8 @@
 #include "TrackpadMouse.h"
+#include "InputInjection.h"
 #include "steam/SteamController.h"
 #include <Windows.h>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 
@@ -8,7 +10,7 @@ static void SendMouseButton(DWORD flags) {
     INPUT input{};
     input.type       = INPUT_MOUSE;
     input.mi.dwFlags = flags;
-    SendInput(1, &input, sizeof(INPUT));
+    InputInjection::Send(input, "trackpad-click");
 }
 
 void TrackpadMouse::Reset() {
@@ -19,6 +21,35 @@ void TrackpadMouse::Reset() {
     m_prevY     = 0;
     m_remX      = 0.0f;
     m_remY      = 0.0f;
+    m_haveRef    = false;
+    m_travelSent = 0;
+}
+
+// Tracks whether accepted movement is reaching the cursor. Re-arms whenever the
+// cursor does move, so only a genuinely pinned cursor accumulates travel.
+void TrackpadMouse::NoteMovementSent(long px, bool haveCursor,
+                                     long cursorX, long cursorY) {
+    if (!haveCursor) {
+        // No cursor position to compare against — GetCursorPos itself fails
+        // off the input desktop, and InputInjection reports that separately.
+        m_haveRef    = false;
+        m_travelSent = 0;
+        return;
+    }
+
+    if (!m_haveRef || cursorX != m_refCursorX || cursorY != m_refCursorY) {
+        m_refCursorX = cursorX;
+        m_refCursorY = cursorY;
+        m_haveRef    = true;
+        m_travelSent = 0;
+    }
+
+    m_travelSent += px;
+    if (m_travelSent >= STUCK_TRAVEL_PX) {
+        POINT at{ m_refCursorX, m_refCursorY };
+        InputInjection::LogCursorNotMoving(m_travelSent, at);
+        m_travelSent = 0;  // re-arm; the log call rate-limits itself
+    }
 }
 
 void TrackpadMouse::Update(const uint8_t* buf, size_t n) {
@@ -64,7 +95,15 @@ void TrackpadMouse::Update(const uint8_t* buf, size_t n) {
                 input.mi.dwFlags = MOUSEEVENTF_MOVE;
                 input.mi.dx      = ix;
                 input.mi.dy      = iy;
-                SendInput(1, &input, sizeof(INPUT));
+                // Read the cursor before sending: SendInput queues the event
+                // rather than applying it, so a position read straight after
+                // would still be the old one.
+                POINT      before{};
+                const bool haveBefore = GetCursorPos(&before) != FALSE;
+                if (InputInjection::Send(input, "trackpad-move")) {
+                    NoteMovementSent(std::labs(ix) + std::labs(iy),
+                                     haveBefore, before.x, before.y);
+                }
             }
         }
     }
