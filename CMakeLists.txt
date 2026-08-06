@@ -90,6 +90,7 @@ add_executable(SteamlessController WIN32
     src/app/ControllerManager.cpp
     src/app/VirtualController.cpp
     src/app/TrackpadMouse.cpp
+    src/app/KeyInput.cpp
     src/app/SteamWatcher.cpp
     src/app/DeviceRestart.cpp
     src/app/EventLog.cpp

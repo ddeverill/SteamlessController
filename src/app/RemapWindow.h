@@ -34,6 +34,10 @@ private:
     void PostToWebView(const std::wstring& jsonStr);
     void SendInitState();
 
+    // Tells the page a binding was captured. The page applies it to whichever
+    // row is listening — it owns that state, not us.
+    void PostCapturedBinding(const BackButtonBinding& binding);
+
     // Called from the read thread via PostMessage — marshals a captured button
     // back to the UI thread so we can call PostWebMessageAsString safely.
     static constexpr UINT WM_BUTTON_CAPTURED = WM_APP + 1;

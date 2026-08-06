@@ -1,4 +1,5 @@
 #include "RemapWindow.h"
+#include "KeyInput.h"
 #include "ControllerManager.h"
 #include <shellapi.h>
 #include <shlobj.h>
@@ -104,7 +105,7 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 <div id="body">
   <div>
     <h2>Back Button Mapping</h2>
-    <p class="instr">Click <b>Rebind</b> on a button, then press any gamepad button on your controller. The new binding shows up here instantly. Pick <b>Off</b> to stop a paddle doing anything at all.</p>
+    <p class="instr">Click <b>Rebind</b> on a button, then press any gamepad button on your controller &#8212; or any key on your keyboard. The new binding shows up here instantly. Pick <b>Off</b> to stop a paddle doing anything at all.</p>
   </div>
   <div class="group">
     <div class="group-label">LEFT GRIP</div>
@@ -134,6 +135,9 @@ var DEFAULTS = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none'};
 // ---- State ----
 var bindings = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none'};
 var listening = null;
+// Display names for key bindings, keyed by binding id. Supplied by C++ from the
+// active keyboard layout — the catalog below can't cover them.
+var keyLabels = {};
 var flash = null;
 var flashTimer = null;
 var applyTimer = null;
@@ -189,9 +193,12 @@ if(window.chrome&&window.chrome.webview){
     var msg=JSON.parse(e.data);
     if(msg.type==='init'){
       bindings=msg.bindings;
+      keyLabels=msg.labels||{};
       renderAll();
     } else if(msg.type==='buttonCaptured'){
-      if(listening&&byId[msg.button]) doBind(listening,msg.button);
+      if(!listening) return;
+      if(msg.label) keyLabels[msg.button]=msg.label;
+      doBind(listening,msg.button);
     }
   });
 }
@@ -240,6 +247,16 @@ function applyBindings(){
   postMsg({type:'apply',bindings:bindings});
 }
 // ---- Render helpers ----
+// Resolves a binding id to something renderable. Keys aren't in the static
+// catalog, so they're built on the fly from the label C++ sent.
+function inputInfo(id){
+  if(byId[id]) return byId[id];
+  if(id&&id.indexOf('key:')===0){
+    var lbl=keyLabels[id]||'Key';
+    return {id:id,glyph:(lbl.length<=3?lbl:'KEY'),label:lbl,bg:'#4a3524',fg:'#f2d5ab'};
+  }
+  return byId['none'];
+}
 function chipHTML(t,cls){
   return '<div class="'+cls+'" style="background:'+t.bg+';color:'+t.fg+';">'+t.glyph+'</div>';
 }
@@ -249,11 +266,11 @@ function renderRow(def){
   var isL=listening===def.id, isF=flash===def.id;
   el.className='row'+(isL?' listening':isF?' flash':'');
   var curBind=bindings[def.id];
-  var tgt=byId[curBind]||byId['none'];
+  var tgt=inputInfo(curBind);
   var rightHTML;
   if(isL){
     rightHTML='<div class="listen-right">'+
-      '<span class="listen-pill"><span class="pulse-dot"></span>Press a button...</span>'+
+      '<span class="listen-pill"><span class="pulse-dot"></span>Press a button or key...</span>'+
       '<button class="btn-row-reset" onclick="resetRow(\''+def.id+'\')">Reset</button>'+
       '<button class="btn-cancel" onclick="cancelListening()">&#10005;</button>'+
       '</div>';
@@ -307,7 +324,14 @@ document.getElementById('titlebar').addEventListener('mousedown',function(e){
 });
 
 document.addEventListener('keydown',function(e){
-  if(e.key==='Escape') cancelListening();
+  // Escape stays the cancel affordance, so it is deliberately not bindable.
+  if(e.key==='Escape'){cancelListening();return;}
+  if(!listening||e.repeat) return;
+  // Swallow the key so it can't also drive the page (Tab moving focus, Space
+  // clicking the focused button) while a row is listening.
+  e.preventDefault();
+  e.stopPropagation();
+  postMsg({type:'keyCaptured',code:e.code});
 });
 
 renderAll();
@@ -418,18 +442,10 @@ LRESULT RemapWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return hit;
     }
 
-    case WM_BUTTON_CAPTURED: {
+    case WM_BUTTON_CAPTURED:
         // Marshalled from the read thread via PostMessage, packed into WPARAM.
-        const std::string id =
-            BackButtonBinding::Unpack(static_cast<uint32_t>(wp)).Id();
-        if (m_webview) {
-            std::wstring json = L"{\"type\":\"buttonCaptured\",\"button\":\"";
-            json += std::wstring(id.begin(), id.end());
-            json += L"\"}";
-            m_webview->PostWebMessageAsString(json.c_str());
-        }
+        PostCapturedBinding(BackButtonBinding::Unpack(static_cast<uint32_t>(wp)));
         return 0;
-    }
 
     case WM_CLOSE:
         ShowWindow(hwnd, SW_HIDE);
@@ -633,6 +649,32 @@ void RemapWindow::OnControllerReady(ICoreWebView2Controller* ctrl) {
 // ---------------------------------------------------------------------------
 
 // Minimal JSON string extractor — finds "key":"value" in a flat JSON object.
+// Key names come from the keyboard layout, so they can contain characters that
+// would otherwise terminate or corrupt the JSON string we build by hand — the
+// backslash key is the obvious one.
+static std::wstring JsonEscape(const std::wstring& s) {
+    std::wstring out;
+    out.reserve(s.size() + 8);
+    for (wchar_t c : s) {
+        switch (c) {
+        case L'"':  out += L"\\\""; break;
+        case L'\\': out += L"\\\\"; break;
+        default:
+            if (c >= 0x20) out += c;  // drop control characters
+            break;
+        }
+    }
+    return out;
+}
+
+// Display label for a binding, or empty when the page's static catalog already
+// has a name for it. Only keys need one — their names come from the layout.
+static std::wstring BindingLabel(const BackButtonBinding& binding) {
+    return binding.kind == BackButtonBinding::Kind::Key
+         ? KeyDisplayName(binding.code)
+         : std::wstring();
+}
+
 static std::string JsonStr(const std::string& json, const std::string& key) {
     std::string needle = "\"" + key + "\":\"";
     size_t pos = json.find(needle);
@@ -672,6 +714,16 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
             });
         }
 
+    } else if (type == "keyCaptured") {
+        // Arrives from the page's keydown handler, already on the UI thread.
+        // Unmappable keys are ignored so the row keeps listening rather than
+        // binding to nothing.
+        const uint16_t vk = VkFromJsCode(JsonStr(msg, "code"));
+        if (vk != 0) {
+            if (m_mgr) m_mgr->StopButtonCapture();
+            PostCapturedBinding(BackButtonBinding::FromKey(vk));
+        }
+
     } else if (type == "stopListening") {
         if (m_mgr) m_mgr->StopButtonCapture();
 
@@ -695,6 +747,14 @@ void RemapWindow::PostToWebView(const std::wstring& jsonStr) {
     if (m_webview) m_webview->PostWebMessageAsString(jsonStr.c_str());
 }
 
+void RemapWindow::PostCapturedBinding(const BackButtonBinding& binding) {
+    const std::string id = binding.Id();
+    std::wstring json = L"{\"type\":\"buttonCaptured\",\"button\":\"";
+    json += std::wstring(id.begin(), id.end());
+    json += L"\",\"label\":\"" + JsonEscape(BindingLabel(binding)) + L"\"}";
+    PostToWebView(json);
+}
+
 void RemapWindow::SendInitState() {
     if (!m_webview) return;
 
@@ -704,12 +764,25 @@ void RemapWindow::SendInitState() {
         return std::wstring(s.begin(), s.end());
     };
 
+    // Key bindings need a label the page cannot derive on its own — their names
+    // come from the keyboard layout. Sent as an id→name map so a paddle pair
+    // bound to the same key contributes one entry.
+    std::wstring labels;
+    for (const auto* b : { &m_config.l4, &m_config.l5, &m_config.r4, &m_config.r5 }) {
+        const std::wstring label = BindingLabel(*b);
+        if (label.empty()) continue;
+        const std::wstring entry = L"\"" + wid(*b) + L"\":\"" + JsonEscape(label) + L"\"";
+        if (labels.find(entry) != std::wstring::npos) continue;
+        if (!labels.empty()) labels += L",";
+        labels += entry;
+    }
+
     std::wstring json =
         L"{\"type\":\"init\",\"bindings\":{"
         L"\"L4\":\"" + wid(m_config.l4) + L"\","
         L"\"L5\":\"" + wid(m_config.l5) + L"\","
         L"\"R4\":\"" + wid(m_config.r4) + L"\","
         L"\"R5\":\"" + wid(m_config.r5) + L"\""
-        L"}}";
+        L"},\"labels\":{" + labels + L"}}";
     PostToWebView(json);
 }
