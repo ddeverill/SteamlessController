@@ -105,7 +105,7 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 <div id="body">
   <div>
     <h2>Back Button Mapping</h2>
-    <p class="instr">Click <b>Rebind</b> on a button, then press any gamepad button on your controller &#8212; or any key on your keyboard. The new binding shows up here instantly. Pick <b>Off</b> to stop a paddle doing anything at all.</p>
+    <p class="instr">Click <b>Rebind</b> on a button, then press any gamepad button on your controller &#8212; or any key on your keyboard, or your mouse's middle or thumb buttons. The new binding shows up here instantly. Pick <b>Off</b> to stop a paddle doing anything at all.</p>
   </div>
   <div class="group">
     <div class="group-label">LEFT GRIP</div>
@@ -125,7 +125,12 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
     <button class="btn-apply" id="btn-apply">Apply</button>
   </div>
 </div>
-
+)HTML"
+// Split here only to stay under MSVC's ~16KB limit on a single string literal
+// (C2026); the two halves are concatenated back into one document. Markup and
+// styles above, script below — keep any new content on whichever side is
+// smaller rather than rejoining these.
+R"HTML(
 <script>
 'use strict';
 // ---- Defaults (upper paddles left-click, lower paddles unbound) ----
@@ -158,6 +163,9 @@ var INPUTS = [
   {id:'Right',     glyph:'&#x2192;', label:'D-Pad Right', bg:'#2a3f57',fg:'#cdd9e3'},
   {id:'leftMouse', glyph:'LMB',     label:'Left Click',  bg:'#3a2a5a',fg:'#c9b8f0'},
   {id:'rightMouse',glyph:'RMB',     label:'Right Click', bg:'#3a2a5a',fg:'#c9b8f0'},
+  {id:'mouse:middle',glyph:'MMB',   label:'Middle Click',bg:'#3a2a5a',fg:'#c9b8f0'},
+  {id:'mouse:x1',  glyph:'M4',      label:'Mouse 4',     bg:'#3a2a5a',fg:'#c9b8f0'},
+  {id:'mouse:x2',  glyph:'M5',      label:'Mouse 5',     bg:'#3a2a5a',fg:'#c9b8f0'},
   {id:'menu',      glyph:'MNU',     label:'Menu',        bg:'#2a3a2a',fg:'#9ac89a'},
   {id:'view',      glyph:'VEW',     label:'View',        bg:'#2a3a2a',fg:'#9ac89a'},
   {id:'L3',        glyph:'L3',      label:'L3 Stick',    bg:'#37485a',fg:'#cdd9e3'},
@@ -172,7 +180,8 @@ var PICKER_ROWS = [
   ['A','B','X','Y'],
   ['LB','LT','RB','RT'],
   ['Up','Down','Left','Right'],
-  ['L3','R3','menu','view','leftMouse','rightMouse'],
+  ['L3','R3','menu','view'],
+  ['leftMouse','rightMouse','mouse:middle','mouse:x1','mouse:x2'],
   ['none'],
 ];
 
@@ -270,7 +279,7 @@ function renderRow(def){
   var rightHTML;
   if(isL){
     rightHTML='<div class="listen-right">'+
-      '<span class="listen-pill"><span class="pulse-dot"></span>Press a button or key...</span>'+
+      '<span class="listen-pill"><span class="pulse-dot"></span>Press a button, key, or mouse button...</span>'+
       '<button class="btn-row-reset" onclick="resetRow(\''+def.id+'\')">Reset</button>'+
       '<button class="btn-cancel" onclick="cancelListening()">&#10005;</button>'+
       '</div>';
@@ -321,6 +330,25 @@ document.getElementById('titlebar').addEventListener('mousedown',function(e){
   if(e.target.closest('.winctls')) return;
   if(e.button!==0) return;
   postMsg({type:'startDrag'});
+});
+
+// Middle and the two thumb buttons can be captured by pressing them, because
+// none of them is needed to operate this window. Left and right deliberately
+// cannot — the user has to keep clicking Rebind and Cancel — so they stay
+// available from the picker below instead.
+var MOUSE_CAPTURE = {1:'mouse:middle', 3:'mouse:x1', 4:'mouse:x2'};
+document.addEventListener('mousedown',function(e){
+  if(!listening) return;
+  var id=MOUSE_CAPTURE[e.button];
+  if(!id) return;
+  // Suppress the browser defaults these carry: autoscroll on middle, and
+  // history navigation on the thumb buttons.
+  e.preventDefault();
+  e.stopPropagation();
+  postMsg({type:'mouseCaptured',button:id});
+});
+document.addEventListener('auxclick',function(e){
+  if(listening&&MOUSE_CAPTURE[e.button]) e.preventDefault();
 });
 
 document.addEventListener('keydown',function(e){
@@ -712,6 +740,13 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
                 PostMessageW(hwnd, WM_BUTTON_CAPTURED,
                              static_cast<WPARAM>(binding.Pack()), 0);
             });
+        }
+
+    } else if (type == "mouseCaptured") {
+        const BackButtonBinding binding = BackButtonBinding::FromId(JsonStr(msg, "button"));
+        if (binding.kind == BackButtonBinding::Kind::MouseButton) {
+            if (m_mgr) m_mgr->StopButtonCapture();
+            PostCapturedBinding(binding);
         }
 
     } else if (type == "keyCaptured") {
