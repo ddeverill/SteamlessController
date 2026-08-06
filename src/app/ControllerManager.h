@@ -79,7 +79,7 @@ private:
     GameModeOutcome EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
                                        uint32_t stateWaitMs);
     void DisableGameModeSlot(Slot& slot);
-    void ReleasePaddleMouseButtons(Slot& slot);
+    void ReleaseHeldPaddleInputs(Slot& slot);
     void StartReadLoop(Slot& slot);
     void StopReadLoop(Slot& slot);
     void ReadLoop(Slot* slot);
