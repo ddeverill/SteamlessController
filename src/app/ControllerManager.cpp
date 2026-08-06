@@ -308,9 +308,28 @@ static bool SendPaddleInput(const BackButtonBinding& binding, bool down) {
         SendKeyInput(binding.code, down);
         return true;
 
-    case BackButtonBinding::Kind::MouseButton:
-        // Extended mouse buttons are not bindable yet.
-        return false;
+    case BackButtonBinding::Kind::MouseButton: {
+        INPUT inp{};
+        inp.type = INPUT_MOUSE;
+        switch (static_cast<BackButtonBinding::MouseButtonCode>(binding.code)) {
+        case BackButtonBinding::MouseButtonCode::Middle:
+            inp.mi.dwFlags = down ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
+            break;
+        // The thumb buttons share one event pair and are told apart by mouseData.
+        case BackButtonBinding::MouseButtonCode::X1:
+            inp.mi.dwFlags   = down ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
+            inp.mi.mouseData = XBUTTON1;
+            break;
+        case BackButtonBinding::MouseButtonCode::X2:
+            inp.mi.dwFlags   = down ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
+            inp.mi.mouseData = XBUTTON2;
+            break;
+        default:
+            return false;
+        }
+        SendInput(1, &inp, sizeof(INPUT));
+        return true;
+    }
 
     case BackButtonBinding::Kind::Action:
         if (binding.IsAction(BackButtonAction::LeftMouseButton)) {
