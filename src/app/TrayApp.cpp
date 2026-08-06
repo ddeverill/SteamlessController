@@ -753,11 +753,12 @@ void TrayApp::LoadSettings() {
     // Existing installs keep exactly the bindings they had — the new
     // click-by-default only applies to fresh installs, which never reach here
     // and so take the BackButtonConfig defaults.
+    const DWORD unbound = BackButtonBinding::FromAction(BackButtonAction::None).Pack();
     BackButtonConfig cfg;
-    cfg.l4 = static_cast<BackButtonAction>(readDw(L"BackBtnL4", static_cast<DWORD>(BackButtonAction::None)));
-    cfg.l5 = static_cast<BackButtonAction>(readDw(L"BackBtnL5", static_cast<DWORD>(BackButtonAction::None)));
-    cfg.r4 = static_cast<BackButtonAction>(readDw(L"BackBtnR4", static_cast<DWORD>(BackButtonAction::None)));
-    cfg.r5 = static_cast<BackButtonAction>(readDw(L"BackBtnR5", static_cast<DWORD>(BackButtonAction::None)));
+    cfg.l4 = BackButtonBinding::Unpack(readDw(L"BackBtnL4", unbound));
+    cfg.l5 = BackButtonBinding::Unpack(readDw(L"BackBtnL5", unbound));
+    cfg.r4 = BackButtonBinding::Unpack(readDw(L"BackBtnR4", unbound));
+    cfg.r5 = BackButtonBinding::Unpack(readDw(L"BackBtnR5", unbound));
 
     // Migrate the retired "Back Buttons as Mouse Click" toggle into real
     // bindings. The toggle used to hijack L4/R4 for a left click and silently
@@ -766,8 +767,9 @@ void TrayApp::LoadSettings() {
     // all along and starts working again now that nothing overrides it.
     const bool migrateBackMouse = readDw(L"BackButtons", 0) != 0;
     if (migrateBackMouse) {
-        if (cfg.l4 == BackButtonAction::None) cfg.l4 = BackButtonAction::LeftMouseButton;
-        if (cfg.r4 == BackButtonAction::None) cfg.r4 = BackButtonAction::LeftMouseButton;
+        const auto leftClick = BackButtonBinding::FromAction(BackButtonAction::LeftMouseButton);
+        if (cfg.l4.IsAction(BackButtonAction::None)) cfg.l4 = leftClick;
+        if (cfg.r4.IsAction(BackButtonAction::None)) cfg.r4 = leftClick;
     }
     m_controller->SetBackButtonConfig(cfg);
 
@@ -813,10 +815,10 @@ void TrayApp::SaveSettings() {
     writeDw(L"ControllerPlatform",  m_controller->GetControllerPlatform() == ControllerPlatform::PlayStation ? 1 : 0);
 
     const auto& cfg = m_controller->GetBackButtonConfig();
-    writeDw(L"BackBtnL4", static_cast<DWORD>(cfg.l4));
-    writeDw(L"BackBtnL5", static_cast<DWORD>(cfg.l5));
-    writeDw(L"BackBtnR4", static_cast<DWORD>(cfg.r4));
-    writeDw(L"BackBtnR5", static_cast<DWORD>(cfg.r5));
+    writeDw(L"BackBtnL4", cfg.l4.Pack());
+    writeDw(L"BackBtnL5", cfg.l5.Pack());
+    writeDw(L"BackBtnR4", cfg.r4.Pack());
+    writeDw(L"BackBtnR5", cfg.r5.Pack());
 
     RegCloseKey(key);
 }

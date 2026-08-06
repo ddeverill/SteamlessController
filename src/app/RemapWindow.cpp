@@ -419,12 +419,12 @@ LRESULT RemapWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_BUTTON_CAPTURED: {
-        // Marshalled from the read thread via PostMessage.
-        auto action = static_cast<BackButtonAction>(static_cast<int>(wp));
-        const char* id = BackButtonActionId(action);
+        // Marshalled from the read thread via PostMessage, packed into WPARAM.
+        const std::string id =
+            BackButtonBinding::Unpack(static_cast<uint32_t>(wp)).Id();
         if (m_webview) {
             std::wstring json = L"{\"type\":\"buttonCaptured\",\"button\":\"";
-            json += std::wstring(id, id + strlen(id));
+            json += std::wstring(id.begin(), id.end());
             json += L"\"}";
             m_webview->PostWebMessageAsString(json.c_str());
         }
@@ -665,10 +665,10 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
         std::string row = JsonStr(msg, "row");
         if (!row.empty() && m_mgr) {
             HWND hwnd = m_hwnd;
-            m_mgr->StartButtonCapture([hwnd](BackButtonAction action) {
+            m_mgr->StartButtonCapture([hwnd](const BackButtonBinding& binding) {
                 // Called from the read thread — use PostMessage to marshal to UI.
                 PostMessageW(hwnd, WM_BUTTON_CAPTURED,
-                             static_cast<WPARAM>(static_cast<int>(action)), 0);
+                             static_cast<WPARAM>(binding.Pack()), 0);
             });
         }
 
@@ -681,10 +681,10 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
         if (bStart != std::string::npos) {
             std::string sub = msg.substr(bStart);
             BackButtonConfig cfg;
-            cfg.l4 = BackButtonActionFromId(JsonStr(sub, "L4"));
-            cfg.l5 = BackButtonActionFromId(JsonStr(sub, "L5"));
-            cfg.r4 = BackButtonActionFromId(JsonStr(sub, "R4"));
-            cfg.r5 = BackButtonActionFromId(JsonStr(sub, "R5"));
+            cfg.l4 = BackButtonBinding::FromId(JsonStr(sub, "L4"));
+            cfg.l5 = BackButtonBinding::FromId(JsonStr(sub, "L5"));
+            cfg.r4 = BackButtonBinding::FromId(JsonStr(sub, "R4"));
+            cfg.r5 = BackButtonBinding::FromId(JsonStr(sub, "R5"));
             m_config = cfg;
             if (m_applyCallback) m_applyCallback(cfg);
         }
@@ -699,11 +699,9 @@ void RemapWindow::SendInitState() {
     if (!m_webview) return;
 
     // Convert ASCII action ID string to wstring without char→wchar_t narrowing warnings.
-    auto wid = [](BackButtonAction a) -> std::wstring {
-        const char* s = BackButtonActionId(a);
-        std::wstring w;
-        for (; *s; ++s) w += static_cast<wchar_t>(*s);
-        return w;
+    auto wid = [](const BackButtonBinding& b) -> std::wstring {
+        const std::string s = b.Id();
+        return std::wstring(s.begin(), s.end());
     };
 
     std::wstring json =
