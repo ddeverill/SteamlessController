@@ -83,4 +83,51 @@ bool RestartInterfaceDevice(const std::wstring& interfacePath, CycleResult& resu
 bool WriteCycleStatus(const CycleResult& result);
 bool ReadCycleStatus(CycleResult& result);
 
+// ---------------------------------------------------------------------------
+// Crash-safe disable
+// ---------------------------------------------------------------------------
+//
+// A global disable is written straight into the devnode's registry ConfigFlags,
+// so it outlives the process that asked for it — and a reboot, and a replug.
+// The re-enable that undoes it lives a second or so later in the same function,
+// which is fine right up until the process does not survive that second.
+//
+// That is not hypothetical: a cycle on the elevated in-process path runs inside
+// the long-lived tray app, and killing it mid-cycle strands the controller
+// switched off with nothing left running to put it back. Recovering needs
+// Device Manager, which is not something a user should have to discover.
+//
+// So the intent to disable is recorded durably *before* the disable, and
+// cleared only once the devnode confirms it is back. Anything left behind is a
+// cycle that did not finish, and the next run undoes it.
+
+// Record that these devnodes are about to be disabled. Call immediately before
+// the disable; the record is flushed to disk before this returns.
+bool ArmPendingDisable(const std::wstring& instanceId,
+                       const std::wstring& parentInstanceId);
+
+// Drop the record. Call only once the devnode is confirmed enabled again.
+bool DisarmPendingDisable();
+
+// True when a previous run left a disable unfinished. Cheap; safe unelevated.
+bool HasPendingDisable();
+
+// Re-enable whatever a previous run left disabled, then drop the record.
+// Requires elevation — the tray app routes this through the helper.
+// Returns the number of devnodes actually brought back; `report` receives a
+// human-readable summary for the event log.
+int ReconcilePendingDisables(std::wstring* report = nullptr);
+
+// Any Valve controller devnode sitting in CM_PROB_DISABLED, whoever switched it
+// off — us, Device Manager, or a tool that hides HID devices. Returns an empty
+// string when nothing is disabled.
+//
+// A disabled devnode publishes no interfaces, so from inside this app it is
+// indistinguishable from a controller that was never plugged in: enumeration
+// simply returns nothing. That is a bad thing to be silent about, because the
+// device still lights up and still makes Windows chime when it is plugged in,
+// so the user has every reason to believe it is fine and we are broken.
+// Read-only and safe unelevated.
+std::wstring FindDisabledControllerNode();
+
 }

@@ -9,6 +9,8 @@
 //
 // Usage:
 //   SteamlessDeviceCycle.exe               cycle the controller devices
+//   SteamlessDeviceCycle.exe --reconcile   re-enable a devnode left disabled
+//                                          by an interrupted cycle (admin)
 //   SteamlessDeviceCycle.exe --register    create the on-demand scheduled
 //                                          task pointing at this exe (admin)
 //   SteamlessDeviceCycle.exe --unregister  delete the task (admin)
@@ -74,7 +76,35 @@ static bool RunToolHidden(std::wstring cmdline) {
     return code == 0;
 }
 
+// Undo a disable that an earlier run committed but never got to reverse.
+// Elevated, like everything else here — the tray app cannot do this itself.
+static int ReconcilePending() {
+    std::wstring report;
+    const int recovered = DeviceRestart::ReconcilePendingDisables(&report);
+    if (report.empty()) return 0;  // nothing was pending, or it recovered itself
+
+    CycleLog("RECONCILE: %ls", report.c_str());
+    // A device left switched off is the failure this whole mechanism exists to
+    // prevent, so say so loudly rather than exiting quietly.
+    if (report.find(L"STILL DISABLED") != std::wstring::npos) {
+        CycleLog("RECONCILE: a devnode could not be re-enabled — it needs "
+                 "Device Manager, or pnputil /enable-device");
+        return 1;
+    }
+    // Deliberately not "from an interrupted cycle": the same record is written
+    // when the user asks for a disabled device to be switched back on, and from
+    // here the two are indistinguishable.
+    CycleLog("RECONCILE: recovered %d devnode(s) left disabled", recovered);
+    return 0;
+}
+
 static int CycleDevices() {
+    // An interrupted cycle leaves the controller switched off, and a switched
+    // off controller enumerates nothing — so without this the enumeration below
+    // finds no interfaces and the cycle silently does nothing, which looks
+    // exactly like a controller that is simply not plugged in.
+    ReconcilePending();
+
     bool any = false;
     const auto paths = SteamController::EnumerateAll();
     CycleLog("START: %zu interface(s) to cycle", paths.size());
@@ -278,5 +308,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR cmdLine, int) {
     if (cmdLine && wcsstr(cmdLine, L"--register"))     return RegisterTask();
     if (cmdLine && wcsstr(cmdLine, L"--unregister"))   return UnregisterTask();
     if (cmdLine && wcsstr(cmdLine, L"--find-holders")) return FindHoldersOnly();
+    if (cmdLine && wcsstr(cmdLine, L"--reconcile"))    return ReconcilePending();
     return CycleDevices();
 }

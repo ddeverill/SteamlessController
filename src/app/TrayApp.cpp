@@ -126,6 +126,17 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     if (m_autoMode == AutoMode::OffOnlyInGame)
         EnsureCycleTaskRegistered();
 
+    // Deliberately last, and every part of that ordering is load-bearing: it
+    // reports through the tray balloon, which does nothing until AddTrayIcon has
+    // run; it honours the notification setting, which LoadSettings supplies; and
+    // it may need the elevated helper, so it goes after the task registration
+    // above rather than raising a second UAC prompt of its own.
+    //
+    // Nothing earlier needs the controller to exist. A device brought back here
+    // announces itself as an ordinary DBT_DEVICEARRIVAL once the message loop
+    // starts, and is picked up on that path like any other replug.
+    RecoverStrandedDevices();
+
     // Start watching for Steam regardless of auto mode — the state is applied
     // only when auto mode is on, and having it warm makes toggling auto mode
     // take effect instantly. The initial callback asserts the correct state
@@ -160,9 +171,13 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     switch (msg) {
     case WM_TRAY:
-        if (LOWORD(lp) == NIN_BALLOONUSERCLICK)
-            ShellExecuteW(nullptr, L"open", L"https://github.com/nefarius/ViGEmBus/releases/latest",
-                          nullptr, nullptr, SW_SHOWNORMAL);
+        if (LOWORD(lp) == NIN_BALLOONUSERCLICK) {
+            if (m_balloonAction == BalloonAction::EnableDisabledDevice)
+                EnableDisabledControllerDevice();
+            else
+                ShellExecuteW(nullptr, L"open", L"https://github.com/nefarius/ViGEmBus/releases/latest",
+                              nullptr, nullptr, SW_SHOWNORMAL);
+        }
         else if (LOWORD(lp) == WM_LBUTTONDBLCLK)
             OpenRemapWindow();
         else if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_LBUTTONUP)
@@ -233,6 +248,9 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             EventLog::Write("USER: disconnect notifications %s",
                             m_notificationsEnabled ? "enabled" : "disabled");
             SaveSettings();
+            break;
+        case IDM_ENABLE_DEVICE:
+            EnableDisabledControllerDevice();
             break;
         case IDM_EXIT:
             EventLog::Write("=== SteamlessController exiting (user request) ===");
@@ -358,8 +376,13 @@ void TrayApp::ReleaseControl() {
     // Steam only (re)opens controllers on device-arrival events. If it is
     // already running and we held the device, it never saw one — cycle
     // the device so Steam adopts it immediately.
-    if (hadControl && m_steamWatcher.GetState() != SteamState::NoSteam)
+    if (hadControl && m_steamWatcher.GetState() != SteamState::NoSteam) {
+        // Logged because this cycle is otherwise invisible. The acquire path
+        // announces itself; this one used to not, which made a device left
+        // disabled by an interrupted release look like it came from nowhere.
+        EventLog::Write("RELEASE: cycling device so Steam sees an arrival");
         RestartControllerDevices();
+    }
 }
 
 void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
@@ -536,6 +559,97 @@ void TrayApp::ReportAcquireFailure() {
                          L"Closing Steam will hand it back.");
 }
 
+bool TrayApp::RunPendingRecovery() {
+    if (IsProcessElevated()) {
+        std::wstring report;
+        const int recovered = DeviceRestart::ReconcilePendingDisables(&report);
+        EventLog::Write("RECOVER: %ls (%d devnode(s) re-enabled)",
+                        report.empty() ? L"nothing was still disabled" : report.c_str(),
+                        recovered);
+        return true;
+    }
+
+    // Enabling a devnode needs elevation, so this has to go through the helper.
+    // Its scheduled task takes no arguments — schtasks cannot pass any — so it
+    // runs the ordinary entry point, which reconciles first and then cycles.
+    // Both are wanted here: the device comes back, and it comes back presented
+    // as a fresh arrival that Steam and we can race for as usual.
+    //
+    // Asynchronous: schtasks returns once the task has been started, not once
+    // the helper has finished, so the device reappears on its own a moment later
+    // as a normal arrival rather than before this returns.
+    return RestartControllerDevices();
+}
+
+// Undo a disable an earlier run committed to the registry but never reversed.
+// Cheap and silent in the normal case: with no pending record this is one
+// failed file open.
+void TrayApp::RecoverStrandedDevices() {
+    if (!DeviceRestart::HasPendingDisable()) {
+        // No record of our own, but the device can still be switched off — by
+        // Device Manager, by regedit, by pnputil, by a tool that hides HID
+        // devices. Not something to undo silently: it may well be deliberate.
+        // Naming it is the useful part, because from here it is otherwise
+        // indistinguishable from no controller being plugged in at all.
+        m_disabledDeviceNode = DeviceRestart::FindDisabledControllerNode();
+        if (!m_disabledDeviceNode.empty()) {
+            EventLog::Write("STARTUP: a controller devnode is disabled in Windows, so it "
+                            "publishes no interfaces and cannot be seen here or by Steam: "
+                            "%ls", m_disabledDeviceNode.c_str());
+            EventLog::Write("STARTUP: re-enable it from the tray menu, in Device Manager, "
+                            "or with: pnputil /enable-device \"%ls\"",
+                            m_disabledDeviceNode.c_str());
+            if (m_notificationsEnabled)
+                ShowAlertBalloon(L"Controller is disabled in Windows",
+                                 L"Windows has this controller's device switched off, so "
+                                 L"nothing can see it — including Steam. Click here to "
+                                 L"re-enable it.",
+                                 BalloonAction::EnableDisabledDevice);
+        }
+        return;
+    }
+
+    EventLog::Write("RECOVER: a previous run was interrupted mid-cycle and left the "
+                    "controller's devnode disabled — putting it back");
+
+    if (!RunPendingRecovery())
+        EventLog::Write("RECOVER: the elevated helper could not be run — the controller "
+                        "stays disabled until it is re-enabled in Device Manager "
+                        "(or: pnputil /enable-device \"<instance id>\")");
+}
+
+void TrayApp::EnableDisabledControllerDevice() {
+    // Re-resolve rather than trusting what the menu or balloon was built from:
+    // minutes may have passed, and the user may already have fixed it by hand.
+    const std::wstring node = DeviceRestart::FindDisabledControllerNode();
+    m_disabledDeviceNode = node;
+    if (node.empty()) {
+        EventLog::Write("USER: asked to re-enable the controller device, but no controller "
+                        "devnode is disabled");
+        return;
+    }
+
+    EventLog::Write("USER: re-enabling disabled controller devnode %ls", node.c_str());
+
+    // Hand it to the same mechanism that repairs an interrupted cycle rather
+    // than growing a second way to switch a devnode on: recorded as pending, it
+    // is undone by exactly the path that has already been exercised. The parent
+    // is left blank — this node is known to be the disabled one, so there is
+    // nothing to guess at.
+    DeviceRestart::ArmPendingDisable(node, L"");
+
+    if (!RunPendingRecovery()) {
+        EventLog::Write("USER: could not run the elevated helper to re-enable the device");
+        if (m_notificationsEnabled)
+            ShowAlertBalloon(L"Could not re-enable the controller",
+                             L"Windows would not let the device be switched back on from "
+                             L"here. Re-enable it in Device Manager, under Human Interface "
+                             L"Devices.");
+        return;
+    }
+    m_disabledDeviceNode.clear();
+}
+
 bool TrayApp::RestartControllerDevices() {
     // On the rare elevated run, cycle directly. This works on every transport
     // including Bluetooth: the devnode being restarted is the HID child, not
@@ -645,7 +759,10 @@ void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool vigemMiss
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
-void TrayApp::ShowAlertBalloon(const std::wstring& title, const std::wstring& text) {
+void TrayApp::ShowAlertBalloon(const std::wstring& title, const std::wstring& text,
+                              BalloonAction action) {
+    m_balloonAction = action;
+
     NOTIFYICONDATAW nid{};
     nid.cbSize      = sizeof(nid);
     nid.hWnd        = m_hwnd;
@@ -948,6 +1065,18 @@ void TrayApp::ShowContextMenu() {
     bool startupOn    = m_startupEnabled;
 
     HMENU menu = CreatePopupMenu();
+
+    // Only present when it applies, and first when it does: with the devnode
+    // switched off nothing else on this menu can do anything useful, and every
+    // other entry will be reporting "no controller detected" for a reason the
+    // user has no way to guess at. Re-resolved on each open so it disappears
+    // once the device is back, however it got there.
+    m_disabledDeviceNode = DeviceRestart::FindDisabledControllerNode();
+    if (!m_disabledDeviceNode.empty()) {
+        AppendMenuW(menu, MF_STRING, IDM_ENABLE_DEVICE,
+                    L"Re-enable Controller Device (disabled in Windows)");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
 
     // Manual toggle is disabled while an auto mode owns the decision — when
     // grayed, the label itself says why.

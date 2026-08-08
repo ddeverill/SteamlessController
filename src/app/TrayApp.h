@@ -33,7 +33,13 @@ private:
     void RemoveTrayIcon();
     void UpdateTrayIcon(bool connected, bool gameModeActive, bool vigemMissing = false);
     void ShowViGEmBalloon();
-    void ShowAlertBalloon(const std::wstring& title, const std::wstring& text);
+
+    // What clicking the balloon should do. Balloons are transient and the click
+    // arrives long after the call that raised one, so the action travels with
+    // it rather than being inferred at click time.
+    enum class BalloonAction { ViGEmDownload, EnableDisabledDevice };
+    void ShowAlertBalloon(const std::wstring& title, const std::wstring& text,
+                          BalloonAction action = BalloonAction::ViGEmDownload);
     void OpenEventLog();
     void ShowContextMenu();
     void LoadSettings();
@@ -59,6 +65,13 @@ private:
     void ApplySteamState(SteamState state);
     void TryAcquireController(uint32_t stateWaitMs = 250);
     void ReleaseControl();
+    void RecoverStrandedDevices();
+    // Carry out whatever the pending-disable record asks for: in process when
+    // elevated, through the helper's task otherwise. Shared so there is one
+    // place that knows how to get a devnode switched back on.
+    bool RunPendingRecovery();
+    // User-initiated repair of a devnode this app did not disable.
+    void EnableDisabledControllerDevice();
     bool RestartControllerDevices();
     bool RefreshCycleStatus();
     bool LastCycleBrokeNothing();
@@ -86,6 +99,10 @@ private:
     bool                               m_startupEnabled   = false;
     int                                m_startupMechanism = 0;  // 0 none, 1 Run key, 2 elevated task
     bool                               m_notificationsEnabled = true;  // disconnect/stall balloons
+    BalloonAction                      m_balloonAction = BalloonAction::ViGEmDownload;
+    // Devnode found disabled when the menu was last built, so the command
+    // handler and the menu agree on what "re-enable" refers to.
+    std::wstring                       m_disabledDeviceNode;
     std::mutex                         m_alertMutex;   // guards the two alert strings
     std::wstring                       m_alertTitle;   // set on read threads,
     std::wstring                       m_alertText;    // consumed on WM_ALERT
@@ -106,6 +123,7 @@ private:
     static constexpr UINT IDM_MODE_GAME     = 1012;
     static constexpr UINT IDM_OPENLOG       = 1013;
     static constexpr UINT IDM_NOTIFICATIONS = 1014;
+    static constexpr UINT IDM_ENABLE_DEVICE = 1015;
     static constexpr UINT WM_TRAY           = WM_APP + 1;
     static constexpr UINT WM_STEAMSTATE     = WM_APP + 2;
     static constexpr UINT WM_ALERT          = WM_APP + 3;
