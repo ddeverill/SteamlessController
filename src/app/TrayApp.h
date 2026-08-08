@@ -66,6 +66,7 @@ private:
     void TryAcquireController(uint32_t stateWaitMs = 250);
     void ReleaseControl();
     void RecoverStrandedDevices();
+    void WriteHeartbeat();
     // Carry out whatever the pending-disable record asks for: in process when
     // elevated, through the helper's task otherwise. Shared so there is one
     // place that knows how to get a devnode switched back on.
@@ -100,6 +101,11 @@ private:
     int                                m_startupMechanism = 0;  // 0 none, 1 Run key, 2 elevated task
     bool                               m_notificationsEnabled = true;  // disconnect/stall balloons
     BalloonAction                      m_balloonAction = BalloonAction::ViGEmDownload;
+    // Unbiased interrupt time at the last heartbeat, and the tick this instance
+    // started. Unbiased so that time the machine spent asleep does not read as
+    // the app having been blocked.
+    ULONGLONG                          m_lastHeartbeatUnbiased = 0;
+    ULONGLONG                          m_startTick = 0;
     // Devnode found disabled when the menu was last built, so the command
     // handler and the menu agree on what "re-enable" refers to.
     std::wstring                       m_disabledDeviceNode;
@@ -131,6 +137,16 @@ private:
     static constexpr UINT_PTR IDT_ACQUIRE         = 1;
     static constexpr UINT_PTR IDT_ACQUIRE_VERDICT = 2;
     static constexpr UINT_PTR IDT_WAKE_POLL       = 3;
+    static constexpr UINT_PTR IDT_HEARTBEAT       = 4;
+    // Long enough that idling for a month costs a fraction of the log's 512 KB,
+    // short enough to bound when the app stopped responding to within a
+    // quarter hour. Resolution only has to beat "somewhere in the last 33
+    // hours", which is what the log offered the last time this mattered.
+    static constexpr UINT HEARTBEAT_MS = 15 * 60 * 1000;
+    // Slack before a late beat is called a stall. Window timers are low
+    // priority and coalesced, so a beat is routinely a little late; a full
+    // minute of drift is not.
+    static constexpr UINT HEARTBEAT_SLACK_MS = 60 * 1000;
     // A multi-slot receiver publishes every slot interface permanently, so a
     // controller waking up produces no device-change event — the only way to
     // notice is to keep asking. The probe is short because a live slot streams

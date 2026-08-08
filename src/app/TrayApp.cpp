@@ -90,6 +90,9 @@ bool TrayApp::Init(HINSTANCE hInstance) {
 
     EventLog::Write("=== SteamlessController started ===");
 
+    m_startTick = GetTickCount64();
+    QueryUnbiasedInterruptTime(&m_lastHeartbeatUnbiased);
+
     m_controller = std::make_unique<ControllerManager>(
         [this](bool connected, bool gameModeActive, bool vigemMissing) {
             UpdateTrayIcon(connected, gameModeActive, vigemMissing);
@@ -136,6 +139,11 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     // announces itself as an ordinary DBT_DEVICEARRIVAL once the message loop
     // starts, and is picked up on that path like any other replug.
     RecoverStrandedDevices();
+
+    // Runs for the life of the process in every mode. Nothing here depends on
+    // it, which is the point: it exists so that the log can tell "idle" from
+    // "stopped" without anyone having to reproduce the fault.
+    SetTimer(m_hwnd, IDT_HEARTBEAT, HEARTBEAT_MS, nullptr);
 
     // Start watching for Steam regardless of auto mode — the state is applied
     // only when auto mode is on, and having it warm makes toggling auto mode
@@ -293,6 +301,9 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // Cheap probe — we are only asking whether anything woke up.
             if (m_wantControl)
                 TryAcquireController(WAKE_PROBE_MS);
+        } else if (wp == IDT_HEARTBEAT) {
+            // Periodic, so not killed — its absence is the signal.
+            WriteHeartbeat();
         } else if (wp == IDT_ACQUIRE_VERDICT) {
             KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
             // The last cycle's re-arrival had a grace period to land. If it
@@ -579,6 +590,45 @@ bool TrayApp::RunPendingRecovery() {
     // the helper has finished, so the device reappears on its own a moment later
     // as a normal arrival rather than before this returns.
     return RestartControllerDevices();
+}
+
+// A silent log is ambiguous. Nothing is written while the app sits idle with
+// nothing changing — AUTO lines only fire on Steam state *changes* — and
+// nothing is written while it is wedged or dead either. So a gap means either
+// "healthy, with nothing to say" or "stopped working", and after the fact there
+// is no way to tell which. That ambiguity cost a real investigation: 33 hours
+// of silence that read as a hang and was very likely an idle app.
+//
+// Driven by the window timer deliberately. A background thread would only prove
+// the process still exists; this proves the message loop is still being pumped,
+// which is what "not hung" means here — the acquire and release paths both run
+// on it, and both can sit inside SetupAPI for seconds at a time.
+void TrayApp::WriteHeartbeat() {
+    ULONGLONG unbiased = 0;
+    QueryUnbiasedInterruptTime(&unbiased);
+    const ULONGLONG sinceMs = m_lastHeartbeatUnbiased
+        ? (unbiased - m_lastHeartbeatUnbiased) / 10000ULL
+        : 0;
+    m_lastHeartbeatUnbiased = unbiased;
+
+    // Unbiased time does not advance while the machine is suspended, so a beat
+    // that is late by this measure was genuinely blocked rather than closed in
+    // a laptop lid. Worth its own line: a stall that recovers leaves no other
+    // trace, and the beat before a gap is the last sign of life anyone gets.
+    if (sinceMs > HEARTBEAT_MS + HEARTBEAT_SLACK_MS)
+        EventLog::Write("HEARTBEAT: the message loop was blocked for %llu s "
+                        "(beat due every %u s)",
+                        sinceMs / 1000, HEARTBEAT_MS / 1000);
+
+    const ULONGLONG upMs = GetTickCount64() - m_startTick;
+    EventLog::Write("HEARTBEAT: alive uptime=%lluh%02llum controller=%s gameMode=%s "
+                    "steam=%d (0=none 1=idle 2=inGame) mode=%d wantControl=%d",
+                    upMs / 3600000ULL, (upMs / 60000ULL) % 60ULL,
+                    m_controller->IsConnected() ? "connected" : "absent",
+                    m_controller->IsGameModeActive() ? "on" : "off",
+                    static_cast<int>(m_steamWatcher.GetState()),
+                    static_cast<int>(m_autoMode),
+                    m_wantControl ? 1 : 0);
 }
 
 // Undo a disable an earlier run committed to the registry but never reversed.
