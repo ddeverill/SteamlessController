@@ -2,6 +2,10 @@
 #include <SetupAPI.h>
 #include <cfgmgr32.h>
 #include <cstdio>
+#include <io.h>
+#include <shlwapi.h>
+#include <vector>
+#pragma comment(lib, "shlwapi.lib")
 
 namespace DeviceRestart {
 
@@ -133,6 +137,25 @@ static RemoveOutcome QueryRemoveAndRestore(DEVINST devInst, CycleResult& out) {
 // getting that wrong strands the controller switched off, needing Device
 // Manager to recover, which is far worse than failing to cycle at all.
 static void CycleDevNode(HDEVINFO devs, SP_DEVINFO_DATA& devInfo, CycleResult& out) {
+    // Write down what is about to be switched off, before switching it off. A
+    // global disable lands in the registry immediately and survives this
+    // process, so from here until the re-enable is confirmed there is a window
+    // in which dying strands the device. The record is what closes it.
+    //
+    // The parent goes in alongside the node itself because the disable does not
+    // reliably land where it is aimed: measured on the wired SC2026, disabling
+    // the HID collection child left CONFIGFLAG_DISABLED on the USB parent
+    // instead. Recording both costs nothing and makes recovery independent of
+    // which node Windows actually marks.
+    wchar_t instanceId[MAX_DEVICE_ID_LEN] = {};
+    CM_Get_Device_IDW(devInfo.DevInst, instanceId, ARRAYSIZE(instanceId), 0);
+
+    wchar_t parentId[MAX_DEVICE_ID_LEN] = {};
+    if (DEVINST parent = 0; CM_Get_Parent(&parent, devInfo.DevInst, 0) == CR_SUCCESS)
+        CM_Get_Device_IDW(parent, parentId, ARRAYSIZE(parentId), 0);
+
+    ArmPendingDisable(instanceId, parentId);
+
     // Some devices reject a global scope change and only accept a
     // config-specific one, so try both before believing a disable was refused.
     if (!SetDeviceState(devs, devInfo, DICS_DISABLE, DICS_FLAG_GLOBAL))
@@ -158,11 +181,15 @@ static void CycleDevNode(HDEVINFO devs, SP_DEVINFO_DATA& devInfo, CycleResult& o
 
     if (!enabled) {
         // The controller is stranded disabled — the caller must surface this,
-        // it is not a quiet failure.
+        // it is not a quiet failure. The pending record deliberately stays
+        // armed: this is exactly the state the next run has to clean up.
         out.kind  = CycleKind::Failed;
         out.error = GetLastError();
         return;
     }
+
+    // Confirmed back. Nothing left for a later run to undo.
+    DisarmPendingDisable();
 
     if (wentDown) {
         out.kind = CycleKind::Cycled;
@@ -300,6 +327,163 @@ bool ReadCycleStatus(CycleResult& result) {
     }
     fclose(f);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Crash-safe disable
+// ---------------------------------------------------------------------------
+
+static std::wstring PendingPath() {
+    wchar_t local[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH)) return L"";
+    const std::wstring dir = std::wstring(local) + L"\\SteamlessController";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\pending-disable";
+}
+
+bool ArmPendingDisable(const std::wstring& instanceId,
+                       const std::wstring& parentInstanceId) {
+    const std::wstring path = PendingPath();
+    if (path.empty() || instanceId.empty()) return false;
+
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"w, ccs=UTF-8") != 0 || !f) return false;
+
+    // Outermost node first: reconciliation walks the file in order, and a
+    // disabled parent has to come back before its child can be looked at.
+    if (!parentInstanceId.empty())
+        fwprintf(f, L"%s\n", parentInstanceId.c_str());
+    fwprintf(f, L"%s\n", instanceId.c_str());
+
+    // The whole point of this file is to outlive an abrupt death, so it has to
+    // reach the disk before the disable it is guarding — buffered in this
+    // process is no better than not written at all.
+    fflush(f);
+    _commit(_fileno(f));
+    fclose(f);
+    return true;
+}
+
+bool DisarmPendingDisable() {
+    const std::wstring path = PendingPath();
+    if (path.empty()) return false;
+    return DeleteFileW(path.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND;
+}
+
+static std::vector<std::wstring> ReadPendingIds() {
+    std::vector<std::wstring> ids;
+    const std::wstring path = PendingPath();
+    if (path.empty()) return ids;
+
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"r, ccs=UTF-8") != 0 || !f) return ids;
+
+    wchar_t line[MAX_DEVICE_ID_LEN + 2];
+    while (fgetws(line, ARRAYSIZE(line), f)) {
+        size_t len = wcslen(line);
+        while (len && (line[len - 1] == L'\n' || line[len - 1] == L'\r'))
+            line[--len] = L'\0';
+        if (len) ids.emplace_back(line);
+    }
+    fclose(f);
+    return ids;
+}
+
+bool HasPendingDisable() {
+    return !ReadPendingIds().empty();
+}
+
+// Bring one devnode back, addressed by instance ID rather than by an interface
+// path — the interfaces are gone while the node is disabled, so the path that
+// started the cycle cannot be used to finish it.
+static bool EnableByInstanceId(const std::wstring& id, bool& wasDisabled) {
+    wasDisabled = false;
+
+    DEVINST devInst = 0;
+    // PHANTOM rather than NORMAL: the node may not be started, which is the
+    // entire situation being repaired.
+    if (CM_Locate_DevNodeW(&devInst, const_cast<DEVINSTID_W>(id.c_str()),
+                           CM_LOCATE_DEVNODE_PHANTOM) != CR_SUCCESS)
+        return false;
+    if (!IsDevNodeDisabled(devInst)) return false;
+    wasDisabled = true;
+
+    HDEVINFO devs = SetupDiCreateDeviceInfoList(nullptr, nullptr);
+    if (devs == INVALID_HANDLE_VALUE) return false;
+
+    bool enabled = false;
+    SP_DEVINFO_DATA devInfo{};
+    devInfo.cbSize = sizeof(devInfo);
+    if (SetupDiOpenDeviceInfoW(devs, id.c_str(), nullptr, 0, &devInfo)) {
+        for (int attempt = 0; attempt < 3 && !enabled; ++attempt) {
+            if (attempt) Sleep(500);
+            SetDeviceState(devs, devInfo, DICS_ENABLE, DICS_FLAG_GLOBAL);
+            if (IsDevNodeDisabled(devInfo.DevInst))
+                SetDeviceState(devs, devInfo, DICS_ENABLE, DICS_FLAG_CONFIGSPECIFIC);
+            enabled = !IsDevNodeDisabled(devInfo.DevInst);
+        }
+    }
+    SetupDiDestroyDeviceInfoList(devs);
+    return enabled;
+}
+
+int ReconcilePendingDisables(std::wstring* report) {
+    const std::vector<std::wstring> ids = ReadPendingIds();
+    if (ids.empty()) return 0;
+
+    int recovered = 0;
+    std::wstring text;
+    for (const auto& id : ids) {
+        bool wasDisabled = false;
+        const bool ok = EnableByInstanceId(id, wasDisabled);
+        if (!wasDisabled) continue;  // came back on its own, or never went down
+
+        if (ok) ++recovered;
+        if (!text.empty()) text += L"; ";
+        text += id + (ok ? L" -> re-enabled" : L" -> STILL DISABLED");
+    }
+
+    // Drop the record either way. A node that could not be re-enabled here will
+    // not be re-enabled by trying again on the next launch, and keeping the
+    // file would turn one stranded device into a permanent startup ritual —
+    // the failure is surfaced through the log instead.
+    DisarmPendingDisable();
+
+    if (report) *report = text;
+    return recovered;
+}
+
+std::wstring FindDisabledControllerNode() {
+    // Every enumerator the controller can appear under. HID matters most and is
+    // the easiest to forget: a cycle disables the HID collection child, so that
+    // is the node most likely to be found switched off — its USB parent sits
+    // one level up and stays perfectly healthy. Non-present nodes are included
+    // deliberately, since a disabled devnode is exactly the case where the
+    // device is attached but not started.
+    for (const wchar_t* enumerator : { L"HID", L"USB", L"BTHLEDEVICE", L"BTHENUM" }) {
+        ULONG len = 0;
+        if (CM_Get_Device_ID_List_SizeW(&len, enumerator,
+                                        CM_GETIDLIST_FILTER_ENUMERATOR) != CR_SUCCESS
+            || len < 2)
+            continue;
+
+        std::vector<wchar_t> buf(len);
+        if (CM_Get_Device_ID_ListW(enumerator, buf.data(), len,
+                                   CM_GETIDLIST_FILTER_ENUMERATOR) != CR_SUCCESS)
+            continue;
+
+        for (const wchar_t* id = buf.data(); *id; id += wcslen(id) + 1) {
+            // Valve's vendor ID, however the enumerator spells the token.
+            if (!StrStrIW(id, L"VID_28DE") && !StrStrIW(id, L"VID&0228DE")) continue;
+
+            DEVINST devInst = 0;
+            if (CM_Locate_DevNodeW(&devInst, const_cast<DEVINSTID_W>(id),
+                                   CM_LOCATE_DEVNODE_PHANTOM) != CR_SUCCESS)
+                continue;
+            if (IsDevNodeDisabled(devInst)) return id;
+        }
+    }
+    return L"";
 }
 
 }
