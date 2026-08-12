@@ -9,6 +9,12 @@
 
 namespace DeviceRestart {
 
+// How long to let a disable settle before believing it was refused. Only ever
+// spent on the path that is about to conclude "nothing went down", so a device
+// that disables promptly pays none of it.
+static constexpr int   DISABLE_SETTLE_POLLS   = 10;
+static constexpr DWORD DISABLE_SETTLE_STEP_MS = 50;
+
 static bool SetDeviceState(HDEVINFO devs, SP_DEVINFO_DATA& devInfo,
                            DWORD stateChange, DWORD scope) {
     SP_PROPCHANGE_PARAMS pc{};
@@ -57,6 +63,16 @@ const char* VetoTypeName(PNP_VETO_TYPE type) {
 
 enum class RemoveOutcome { Error, Vetoed, Removed, RemovedButMissing };
 
+// A node that cannot be located is not "enabled" — it is absent, and callers
+// asking this question are checking whether a repair took.
+static bool IsDevNodeDisabledById(const std::wstring& instanceId, ULONG locateFlags) {
+    DEVINST devInst = 0;
+    if (CM_Locate_DevNodeW(&devInst, const_cast<DEVINSTID_W>(instanceId.c_str()),
+                           locateFlags) != CR_SUCCESS)
+        return true;
+    return IsDevNodeDisabled(devInst);
+}
+
 // Ask PnP to take the node out of the device tree.
 //
 // This is the only documented way to learn *why* a device will not go down: a
@@ -69,7 +85,7 @@ enum class RemoveOutcome { Error, Vetoed, Removed, RemovedButMissing };
 // hazard to work around: this only ever runs after a disable was already
 // refused, and a granted removal breaks every open handle, which is exactly
 // what the failed disable was supposed to do.
-static RemoveOutcome QueryRemoveAndRestore(DEVINST devInst, CycleResult& out) {
+static RemoveOutcome QueryRemoveAndRestore(DEVINST devInst, CycleResult* out) {
     // Both of these have to be captured up front: once the node is gone, the
     // DEVINST is stale and there is nothing left to ask.
     wchar_t instanceId[MAX_DEVICE_ID_LEN] = {};
@@ -85,8 +101,10 @@ static RemoveOutcome QueryRemoveAndRestore(DEVINST devInst, CycleResult& out) {
         devInst, &vetoType, vetoName, ARRAYSIZE(vetoName), CM_REMOVE_UI_NOT_OK);
 
     if (cr == CR_REMOVE_VETOED) {
-        out.vetoType = vetoType;
-        out.vetoName = vetoName;
+        if (out) {
+            out->vetoType = vetoType;
+            out->vetoName = vetoName;
+        }
         return RemoveOutcome::Vetoed;
     }
     if (cr != CR_SUCCESS)
@@ -106,6 +124,27 @@ static RemoveOutcome QueryRemoveAndRestore(DEVINST devInst, CycleResult& out) {
             return RemoveOutcome::Removed;
     }
     return RemoveOutcome::RemovedButMissing;
+}
+
+// Take the node out of the device tree and let PnP build it again from scratch.
+// The escape hatch for a devnode that will not enable in place: a node can sit
+// at problem 22 with ConfigFlags clear, and for those DICS_ENABLE reports
+// success and changes nothing however often it is asked, while a rebuild works.
+//
+// Returns true only when the node came back *and* came back enabled. Those are
+// not the same thing: a persistent ConfigFlags disable is read again by the
+// rebuilt node and disables it just as before, so a successful removal is no
+// evidence on its own that anything was fixed — and treating it as such would
+// throw away the pending record that is the only remaining way back.
+static bool RebuildDevNode(const std::wstring& instanceId) {
+    DEVINST devInst = 0;
+    if (CM_Locate_DevNodeW(&devInst, const_cast<DEVINSTID_W>(instanceId.c_str()),
+                           CM_LOCATE_DEVNODE_PHANTOM) != CR_SUCCESS)
+        return false;
+    if (QueryRemoveAndRestore(devInst, nullptr) != RemoveOutcome::Removed)
+        return false;
+    // Re-resolve: what came back is a different devnode instance.
+    return !IsDevNodeDisabledById(instanceId, CM_LOCATE_DEVNODE_NORMAL);
 }
 
 // Take the devnode down and bring it back, invalidating every open handle to
@@ -163,7 +202,19 @@ static void CycleDevNode(HDEVINFO devs, SP_DEVINFO_DATA& devInfo, CycleResult& o
 
     // Did it actually go down? This, not the return code above, decides
     // whether a real cycle happened.
-    const bool wentDown = IsDevNodeDisabled(devInfo.DevInst);
+    //
+    // Polled rather than read once. The devnode's status does not always
+    // reflect the disable by the time the call returns, and reading it too
+    // early is not a harmless misreading: "nothing went down" skips the
+    // re-enable below entirely and clears the pending record, so a disable that
+    // lands a moment later is left in place with nothing tracking it and a
+    // cycle verdict claiming the opposite. Reported from the field as
+    // collections sitting at problem 22 under a FELL BACK TO RESTART verdict.
+    bool wentDown = false;
+    for (int i = 0; i < DISABLE_SETTLE_POLLS && !wentDown; ++i) {
+        if (i) Sleep(DISABLE_SETTLE_STEP_MS);
+        wentDown = IsDevNodeDisabled(devInfo.DevInst);
+    }
 
     if (wentDown)
         Sleep(1000);  // let the removal propagate before bringing it back
@@ -180,11 +231,25 @@ static void CycleDevNode(HDEVINFO devs, SP_DEVINFO_DATA& devInfo, CycleResult& o
     }
 
     if (!enabled) {
+        // Enabling refused to take. Retrying it again achieves nothing — field
+        // reports have DICS_ENABLE returning success while the node stays at
+        // problem 22 however often it is asked — so take the node out of the
+        // tree and let it be built fresh instead. A disabled devnode has no
+        // open handles by definition, which is what makes a query-remove
+        // viable here when it would be vetoed on a live one.
+        const DWORD enableError = GetLastError();
+        if (RebuildDevNode(instanceId)) {
+            DisarmPendingDisable();
+            out.kind  = CycleKind::Removed;
+            out.error = ERROR_SUCCESS;
+            return;
+        }
+
         // The controller is stranded disabled — the caller must surface this,
         // it is not a quiet failure. The pending record deliberately stays
         // armed: this is exactly the state the next run has to clean up.
         out.kind  = CycleKind::Failed;
-        out.error = GetLastError();
+        out.error = enableError;
         return;
     }
 
@@ -200,7 +265,7 @@ static void CycleDevNode(HDEVINFO devs, SP_DEVINFO_DATA& devInfo, CycleResult& o
     // the removal route if PnP will grant it — a plain restart here is known
     // to change nothing at all.
     out.error = ERROR_NOT_SUPPORTED;
-    switch (QueryRemoveAndRestore(devInfo.DevInst, out)) {
+    switch (QueryRemoveAndRestore(devInfo.DevInst, &out)) {
         case RemoveOutcome::Removed:
             out.kind  = CycleKind::Removed;
             out.error = ERROR_SUCCESS;
@@ -282,6 +347,7 @@ bool WriteCycleStatus(const CycleResult& result) {
     fwprintf(f, L"kind=%d\n",    static_cast<int>(result.kind));
     fwprintf(f, L"error=%lu\n",  result.error);
     fwprintf(f, L"veto=%d\n",    static_cast<int>(result.vetoType));
+    fwprintf(f, L"self=%d\n",    result.selfHeld ? 1 : 0);
     fwprintf(f, L"ticks=%llu\n", result.ticks);
     fwprintf(f, L"name=%s\n",       result.vetoName.c_str());
     fwprintf(f, L"holders=%s\n",    result.holders.c_str());
@@ -314,6 +380,8 @@ bool ReadCycleStatus(CycleResult& result) {
             result.error = ul;
         else if (swscanf_s(line, L"veto=%d", &value) == 1)
             result.vetoType = static_cast<PNP_VETO_TYPE>(value);
+        else if (swscanf_s(line, L"self=%d", &value) == 1)
+            result.selfHeld = value != 0;
         else if (swscanf_s(line, L"ticks=%llu", &ull) == 1)
             result.ticks = ull;
         else if (wcsncmp(line, L"name=", 5) == 0)
@@ -424,6 +492,14 @@ static bool EnableByInstanceId(const std::wstring& id, bool& wasDisabled) {
         }
     }
     SetupDiDestroyDeviceInfoList(devs);
+
+    // Enabling in place does not always work. A devnode can sit at problem 22
+    // with ConfigFlags clear — a disable that was never written to the registry
+    // — and for those, DICS_ENABLE reports success and changes nothing, no
+    // matter how many times it is asked. Rebuilding the node does work, and
+    // costs nothing extra when the enable above already succeeded.
+    if (!enabled)
+        enabled = RebuildDevNode(id);
     return enabled;
 }
 

@@ -319,8 +319,15 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // A controller arriving (plugged in, or re-arriving after a device
             // cycle) should be acquired straight away whenever control is
             // wanted — this is what wins the reopen race against Steam.
-            if (wp == DBT_DEVICEARRIVAL && m_wantControl)
+            if (wp == DBT_DEVICEARRIVAL && m_wantControl) {
+                // Our controller specifically, not merely something HID-shaped:
+                // the notification filter covers the whole HID class, so a mouse
+                // being plugged in mid-cycle would otherwise clear the guard and
+                // let us reopen the device we are busy cycling.
+                if (m_controller->IsConnected())
+                    m_cycleInFlight = false;
                 TryAcquireController();
+            }
         }
         return TRUE;
 
@@ -380,6 +387,7 @@ void TrayApp::ReleaseControl() {
     m_wantControl    = false;
     m_acquireRetries = 0;
     m_lastCycleTick  = 0;
+    m_cycleInFlight  = false;  // cleared with the tick it is measured against
     const bool hadControl = m_controller->IsGameModeActive();
     // Good citizen: restore lizard mode and close our HID handles so
     // Steam can claim the controller without contention.
@@ -397,6 +405,34 @@ void TrayApp::ReleaseControl() {
 }
 
 void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
+    // Do not open the device while a cycle we asked for is still running. The
+    // claim below opens handles, the cycle needs every handle gone to take the
+    // devnode down, and PnP does not care that the handle blocking it is ours —
+    // it vetoes the cycle just the same. Reported from the field as the app
+    // cycling the puck against a handle held by SteamlessController.exe itself,
+    // which left the vendor collections disabled.
+    //
+    // The arrival that ends a cycle clears this, so the reopen race against
+    // Steam is not slowed down; the tick is only a backstop for a cycle that
+    // never produces one.
+    if (m_cycleInFlight) {
+        if (GetTickCount64() - m_lastCycleTick < CYCLE_MIN_GAP_MS) {
+            // Once per cycle: a receiver publishes an interface per slot and
+            // every arrival re-enters here, so saying it each time would bury
+            // the log in repeats of a single fact.
+            if (!m_inFlightLogged) {
+                m_inFlightLogged = true;
+                EventLog::Write("ACQUIRE: cycle still in flight — not opening the device "
+                                "(our own handle would veto it)");
+            }
+            SetTimer(m_hwnd, IDT_ACQUIRE, ACQUIRE_RETRY_MS, nullptr);
+            return;
+        }
+        EventLog::Write("ACQUIRE: cycle produced no arrival within %llu ms — claiming anyway",
+                        CYCLE_MIN_GAP_MS);
+        m_cycleInFlight = false;
+    }
+
     m_controller->OnDeviceChange();
     auto outcome = m_controller->EnableGameMode(stateWaitMs);
 
@@ -439,6 +475,18 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     // at :56.367. Wait for the one already running to finish instead.
     const ULONGLONG nowTick = GetTickCount64();
     if (m_lastCycleTick != 0 && nowTick - m_lastCycleTick < CYCLE_MIN_GAP_MS) {
+        SetTimer(m_hwnd, IDT_ACQUIRE, ACQUIRE_RETRY_MS, nullptr);
+        return;
+    }
+
+    // The last cycle was blocked by a handle of our own. Another cycle would be
+    // blocked by the same thing, and each attempt risks leaving the devnode
+    // switched off, so let go instead of restarting hardware to escape
+    // ourselves. Releasing costs nothing if it turns out we held nothing.
+    if (m_acquireRetries > 0 && RefreshCycleStatus() && m_lastCycleStatus.selfHeld) {
+        EventLog::Write("ACQUIRE: the last cycle was vetoed by this app's own handle — "
+                        "releasing it instead of cycling again");
+        m_controller->ReleaseDevices();
         SetTimer(m_hwnd, IDT_ACQUIRE, ACQUIRE_RETRY_MS, nullptr);
         return;
     }
@@ -701,6 +749,14 @@ void TrayApp::EnableDisabledControllerDevice() {
 }
 
 bool TrayApp::RestartControllerDevices() {
+    // Every cycle starts here, so the "do not reopen while this runs" flag is
+    // raised here rather than at each call site — the recovery cycle can be
+    // vetoed by our own handle exactly as readily as the acquire one, and the
+    // tick it is measured against has to move with it.
+    m_cycleInFlight  = true;
+    m_inFlightLogged = false;
+    m_lastCycleTick  = GetTickCount64();
+
     // On the rare elevated run, cycle directly. This works on every transport
     // including Bluetooth: the devnode being restarted is the HID child, not
     // the pairing (which lives up at the BTHLEDEVICE layer), and it
@@ -722,6 +778,9 @@ bool TrayApp::RestartControllerDevices() {
         // not care which path performed the cycle.
         summary.ticks = GetTickCount64();
         DeviceRestart::WriteCycleStatus(summary);
+        // Synchronous: the cycle has already finished and the device is back,
+        // so there is nothing left to hold the claim off for.
+        m_cycleInFlight = false;
         return anyRestarted;
     }
 
@@ -730,12 +789,16 @@ bool TrayApp::RestartControllerDevices() {
     std::wstring run = L"schtasks.exe /Run /TN \"";
     run += CYCLE_TASK_NAME;
     run += L"\"";
-    if (RunToolHidden(run)) return true;
+    if (RunToolHidden(run)) return true;  // asynchronous — flag stays raised
 
     // Task missing (copied exes without installing?) — register it with a
     // one-time UAC prompt, then retry.
-    if (!EnsureCycleTaskRegistered()) return false;
-    return RunToolHidden(std::move(run));
+    if (EnsureCycleTaskRegistered() && RunToolHidden(std::move(run)))
+        return true;
+
+    // No cycle was started, so nothing is running that our handle could veto.
+    m_cycleInFlight = false;
+    return false;
 }
 
 void TrayApp::ShowElevationBalloon() {
