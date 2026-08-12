@@ -106,6 +106,12 @@ private:
     // the app having been blocked.
     ULONGLONG                          m_lastHeartbeatUnbiased = 0;
     ULONGLONG                          m_startTick = 0;
+    // A cycle we fired is still running. While set, the device is deliberately
+    // left unopened: our own handle vetoes the cycle just as readily as anyone
+    // else's. Cleared by the arrival that ends the cycle, or by the tick
+    // backstop when no arrival comes.
+    bool                               m_cycleInFlight = false;
+    bool                               m_inFlightLogged = false;  // one line per cycle
     // Devnode found disabled when the menu was last built, so the command
     // handler and the menu agree on what "re-enable" refers to.
     std::wstring                       m_disabledDeviceNode;

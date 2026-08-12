@@ -157,6 +157,33 @@ static int CycleDevices() {
             r.holders    = HandleFinder::DescribeHolders(culprits);
             r.holdersAll = HandleFinder::DescribeHolders(scan.holders);
 
+            // Nothing on the device but our own handles. Cycling is the wrong
+            // tool for that: it tears a working devnode out of the tree to
+            // break a handle the app could simply have closed, and the veto
+            // that results is how a user's collections ended up stuck at
+            // problem 22 — every boot, because the acquire runs every boot.
+            // Note steam.exe is deliberately not in this list: it holds the
+            // device by design and yields on query-remove, so its presence
+            // means this is an ordinary contended cycle, not a self-inflicted
+            // one.
+            static const wchar_t* kOurOwn[] = {
+                L"SteamlessController.exe", L"SteamlessDeviceCycle.exe",
+            };
+            bool anyForeign = false;
+            for (const auto& h : scan.holders) {
+                bool ours = false;
+                for (const wchar_t* name : kOurOwn)
+                    if (_wcsicmp(h.image.c_str(), name) == 0) { ours = true; break; }
+                if (!ours) { anyForeign = true; break; }
+            }
+            // An incomplete scan cannot prove nobody else has it open, and
+            // acting on "only us" when the scan never finished would stop a
+            // cycle that was genuinely needed.
+            r.selfHeld = scan.completed && !scan.holders.empty() && !anyForeign;
+            if (r.selfHeld)
+                CycleLog("SELF-HELD: every handle on the device is this app's own — "
+                         "cycling cannot break a handle the app is responsible for");
+
             // Kept as a ready-made line so the tray app can put it straight
             // into the event log the user can actually reach and send.
             wchar_t info[512];

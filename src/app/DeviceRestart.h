@@ -39,6 +39,12 @@ struct CycleResult {
     std::wstring  holdersAll;
     std::wstring  scanInfo;
     ULONGLONG     ticks    = 0;  // GetTickCount64() when the cycle finished
+    // Every handle found on the device belonged to this app. PnP refused the
+    // teardown because of something we are holding ourselves, so cycling again
+    // cannot help: the answer is to let go, not to restart the devnode. Only
+    // set when the scan ran to completion — a partial scan cannot prove that
+    // nobody else has it open.
+    bool          selfHeld = false;
 
     // Nothing that could invalidate another process's handle took place, so
     // repeating the cycle will achieve exactly as much as the last one did.
