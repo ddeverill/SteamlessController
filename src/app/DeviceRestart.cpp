@@ -9,10 +9,20 @@
 
 namespace DeviceRestart {
 
-// How long to let a disable settle before believing it was refused. Only ever
-// spent on the path that is about to conclude "nothing went down", so a device
-// that disables promptly pays none of it.
-static constexpr int   DISABLE_SETTLE_POLLS   = 10;
+// How long to let a disable settle before believing it was refused.
+//
+// ConfigFlags is written well before the devnode admits to being disabled.
+// Measured on a four-slot receiver, the gap between the registry flag landing
+// and the node reporting problem 22 ran from 96 ms to 330 ms across slots on an
+// otherwise idle machine. Judging the disable inside that gap is not a harmless
+// misread — it concludes the disable was refused, skips the re-enable, and
+// clears the pending record, leaving a devnode switched off with the flag
+// already committed and nothing tracking it.
+//
+// So the window is sized for the bad case rather than the measured one. It is
+// only ever spent on the path about to conclude the disable failed; a device
+// that goes down promptly pays none of it.
+static constexpr int   DISABLE_SETTLE_POLLS   = 20;   // ~950 ms
 static constexpr DWORD DISABLE_SETTLE_STEP_MS = 50;
 
 static bool SetDeviceState(HDEVINFO devs, SP_DEVINFO_DATA& devInfo,
