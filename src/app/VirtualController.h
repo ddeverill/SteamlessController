@@ -6,6 +6,7 @@
 #include <thread>
 #include "BackButtonConfig.h"
 #include "ControllerPlatform.h"
+#include "TrackpadConfig.h"
 
 class VirtualController {
 public:
@@ -25,15 +26,11 @@ public:
     const char* FailStage() const { return m_failStage; }
     uint32_t    LastError() const { return m_lastError; }
 
-    void Update(const uint8_t* buf, size_t n, const BackButtonConfig& backCfg);
+    void Update(const uint8_t* buf, size_t n, const ControllerProfile& profile);
     void OnRumble(uint8_t largeMotor, uint8_t smallMotor);
 
     // DS4-only: update battery level shown in the DS4 report.
     void SetBatteryState(uint8_t levelPercent, uint8_t chargeState);
-
-    // Tell VirtualController which (if any) trackpad is claimed for mouse use,
-    // so that pad's touch data is excluded from the DS4 touchpad report.
-    void SetTrackpadMouseClaim(bool enabled, bool useLeftTrackpad);
 
 private:
     void StartDs4OutputThread();
@@ -49,9 +46,8 @@ private:
     const char* m_failStage = "none";
     uint32_t    m_lastError = 0;
 
-    // DS4 touchpad tracking
-    bool     m_trackpadMouseEnabled    = false;
-    bool     m_useLeftTrackpadForMouse = false;
+    // DS4 touchpad tracking. Which pads feed it is read from the profile
+    // handed to Update every frame, so none of that is duplicated here.
     uint8_t  m_touchPacketCounter      = 0;
     uint8_t  m_rightTracking           = 0;
     uint8_t  m_leftTracking            = 0;

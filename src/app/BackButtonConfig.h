@@ -59,10 +59,11 @@ inline BackButtonAction BackButtonActionFromId(const std::string& id) {
 // from a space too large to enumerate (a keyboard virtual-key code, an extended
 // mouse button).
 //
-// Persisted as a single DWORD, (kind << 16) | code. Every value written by
-// builds that stored a bare BackButtonAction is 0-18, so its kind bits are
-// already zero and it decodes as Kind::Action — old settings load unchanged
-// with no migration step.
+// Persisted as a single DWORD, (mods << 24) | (kind << 16) | code. Every value
+// written by builds that stored a bare BackButtonAction is 0-18, so its kind
+// bits are already zero and it decodes as Kind::Action; every value written
+// before modifiers existed has zero in the top byte and decodes as a plain
+// key — old settings load unchanged with no migration step.
 struct BackButtonBinding {
     enum class Kind : uint8_t {
         Action      = 0,  // code is a BackButtonAction
@@ -74,18 +75,37 @@ struct BackButtonBinding {
     // where they were first persisted.
     enum class MouseButtonCode : uint16_t { Middle = 0, X1 = 1, X2 = 2, COUNT };
 
+    // Held alongside a Kind::Key binding, so a paddle can send Ctrl+Alt+K
+    // rather than one key. Meaningless on the other kinds and ignored there.
+    //
+    // Windows is in this set even though it cannot be captured by pressing it:
+    // the Start menu opens on the way, before any page sees the key. It is
+    // set from its toggle in the picker instead, which is the whole reason
+    // modifiers are a separate field rather than more virtual-key codes.
+    enum Modifier : uint8_t {
+        ModNone  = 0,
+        ModCtrl  = 1 << 0,
+        ModAlt   = 1 << 1,
+        ModShift = 1 << 2,
+        ModWin   = 1 << 3,
+        ModAll   = ModCtrl | ModAlt | ModShift | ModWin,
+    };
+
     Kind     kind = Kind::Action;
     uint16_t code = static_cast<uint16_t>(BackButtonAction::None);
+    uint8_t  mods = ModNone;
 
     static BackButtonBinding FromAction(BackButtonAction a) {
         return { Kind::Action, static_cast<uint16_t>(a) };
     }
-    static BackButtonBinding FromKey(uint16_t vk) {
-        return { Kind::Key, vk };
+    static BackButtonBinding FromKey(uint16_t vk, uint8_t modifiers = ModNone) {
+        return { Kind::Key, vk, static_cast<uint8_t>(modifiers & ModAll) };
     }
     static BackButtonBinding FromMouseButton(MouseButtonCode b) {
         return { Kind::MouseButton, static_cast<uint16_t>(b) };
     }
+
+    bool HasModifiers() const { return kind == Kind::Key && mods != ModNone; }
 
     bool IsAction() const { return kind == Kind::Action; }
 
@@ -101,12 +121,14 @@ struct BackButtonBinding {
     }
 
     bool operator==(const BackButtonBinding& o) const {
-        return kind == o.kind && code == o.code;
+        return kind == o.kind && code == o.code && mods == o.mods;
     }
     bool operator!=(const BackButtonBinding& o) const { return !(*this == o); }
 
     uint32_t Pack() const {
-        return (static_cast<uint32_t>(kind) << 16) | code;
+        return (static_cast<uint32_t>(mods) << 24)
+             | (static_cast<uint32_t>(kind) << 16)
+             | code;
     }
 
     // Anything unrecognised — a corrupt value, or one written by a future build
@@ -114,13 +136,16 @@ struct BackButtonBinding {
     static BackButtonBinding Unpack(uint32_t packed) {
         const auto kind = static_cast<Kind>((packed >> 16) & 0xFF);
         const auto code = static_cast<uint16_t>(packed & 0xFFFF);
+        // Unknown modifier bits are dropped rather than rejecting the whole
+        // binding: the key it names is still exactly what the user chose.
+        const auto mods = static_cast<uint8_t>((packed >> 24) & ModAll);
         switch (kind) {
         case Kind::Action:
             return code < static_cast<uint16_t>(BackButtonAction::COUNT)
                  ? BackButtonBinding{ Kind::Action, code }
                  : BackButtonBinding{};
         case Kind::Key:
-            return code != 0 ? BackButtonBinding{ Kind::Key, code }
+            return code != 0 ? BackButtonBinding{ Kind::Key, code, mods }
                              : BackButtonBinding{};
         case Kind::MouseButton:
             return code < static_cast<uint16_t>(MouseButtonCode::COUNT)
@@ -136,7 +161,10 @@ struct BackButtonBinding {
     std::string Id() const {
         switch (kind) {
         case Kind::Key:
-            return "key:" + std::to_string(code);
+            // Modifiers ride in the same number they occupy in the packed
+            // form, so an unmodified key produces exactly the string earlier
+            // builds did and profiles written by them still read back.
+            return "key:" + std::to_string((static_cast<uint32_t>(mods) << 16) | code);
         case Kind::MouseButton:
             switch (static_cast<MouseButtonCode>(code)) {
             case MouseButtonCode::Middle: return "mouse:middle";
@@ -152,13 +180,15 @@ struct BackButtonBinding {
 
     static BackButtonBinding FromId(const std::string& id) {
         if (id.rfind("key:", 0) == 0) {
-            uint32_t vk = 0;
+            uint32_t value = 0;
             for (size_t i = 4; i < id.size(); ++i) {
                 if (id[i] < '0' || id[i] > '9') return {};
-                vk = vk * 10 + static_cast<uint32_t>(id[i] - '0');
-                if (vk > 0xFFFF) return {};
+                value = value * 10 + static_cast<uint32_t>(id[i] - '0');
+                if (value > 0xFFFFFF) return {};  // room for the modifier byte
             }
-            return vk != 0 ? FromKey(static_cast<uint16_t>(vk)) : BackButtonBinding{};
+            const auto vk = static_cast<uint16_t>(value & 0xFFFF);
+            const auto mods = static_cast<uint8_t>((value >> 16) & ModAll);
+            return vk != 0 ? FromKey(vk, mods) : BackButtonBinding{};
         }
         if (id == "mouse:middle") return FromMouseButton(MouseButtonCode::Middle);
         if (id == "mouse:x1")     return FromMouseButton(MouseButtonCode::X1);

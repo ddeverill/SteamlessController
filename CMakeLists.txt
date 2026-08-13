@@ -48,6 +48,53 @@ if (MSVC)
     target_compile_options(RawControllerProbe PRIVATE /W4 /utf-8)
 endif()
 
+# Game-library diagnostic probe — dumps what the Start Menu walk finds
+add_executable(GameLibraryProbe
+    src/probe/GameLibraryProbe.cpp
+    src/app/GameLibrary.cpp
+)
+target_include_directories(GameLibraryProbe PRIVATE src)
+target_link_libraries(GameLibraryProbe PRIVATE ole32 shell32 shlwapi windowsapp)
+if (MSVC)
+    target_compile_options(GameLibraryProbe PRIVATE /W4 /WX /utf-8)
+    set_target_properties(GameLibraryProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+endif()
+
+# Foreground-watcher diagnostic probe — prints what the per-game profile
+# matcher would see as the user switches applications
+add_executable(ForegroundProbe
+    src/probe/ForegroundProbe.cpp
+    src/app/ForegroundWatcher.cpp
+)
+target_include_directories(ForegroundProbe PRIVATE src)
+if (MSVC)
+    target_compile_options(ForegroundProbe PRIVATE /W4 /WX /utf-8)
+    set_target_properties(ForegroundProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+endif()
+
+# Steam manifest diagnostic probe — dumps the app id to install directory map
+# that per-game profiles for Steam games are matched through
+add_executable(SteamAppProbe
+    src/probe/SteamAppProbe.cpp
+    src/app/SteamAppLocator.cpp
+)
+target_include_directories(SteamAppProbe PRIVATE src)
+if (MSVC)
+    target_compile_options(SteamAppProbe PRIVATE /W4 /WX /utf-8)
+    set_target_properties(SteamAppProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+endif()
+
+# Binding encoding checks — the packed and wire forms both have to keep
+# decoding values written by earlier builds
+add_executable(BindingCodecProbe
+    src/probe/BindingCodecProbe.cpp
+)
+target_include_directories(BindingCodecProbe PRIVATE src)
+if (MSVC)
+    target_compile_options(BindingCodecProbe PRIVATE /W4 /WX /utf-8)
+    set_target_properties(BindingCodecProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+endif()
+
 # Elevated on-demand helper — restarts the controller device node so the tray
 # app (which never runs elevated) can take the device from a running Steam.
 add_executable(SteamlessDeviceCycle WIN32
@@ -96,8 +143,12 @@ add_executable(SteamlessController WIN32
     src/app/SteamWatcher.cpp
     src/app/DeviceRestart.cpp
     src/app/EventLog.cpp
+    src/app/ForegroundWatcher.cpp
+    src/app/GameLibrary.cpp
+    src/app/GameProfiles.cpp
     src/app/HandleFinder.cpp
     src/app/RemapWindow.cpp
+    src/app/SteamAppLocator.cpp
     resources/app.rc
 )
 target_include_directories(SteamlessController PRIVATE
@@ -110,8 +161,10 @@ target_link_libraries(SteamlessController PRIVATE
     ${webview2_SOURCE_DIR}/build/native/${WV2_ARCH}/WebView2LoaderStatic.lib
     version
     ole32
+    shell32
     shlwapi
     cfgmgr32
+    windowsapp
 )
 if (MSVC)
     target_compile_options(SteamlessController PRIVATE /W4 /WX /utf-8 /wd4828)

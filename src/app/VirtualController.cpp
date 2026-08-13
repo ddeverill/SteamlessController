@@ -274,19 +274,18 @@ void VirtualController::SetBatteryState(uint8_t levelPercent, uint8_t chargeStat
     m_ds4BatterySpecial = static_cast<uint8_t>(0x10 | level);
 }
 
-void VirtualController::SetTrackpadMouseClaim(bool enabled, bool useLeftTrackpad) {
-    m_trackpadMouseEnabled    = enabled;
-    m_useLeftTrackpadForMouse = useLeftTrackpad;
-}
-
 void VirtualController::Update(const uint8_t* buf, size_t n,
-                               const BackButtonConfig& backCfg) {
+                               const ControllerProfile& profile) {
     if (!m_valid) return;
+    const BackButtonConfig& backCfg = profile.back;
 
     if (m_platform == ControllerPlatform::PlayStation) {
-        // Suppress a pad from the DS4 touchpad report when it is claimed for mouse use.
-        const bool suppressRight = m_trackpadMouseEnabled && !m_useLeftTrackpadForMouse;
-        const bool suppressLeft  = m_trackpadMouseEnabled &&  m_useLeftTrackpadForMouse;
+        // A pad reaches the DS4 touchpad only when that is what it was set
+        // to. Decided per pad, so one pad can drive the desktop while the
+        // other still reaches the game — and a pad set to None reaches
+        // neither.
+        const bool leftToTouchpad  = profile.leftPad.FeedsDs4Touchpad();
+        const bool rightToTouchpad = profile.rightPad.FeedsDs4Touchpad();
 
         DS4_REPORT_EX ex{};
         auto& r = ex.Report;
@@ -367,6 +366,13 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
             if (n > 3) {
                 if (buf[3] & SteamController::BTN_R5) applyBack(backCfg.r5);
             }
+            // Pad clicks bound to a gamepad action reach the virtual pad the
+            // same way the paddles do. EffectiveClick yields nothing for a
+            // pad feeding the touchpad, whose press is reported below instead.
+            if (n > 5 && (buf[5] & SteamController::BTN_TP_LT_CLICK))
+                applyBack(profile.leftPad.EffectiveClick());
+            if (n > 4 && (buf[4] & SteamController::BTN_TP_RT_CLICK))
+                applyBack(profile.rightPad.EffectiveClick());
 
             DS4_DPAD_DIRECTIONS hat = DS4_BUTTON_DPAD_NONE;
             if      (dUp && dRt) hat = DS4_BUTTON_DPAD_NORTHEAST;
@@ -385,10 +391,13 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
             const bool rawRightClick    = (b2 & SteamController::BTN_TP_RT_CLICK) != 0;
             const bool rawLeftClick     = (b3 & SteamController::BTN_TP_LT_CLICK) != 0;
 
-            const bool rightTouching = rawRightTouching && !suppressRight;
-            const bool leftTouching  = rawLeftTouching  && !suppressLeft;
+            const bool rightTouching = rawRightTouching && rightToTouchpad;
+            const bool leftTouching  = rawLeftTouching  && leftToTouchpad;
 
-            if ((rawRightClick && !suppressRight) || (rawLeftClick && !suppressLeft))
+            // The click travels with the pad: a pad feeding the touchpad
+            // reports its press as the touchpad press, and a pad doing
+            // anything else has already dispatched that press as a binding.
+            if ((rawRightClick && rightToTouchpad) || (rawLeftClick && leftToTouchpad))
                 r.bSpecial |= DS4_SPECIAL_BUTTON_TOUCHPAD;
 
             if (rightTouching && !m_wasRightTouching)
@@ -476,6 +485,13 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
         if (n > 3) {
             if (buf[3] & SteamController::BTN_R5) ApplyBackActionX360(backCfg.r5, report);
         }
+        // Pad clicks bound to a gamepad action. EffectiveClick still applies:
+        // a pad set to DS4 Touchpad has no binding to deliver, and on this
+        // platform no touchpad to deliver it to either.
+        if (n > 5 && (buf[5] & SteamController::BTN_TP_LT_CLICK))
+            ApplyBackActionX360(profile.leftPad.EffectiveClick(), report);
+        if (n > 4 && (buf[4] & SteamController::BTN_TP_RT_CLICK))
+            ApplyBackActionX360(profile.rightPad.EffectiveClick(), report);
 
         vigem_target_x360_update(static_cast<PVIGEM_CLIENT>(m_client),
                                  static_cast<PVIGEM_TARGET>(m_target),

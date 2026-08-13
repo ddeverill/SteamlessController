@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include "BackButtonConfig.h"
 
 // Keyboard support for paddle bindings.
 //
@@ -20,6 +21,11 @@ uint16_t VkFromJsCode(const std::string& jsCode);
 // has no name for it.
 std::wstring KeyDisplayName(uint16_t vk);
 
+// Name for a whole key binding, modifiers included: "Ctrl + Alt + K". The
+// modifier names are fixed rather than drawn from the layout, because that is
+// how every application spells them in its own shortcut lists.
+std::wstring KeyComboDisplayName(const BackButtonBinding& binding);
+
 // Presses or releases a key. Sends a scan code rather than a virtual key, and
 // flags the extended keys, because software that reads scan codes directly
 // (games, in particular) sees nothing useful otherwise.
@@ -29,6 +35,21 @@ std::wstring KeyDisplayName(uint16_t vk);
 // and injected input has no firmware behind it. A caller that wants a held key
 // to repeat has to re-send the press itself, paced by the two values below.
 void SendKeyInput(uint16_t vk, bool down);
+
+// Presses or releases the modifiers of a binding around its base key.
+//
+// Two things make this more than a loop over SendKeyInput.
+//
+// A modifier the user is physically holding must be left alone. Windows
+// tracks one global state per key, so releasing Ctrl on a binding's behalf
+// while the real Ctrl is still down tells every application the key came up,
+// and the keyboard behaves oddly until the user taps it again.
+//
+// And two bindings can want the same modifier at once — paddles bound to
+// Ctrl+C and Ctrl+V, pressed overlapping. Releasing the first must not drop
+// the Ctrl the second is still relying on, so presses are counted and the key
+// is released on the last one out.
+void SendModifiers(uint8_t mods, bool down);
 
 // The user's Windows keyboard settings: how long a key must be held before it
 // starts repeating, and the gap between repeats after that. Read fresh rather
