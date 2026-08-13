@@ -25,7 +25,9 @@ struct ControllerManager::Slot {
     SteamController::Transport         transport = SteamController::Transport::Unknown;
     std::unique_ptr<SteamController>   sc;
     std::unique_ptr<VirtualController> vc;
-    TrackpadMouse                      trackpad;
+    // One per physical pad — they are configured independently.
+    TrackpadMouse                      leftPad;
+    TrackpadMouse                      rightPad;
     std::thread                        readThread;
     std::atomic<bool>                  readRunning{false};
     bool                               gameModeActive = false;
@@ -37,17 +39,21 @@ struct ControllerManager::Slot {
     // thread for that timeout on every one of those attempts.
     std::chrono::steady_clock::time_point lastSilentAt{};
 
-    // What each paddle (L4, L5, R4, R5) is currently holding down, so leaving
-    // game mode mid-press releases it instead of stranding the input down.
-    // Records what the press actually sent rather than reading the binding
-    // again on release, so rebinding a paddle mid-hold still releases cleanly.
-    BackButtonBinding paddleHeld[4];
+    // What each bindable button is currently holding down, so leaving game
+    // mode mid-press releases it instead of stranding the input down. Records
+    // what the press actually sent rather than reading the binding again on
+    // release, so rebinding mid-hold still releases cleanly.
+    //
+    // Indices 0-3 are the paddles (L4, L5, R4, R5); 4-5 are the left and right
+    // pad clicks, which are ordinary bindings dispatched down this same path.
+    static constexpr size_t kBindableCount = 6;
+    BackButtonBinding paddleHeld[kBindableCount];
 
     // Auto-repeat for held key bindings. When the next repeat is due, and the
     // gap to use after that — both captured at press time from the user's
     // keyboard settings, so the rate cannot shift mid-hold.
-    std::chrono::steady_clock::time_point paddleRepeatAt[4]{};
-    std::chrono::milliseconds             paddleRepeatGap[4]{};
+    std::chrono::steady_clock::time_point paddleRepeatAt[kBindableCount]{};
+    std::chrono::milliseconds             paddleRepeatGap[kBindableCount]{};
 
     // Haptic edge-detection state for touch (movement ticks).
     bool    hapticWasRightTouching = false;
@@ -213,7 +219,8 @@ ControllerManager::~ControllerManager() {
         // but without the gameModeActive guard — we always want to restore lizard mode).
         if (slot->gameModeActive) {
             StopReadLoop(*slot);
-            slot->trackpad.Reset();
+            slot->leftPad.Reset();
+            slot->rightPad.Reset();
             ReleaseHeldPaddleInputs(*slot);
             slot->vc.reset();
             slot->gameModeActive = false;
@@ -272,26 +279,38 @@ void ControllerManager::ReleaseDevices() {
     NotifyStateChanged();
 }
 
-void ControllerManager::SetTrackpadMouseEnabled(bool enabled) {
-    m_trackpadMouseEnabled = enabled;
-    for (auto& slot : m_slots) {
-        slot->trackpad.SetTrackpadEnabled(enabled);
-        if (slot->vc) slot->vc->SetTrackpadMouseClaim(enabled, m_useLeftTrackpad);
-    }
+void ControllerManager::ApplyPadSettings(Slot& slot) {
+    slot.leftPad.SetPad(true);
+    slot.rightPad.SetPad(false);
+    slot.leftPad.SetMode(m_profile.leftPad.mode);
+    slot.rightPad.SetMode(m_profile.rightPad.mode);
+    slot.leftPad.SetScrollDirection(m_profile.leftPad.scrollDir);
+    slot.rightPad.SetScrollDirection(m_profile.rightPad.scrollDir);
+    // The virtual controller reads pad modes straight off the profile it is
+    // handed every frame, so there is nothing to push to it here.
 }
 
-void ControllerManager::SetUseLeftTrackpad(bool enabled) {
-    m_useLeftTrackpad = enabled;
-    for (auto& slot : m_slots) {
-        slot->trackpad.SetUseLeftTrackpad(enabled);
-        if (slot->vc) slot->vc->SetTrackpadMouseClaim(m_trackpadMouseEnabled, enabled);
-    }
-}
+void ControllerManager::SetProfile(const ControllerProfile& profile) {
+    const bool platformChanged = profile.platform != m_profile.platform;
+    m_profile = profile;
 
-void ControllerManager::SetBackButtonConfig(const BackButtonConfig& cfg) {
-    m_backConfig = cfg;
-    // Live update: the ReadLoop reads m_backConfig on every frame, so the
-    // change takes effect on the very next report.
+    // The virtual pad is created as an X360 target or a DS4 one and cannot
+    // become the other, so a platform change is the one setting here that
+    // needs the controller rebuilt rather than merely re-read. Cheap to get
+    // wrong in the other direction, too: rebuilding on every apply would
+    // disconnect and reconnect the pad under the running game each time
+    // somebody edited a paddle binding.
+    if (platformChanged && IsGameModeActive()) {
+        DisableGameMode();
+        EnableGameMode();  // re-applies pad settings to each slot as it comes up
+        return;
+    }
+
+    // Live update: the ReadLoop reads m_profile on every frame, so paddle and
+    // pad-click changes take effect on the very next report. Movement modes
+    // live inside the per-slot TrackpadMouse objects, so those are pushed.
+    for (auto& slot : m_slots)
+        ApplyPadSettings(*slot);
 }
 
 // Sends the key or mouse event a binding stands for. Gamepad actions reach the
@@ -306,7 +325,16 @@ static bool SendPaddleInput(const BackButtonBinding& binding, bool down) {
 
     switch (binding.kind) {
     case BackButtonBinding::Kind::Key:
-        SendKeyInput(binding.code, down);
+        // Modifiers wrap the key: down before it so the application sees them
+        // already held when the key arrives, up after it so the shortcut is
+        // never briefly the unmodified key on the way out.
+        if (down) {
+            SendModifiers(binding.mods, true);
+            SendKeyInput(binding.code, true);
+        } else {
+            SendKeyInput(binding.code, false);
+            SendModifiers(binding.mods, false);
+        }
         return true;
 
     case BackButtonBinding::Kind::MouseButton: {
@@ -350,15 +378,6 @@ void ControllerManager::ReleaseHeldPaddleInputs(Slot& slot) {
     for (auto& held : slot.paddleHeld) {
         SendPaddleInput(held, false);
         held = BackButtonBinding{};
-    }
-}
-
-void ControllerManager::SetControllerPlatform(ControllerPlatform platform) {
-    if (m_controllerPlatform == platform) return;
-    m_controllerPlatform = platform;
-    if (IsGameModeActive()) {
-        DisableGameMode();
-        EnableGameMode();
     }
 }
 
@@ -496,7 +515,7 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
     }
 
     slot.vc = std::make_unique<VirtualController>(
-        m_controllerPlatform,
+        m_profile.platform,
         [sc = slot.sc.get()](uint8_t largeMotor, uint8_t smallMotor) {
             if (sc->IsOpen()) sc->SetRumble(largeMotor, smallMotor);
         });
@@ -510,21 +529,20 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
         return GameModeOutcome::Blocked;
     }
 
-    if (m_controllerPlatform == ControllerPlatform::PlayStation)
+    if (m_profile.platform == ControllerPlatform::PlayStation)
         slot.sc->SetImuEnabled(true);
-    slot.vc->SetTrackpadMouseClaim(m_trackpadMouseEnabled, m_useLeftTrackpad);
 
     EventLog::Write("GAMEMODE: enabled %ls", slot.path.c_str());
     // Takeover is the moment users report the trackpad arriving dead, and what
     // decides whether injection can land is whatever window happens to be in
     // front right then — so record it here rather than reconstructing it later.
-    if (m_trackpadMouseEnabled)
+    if (m_profile.leftPad.ClaimedForDesktop() || m_profile.rightPad.ClaimedForDesktop())
         InputInjection::LogEnvironment("game mode taken");
     slot.gameModeActive = true;
-    slot.trackpad.Reset();
+    slot.leftPad.Reset();
+    slot.rightPad.Reset();
     ReleaseHeldPaddleInputs(slot);
-    slot.trackpad.SetTrackpadEnabled(m_trackpadMouseEnabled);
-    slot.trackpad.SetUseLeftTrackpad(m_useLeftTrackpad);
+    ApplyPadSettings(slot);
     StartReadLoop(slot);
     return GameModeOutcome::Enabled;
 }
@@ -535,7 +553,8 @@ void ControllerManager::DisableGameModeSlot(Slot& slot) {
     StopReadLoop(slot);
     if (slot.sc->IsOpen())
         slot.sc->SetRumble(0, 0);
-    slot.trackpad.Reset();
+    slot.leftPad.Reset();
+    slot.rightPad.Reset();
     ReleaseHeldPaddleInputs(slot);
     slot.vc.reset();
     slot.sc->EnableLizardMode();
@@ -660,8 +679,9 @@ void ControllerManager::ReadLoop(Slot* slot) {
                                 "dropped before it reaches SendInput", n);
         }
 
-        if (slot->vc) slot->vc->Update(buf, n, m_backConfig);
-        slot->trackpad.Update(buf, n);
+        if (slot->vc) slot->vc->Update(buf, n, m_profile);
+        slot->leftPad.Update(buf, n);
+        slot->rightPad.Update(buf, n);
 
         // Trackpad haptics.
         {
@@ -859,17 +879,34 @@ void ControllerManager::ReadLoop(Slot* slot) {
             slot->hapticWasLeftTouching  = lt;
         }
 
-        // Deliver back paddles bound to a key or a mouse button. These go out
-        // through SendInput rather than the virtual pad. Edge-detected so each
-        // press sends exactly one down and each release exactly one up.
+        // Deliver back paddles and pad clicks bound to a key or a mouse button.
+        // These go out through SendInput rather than the virtual pad.
+        // Edge-detected so each press sends exactly one down and each release
+        // exactly one up.
+        //
+        // Pad clicks ride this same path rather than living in TrackpadMouse,
+        // which is what makes a pad's click independent of its movement mode —
+        // the click used to be hardcoded to a left button and only fired while
+        // that pad was driving the mouse.
         if (hasPrev) {
+            // A pad set to feed the DS4 touchpad has no click binding to
+            // dispatch — its press is the touchpad press. EffectiveClick
+            // returns nothing in that case, so a binding left behind by an
+            // earlier mode cannot fire from behind the hidden UI.
+            const BackButtonBinding leftPadClick  = m_profile.leftPad.EffectiveClick();
+            const BackButtonBinding rightPadClick = m_profile.rightPad.EffectiveClick();
+
             struct PaddleEdge { bool cur; bool prev; const BackButtonBinding& binding; };
             const PaddleEdge edges[] = {
-                { n>4 && (buf[4]&SteamController::BTN_L4)!=0, (prevBuf[4]&SteamController::BTN_L4)!=0, m_backConfig.l4 },
-                { n>4 && (buf[4]&SteamController::BTN_L5)!=0, (prevBuf[4]&SteamController::BTN_L5)!=0, m_backConfig.l5 },
-                { n>2 && (buf[2]&SteamController::BTN_R4)!=0, (prevBuf[2]&SteamController::BTN_R4)!=0, m_backConfig.r4 },
-                { n>3 && (buf[3]&SteamController::BTN_R5)!=0, (prevBuf[3]&SteamController::BTN_R5)!=0, m_backConfig.r5 },
+                { n>4 && (buf[4]&SteamController::BTN_L4)!=0, (prevBuf[4]&SteamController::BTN_L4)!=0, m_profile.back.l4 },
+                { n>4 && (buf[4]&SteamController::BTN_L5)!=0, (prevBuf[4]&SteamController::BTN_L5)!=0, m_profile.back.l5 },
+                { n>2 && (buf[2]&SteamController::BTN_R4)!=0, (prevBuf[2]&SteamController::BTN_R4)!=0, m_profile.back.r4 },
+                { n>3 && (buf[3]&SteamController::BTN_R5)!=0, (prevBuf[3]&SteamController::BTN_R5)!=0, m_profile.back.r5 },
+                { n>5 && (buf[5]&SteamController::BTN_TP_LT_CLICK)!=0, (prevBuf[5]&SteamController::BTN_TP_LT_CLICK)!=0, leftPadClick },
+                { n>4 && (buf[4]&SteamController::BTN_TP_RT_CLICK)!=0, (prevBuf[4]&SteamController::BTN_TP_RT_CLICK)!=0, rightPadClick },
             };
+            static_assert(std::size(edges) == Slot::kBindableCount,
+                          "paddleHeld must have one entry per edge-dispatched binding");
             for (size_t i = 0; i < std::size(edges); ++i) {
                 const auto& e = edges[i];
                 if (e.cur == e.prev) continue;
@@ -901,6 +938,9 @@ void ControllerManager::ReadLoop(Slot* slot) {
             const auto now = std::chrono::steady_clock::now();
             if (now < slot->paddleRepeatAt[i]) continue;
 
+            // The base key only. Modifiers stay held across the repeat, which
+            // is exactly what a real keyboard does — holding Ctrl+K repeats
+            // the K, it does not re-press Ctrl.
             SendKeyInput(held.code, true);
             slot->paddleRepeatAt[i] = now + slot->paddleRepeatGap[i];
         }

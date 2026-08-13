@@ -1,6 +1,7 @@
 #pragma once
 #include "BackButtonConfig.h"
 #include "ControllerPlatform.h"
+#include "TrackpadConfig.h"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -54,17 +55,15 @@ public:
     // than refusing — refusing is what escalates to a device cycle.
     void SetSteamPresent(bool present) { m_steamPresent = present; }
 
-    void SetTrackpadMouseEnabled(bool enabled);
-    void SetUseLeftTrackpad(bool enabled);
-    void SetBackButtonConfig(const BackButtonConfig& cfg);
-    void SetControllerPlatform(ControllerPlatform platform);
+    // The whole active profile — platform, paddle bindings and both pads.
+    // Mostly applied live: the read loop reads the profile every frame, so
+    // bindings land on the next report. A changed platform is the exception —
+    // it rebuilds the virtual controller, see the definition.
+    void SetProfile(const ControllerProfile& profile);
 
     bool IsConnected()              const { return !m_slots.empty(); }
     bool IsGameModeActive()         const;
-    bool IsTrackpadMouseEnabled()   const { return m_trackpadMouseEnabled; }
-    bool IsUseLeftTrackpad()        const { return m_useLeftTrackpad; }
-    ControllerPlatform GetControllerPlatform() const { return m_controllerPlatform; }
-    const BackButtonConfig& GetBackButtonConfig() const { return m_backConfig; }
+    const ControllerProfile& GetProfile() const { return m_profile; }
 
     // Called by RemapWindow when a row enters/exits listening state.
     // Callback fires on the read thread — use PostMessage to marshal to the UI thread.
@@ -85,14 +84,15 @@ private:
     void ReadLoop(Slot* slot);
     void NotifyStateChanged(bool vigemMissing = false);
 
+    // Pushes the current profile's pad settings into one slot's trackpads and
+    // its virtual controller. Shared by SetProfile and slot creation.
+    void ApplyPadSettings(Slot& slot);
+
     StateChangedFn                     m_onStateChanged;
     AlertFn                            m_alertFn;
     std::vector<std::unique_ptr<Slot>> m_slots;
-    bool                               m_trackpadMouseEnabled = false;
-    bool                               m_useLeftTrackpad      = false;
     bool                               m_steamPresent         = false;
-    ControllerPlatform                 m_controllerPlatform   = ControllerPlatform::Xbox;
-    BackButtonConfig                   m_backConfig;
+    ControllerProfile                  m_profile;
 
     std::atomic<bool>                            m_capturing{false};
     std::mutex                                   m_captureMutex;

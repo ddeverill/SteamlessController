@@ -3,6 +3,8 @@
 #include "ControllerPlatform.h"
 #include "DeviceRestart.h"
 #include "EventLog.h"
+#include "GameLibrary.h"
+#include "GameProfiles.h"
 #include "InputInjection.h"
 #include "steam/SteamController.h"
 #include "resource.h"
@@ -55,9 +57,10 @@ TrayApp::TrayApp() {
 }
 
 TrayApp::~TrayApp() {
-    // Stop the watcher before anything else so its callback can't post to a
-    // window (or reference a controller) that is being torn down.
+    // Stop the watchers before anything else so their callbacks can't post to
+    // a window (or reference a controller) that is being torn down.
     m_steamWatcher.Stop();
+    m_foregroundWatcher.Stop();
     RemoveTrayIcon();
     g_app = nullptr;
 }
@@ -152,6 +155,25 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     m_steamWatcher.Start([this](SteamState state) {
         PostMessageW(m_hwnd, WM_STEAMSTATE, static_cast<WPARAM>(state), 0);
     });
+
+    // Nothing switches profiles while the window is up, so a profile created
+    // for the game the user is already in has to be picked up when it closes.
+    m_remapWindow.SetOnClose([this] { RefreshActiveProfile(); });
+
+    // What Steam has installed, for matching a running game back to the app
+    // id its profile is keyed by.
+    RefreshSteamApps();
+
+    // Per-game profiles. Started unconditionally for the same reason as the
+    // Steam watcher: the callback decides whether anything applies, and a
+    // watcher that is already warm makes the first switch instant. Costs one
+    // hook and no thread — it only runs when the user changes applications.
+    if (!m_foregroundWatcher.Start([this](const ForegroundIdentity& id) {
+            OnForegroundChanged(id);
+        }))
+        EventLog::Write("PROFILE: foreground watcher could not start — "
+                        "per-game profiles will not switch by themselves");
+
     return true;
 }
 
@@ -182,9 +204,10 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (LOWORD(lp) == NIN_BALLOONUSERCLICK) {
             if (m_balloonAction == BalloonAction::EnableDisabledDevice)
                 EnableDisabledControllerDevice();
-            else
+            else if (m_balloonAction == BalloonAction::ViGEmDownload)
                 ShellExecuteW(nullptr, L"open", L"https://github.com/nefarius/ViGEmBus/releases/latest",
                               nullptr, nullptr, SW_SHOWNORMAL);
+            // BalloonAction::None: purely informational, nothing to open.
         }
         else if (LOWORD(lp) == WM_LBUTTONDBLCLK)
             OpenRemapWindow();
@@ -212,24 +235,8 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 TryAcquireController();
             }
             break;
-        case IDM_TRACKPAD:
-            m_controller->SetTrackpadMouseEnabled(!m_controller->IsTrackpadMouseEnabled());
-            SaveSettings();
-            break;
         case IDM_REMAP_BACK:
             OpenRemapWindow();
-            break;
-        case IDM_LEFT_TRACKPAD:
-            m_controller->SetUseLeftTrackpad(!m_controller->IsUseLeftTrackpad());
-            SaveSettings();
-            break;
-        case IDM_PLATFORM_XBOX:
-            m_controller->SetControllerPlatform(ControllerPlatform::Xbox);
-            SaveSettings();
-            break;
-        case IDM_PLATFORM_PS:
-            m_controller->SetControllerPlatform(ControllerPlatform::PlayStation);
-            SaveSettings();
             break;
         case IDM_MODE_MANUAL:
             SetAutoMode(AutoMode::Manual);
@@ -253,7 +260,7 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case IDM_NOTIFICATIONS:
             m_notificationsEnabled = !m_notificationsEnabled;
-            EventLog::Write("USER: disconnect notifications %s",
+            EventLog::Write("USER: notifications %s",
                             m_notificationsEnabled ? "enabled" : "disabled");
             SaveSettings();
             break;
@@ -354,6 +361,110 @@ void TrayApp::SetAutoMode(AutoMode mode) {
         ApplySteamState(m_steamWatcher.GetState());
 }
 
+// ---------------------------------------------------------------------------
+// Per-game profiles
+// ---------------------------------------------------------------------------
+
+// Case-insensitive whole-path comparison. Both sides are already full Win32
+// paths — one from the shortcut the profile was created from, the other from
+// QueryFullProcessImageNameW — so no canonicalisation is attempted here; a
+// game reached through a substituted drive or a symlink is a known gap.
+static bool SamePath(const std::wstring& a, const std::wstring& b) {
+    return !a.empty() && _wcsicmp(a.c_str(), b.c_str()) == 0;
+}
+
+std::wstring TrayApp::MatchProfile(const ForegroundIdentity& id) const {
+    static constexpr wchar_t kSteamPrefix[] = L"steam://rungameid/";
+    static constexpr size_t  kSteamPrefixLen = ARRAYSIZE(kSteamPrefix) - 1;
+
+    // Resolved once rather than per profile: the lookup walks every known
+    // Steam install, and the answer cannot differ between profiles.
+    const std::wstring steamAppId = m_steamApps.AppIdForPath(id.exePath);
+
+    for (const auto& [profileId, profile] : m_gameProfiles) {
+        if (profileId.rfind(L"aumid:", 0) == 0) {
+            if (!id.aumid.empty()
+                && _wcsicmp(profileId.c_str() + 6, id.aumid.c_str()) == 0)
+                return profileId;
+        } else if (profileId.rfind(kSteamPrefix, 0) == 0) {
+            if (!steamAppId.empty() && profileId.compare(kSteamPrefixLen,
+                                                         std::wstring::npos,
+                                                         steamAppId) == 0)
+                return profileId;
+        } else if (SamePath(profileId, id.exePath)) {
+            return profileId;
+        }
+    }
+    return {};
+}
+
+void TrayApp::RefreshSteamApps() {
+    m_steamApps.Refresh();
+    EventLog::Write("PROFILE: %zu installed Steam app(s) located for profile matching",
+                    m_steamApps.Count());
+}
+
+void TrayApp::ActivateProfile(const std::wstring& gameId) {
+    if (gameId == m_activeGameId) return;
+
+    const ControllerProfile* profile = &m_defaultProfile;
+    if (!gameId.empty()) {
+        auto it = m_gameProfiles.find(gameId);
+        // A profile deleted between resolving and applying leaves nothing to
+        // switch to; the default is the right answer, not a stale pointer.
+        if (it == m_gameProfiles.end()) return ActivateProfile({});
+        profile = &it->second;
+    }
+
+    m_activeGameId = gameId;
+    EventLog::Write("PROFILE: switched to %ls",
+                    gameId.empty() ? L"the default profile" : gameId.c_str());
+    m_controller->SetProfile(*profile);
+
+    if (gameId.empty()) return;  // returning to the default is not news
+
+    // Told once per game rather than on every activation. Alt-tabbing out of
+    // a game and back in reloads its profile, and a balloon on each round
+    // trip would be noise — the point is to confirm the profile was found at
+    // all, which the first one does.
+    if (gameId == m_toastedGameId) return;
+    m_toastedGameId = gameId;
+
+    if (!m_notificationsEnabled) return;
+    // Falls back to the id when the profile predates display names being
+    // stored; an exe path is poor prose but it still identifies the game.
+    const std::wstring& name = profile->displayName.empty() ? gameId
+                                                            : profile->displayName;
+    ShowAlertBalloon(L"Custom controls loaded",
+                     L"Custom controller profile for " + name + L" loaded.",
+                     BalloonAction::None, NIIF_INFO);
+}
+
+void TrayApp::OnForegroundChanged(const ForegroundIdentity& id) {
+    // Auto Mode owns whether the controller is ours at all. When it has been
+    // yielded there is no input to rebind — Steam is driving the pad — so
+    // there is nothing here to decide.
+    if (!m_controller->IsGameModeActive()) return;
+
+    // The customization window edits one profile while another could be
+    // running underneath it. Switching out from under the user mid-edit
+    // would apply their changes to the wrong game.
+    if (m_remapWindow.IsOpen()) return;
+
+    ActivateProfile(MatchProfile(id));
+}
+
+void TrayApp::RefreshActiveProfile() {
+    if (!m_controller->IsGameModeActive()) {
+        // Nothing of ours is running; drop back so re-acquiring starts from a
+        // known state rather than from whatever was live when control went.
+        ActivateProfile({});
+        return;
+    }
+    if (m_remapWindow.IsOpen()) return;
+    ActivateProfile(MatchProfile(ForegroundWatcher::Current()));
+}
+
 bool TrayApp::WantControl(SteamState state) const {
     switch (m_autoMode) {
     case AutoMode::OffWhileSteam: return state == SteamState::NoSteam;
@@ -388,6 +499,10 @@ void TrayApp::ReleaseControl() {
     m_acquireRetries = 0;
     m_lastCycleTick  = 0;
     m_cycleInFlight  = false;  // cleared with the tick it is measured against
+    // Whatever game profile was live belongs to a controller we no longer
+    // have. Dropping it now means re-acquiring starts from the default and
+    // re-resolves, rather than resuming a profile for a game long since quit.
+    ActivateProfile({});
     const bool hadControl = m_controller->IsGameModeActive();
     // Good citizen: restore lizard mode and close our HID handles so
     // Steam can claim the controller without contention.
@@ -449,6 +564,10 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
         KillTimer(m_hwnd, IDT_WAKE_POLL);
         m_acquireRetries = 0;
         m_lastCycleTick  = 0;
+        // The controller is ours again, and the user may have been sitting in
+        // a game the whole time it was not — no foreground change is coming
+        // to tell us, so ask.
+        RefreshActiveProfile();
         return;
     }
     if (!m_controller->IsConnected()) return;  // nothing plugged in — arrival will retrigger
@@ -819,13 +938,33 @@ void TrayApp::ShowElevationBalloon() {
 }
 
 void TrayApp::OpenRemapWindow() {
+    // The moment a user is most likely to have installed something since the
+    // app started, and the moment a stale list would matter most — profiles
+    // created here are matched against it.
+    RefreshSteamApps();
+
+    // Synchronous on the UI thread — the Start Menu walk plus the
+    // shell:AppsFolder enumeration together are still fast enough in
+    // practice (local disk and COM calls, no network) to not need a
+    // background thread for an action the user just explicitly asked to
+    // open a window for.
     m_remapWindow.Open(
         m_hInstance,
         m_controller.get(),
-        m_controller->GetBackButtonConfig(),
-        [this](const BackButtonConfig& cfg) {
-            m_controller->SetBackButtonConfig(cfg);
-            SaveSettings();
+        m_defaultProfile,
+        GameLibrary::EnumerateInstalled(),
+        m_gameProfiles,
+        [this](const std::wstring& gameId, const ControllerProfile& profile) {
+            if (gameId.empty()) {
+                m_defaultProfile = profile;
+                SaveSettings();
+            } else {
+                m_gameProfiles[gameId] = profile;
+                GameProfiles::Save(m_gameProfiles);
+            }
+            // Editing whichever profile happens to be live should be visible
+            // straight away; editing any other one must not disturb it.
+            if (gameId == m_activeGameId) m_controller->SetProfile(profile);
         });
 }
 
@@ -873,7 +1012,7 @@ void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool vigemMiss
 }
 
 void TrayApp::ShowAlertBalloon(const std::wstring& title, const std::wstring& text,
-                              BalloonAction action) {
+                              BalloonAction action, DWORD infoFlags) {
     m_balloonAction = action;
 
     NOTIFYICONDATAW nid{};
@@ -881,7 +1020,7 @@ void TrayApp::ShowAlertBalloon(const std::wstring& title, const std::wstring& te
     nid.hWnd        = m_hwnd;
     nid.uID         = TRAY_UID;
     nid.uFlags      = NIF_INFO;
-    nid.dwInfoFlags = NIIF_WARNING;
+    nid.dwInfoFlags = infoFlags;
     wcsncpy_s(nid.szInfoTitle, title.c_str(), _TRUNCATE);
     wcsncpy_s(nid.szInfo,      text.c_str(),  _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -1091,21 +1230,19 @@ void TrayApp::LoadSettings() {
     m_autoMode = mode == 2 ? AutoMode::OffOnlyInGame
                : mode == 1 ? AutoMode::OffWhileSteam
                            : AutoMode::Manual;
-    m_controller->SetTrackpadMouseEnabled(readDw(L"TrackpadMouse",   0) != 0);
-    m_controller->SetUseLeftTrackpad     (readDw(L"UseLeftTrackpad", 0) != 0);
-    m_controller->SetControllerPlatform  (readDw(L"ControllerPlatform", 0) != 0
-                                          ? ControllerPlatform::PlayStation
-                                          : ControllerPlatform::Xbox);
+    const bool isPlayStation = readDw(L"ControllerPlatform", 0) != 0;
 
     // Existing installs keep exactly the bindings they had — the new
     // click-by-default only applies to fresh installs, which never reach here
     // and so take the BackButtonConfig defaults.
     const DWORD unbound = BackButtonBinding::FromAction(BackButtonAction::None).Pack();
-    BackButtonConfig cfg;
-    cfg.l4 = BackButtonBinding::Unpack(readDw(L"BackBtnL4", unbound));
-    cfg.l5 = BackButtonBinding::Unpack(readDw(L"BackBtnL5", unbound));
-    cfg.r4 = BackButtonBinding::Unpack(readDw(L"BackBtnR4", unbound));
-    cfg.r5 = BackButtonBinding::Unpack(readDw(L"BackBtnR5", unbound));
+    ControllerProfile profile;
+    profile.platform = isPlayStation ? ControllerPlatform::PlayStation
+                                     : ControllerPlatform::Xbox;
+    profile.back.l4 = BackButtonBinding::Unpack(readDw(L"BackBtnL4", unbound));
+    profile.back.l5 = BackButtonBinding::Unpack(readDw(L"BackBtnL5", unbound));
+    profile.back.r4 = BackButtonBinding::Unpack(readDw(L"BackBtnR4", unbound));
+    profile.back.r5 = BackButtonBinding::Unpack(readDw(L"BackBtnR5", unbound));
 
     // Migrate the retired "Back Buttons as Mouse Click" toggle into real
     // bindings. The toggle used to hijack L4/R4 for a left click and silently
@@ -1115,10 +1252,50 @@ void TrayApp::LoadSettings() {
     const bool migrateBackMouse = readDw(L"BackButtons", 0) != 0;
     if (migrateBackMouse) {
         const auto leftClick = BackButtonBinding::FromAction(BackButtonAction::LeftMouseButton);
-        if (cfg.l4.IsAction(BackButtonAction::None)) cfg.l4 = leftClick;
-        if (cfg.r4.IsAction(BackButtonAction::None)) cfg.r4 = leftClick;
+        if (profile.back.l4.IsAction(BackButtonAction::None)) profile.back.l4 = leftClick;
+        if (profile.back.r4.IsAction(BackButtonAction::None)) profile.back.r4 = leftClick;
     }
-    m_controller->SetBackButtonConfig(cfg);
+
+    // Per-pad settings. Installs that predate them carry the two retired
+    // toggles instead — one pad, mouse or nothing — which is expressible in
+    // the new shape exactly: the chosen pad becomes a pointer whose click is
+    // the left button it was always hardwired to, and the other pad stays
+    // unclaimed. "PadsMigrated" marks the conversion done, so a later choice
+    // of "no pad at all" is not overwritten on the next launch by the stale
+    // toggles this reads.
+    const bool migratePads = readDw(L"PadsMigrated", 0) == 0;
+    if (migratePads) {
+        // A pad the old build was not using for the mouse still reached the
+        // game as a DS4 touchpad on PlayStation, and did nothing at all on
+        // Xbox. Both are now explicit modes, so the migration has to name the
+        // right one rather than let them share a default.
+        //
+        // Assigned whole rather than field by field: ControllerProfile's
+        // defaults describe a fresh install, and an upgrade is not one. Left
+        // partially overwritten, the pad that was not driving the mouse would
+        // pick up the fresh-install click binding it never had.
+        const TrackpadMode idle = isPlayStation ? TrackpadMode::DS4Touchpad
+                                                : TrackpadMode::None;
+        profile.leftPad  = TrackpadSettings{ .mode = idle };
+        profile.rightPad = TrackpadSettings{ .mode = idle };
+        if (readDw(L"TrackpadMouse", 0) != 0) {
+            auto& pad = readDw(L"UseLeftTrackpad", 0) != 0 ? profile.leftPad
+                                                           : profile.rightPad;
+            pad.mode  = TrackpadMode::MousePointer;
+            pad.click = BackButtonBinding::FromAction(BackButtonAction::LeftMouseButton);
+        }
+    } else {
+        profile.leftPad.mode       = TrackpadModeFromDword(readDw(L"LeftPadMode", 0));
+        profile.leftPad.click      = BackButtonBinding::Unpack(readDw(L"LeftPadClick",  unbound));
+        profile.leftPad.scrollDir  = ScrollDirectionFromDword(readDw(L"LeftPadScrollDir", 0));
+        profile.rightPad.mode      = TrackpadModeFromDword(readDw(L"RightPadMode", 0));
+        profile.rightPad.click     = BackButtonBinding::Unpack(readDw(L"RightPadClick", unbound));
+        profile.rightPad.scrollDir = ScrollDirectionFromDword(readDw(L"RightPadScrollDir", 0));
+    }
+
+    m_defaultProfile = profile;
+    m_activeGameId.clear();
+    m_controller->SetProfile(m_defaultProfile);
 
     m_notificationsEnabled = readDw(L"ShowNotifications", 1) != 0;
 
@@ -1130,13 +1307,20 @@ void TrayApp::LoadSettings() {
 
     RegCloseKey(key);
 
-    // Persist the migrated bindings and drop the retired value, so the fill-in
-    // above runs exactly once and a later choice of "Off" is not resurrected.
-    if (migrateBackMouse) {
+    m_gameProfiles = GameProfiles::Load();
+
+    // Persist whatever was migrated and drop the retired values, so each
+    // fill-in above runs exactly once and a later choice of "Off" is not
+    // resurrected on the next launch.
+    if (migrateBackMouse || migratePads) {
         SaveSettings();
         HKEY writeKey;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_KEY, 0, KEY_SET_VALUE, &writeKey) == ERROR_SUCCESS) {
-            RegDeleteValueW(writeKey, L"BackButtons");
+            if (migrateBackMouse) RegDeleteValueW(writeKey, L"BackButtons");
+            if (migratePads) {
+                RegDeleteValueW(writeKey, L"TrackpadMouse");
+                RegDeleteValueW(writeKey, L"UseLeftTrackpad");
+            }
             RegCloseKey(writeKey);
         }
     }
@@ -1157,15 +1341,27 @@ void TrayApp::SaveSettings() {
     writeDw(L"AutoSteamMode",       static_cast<DWORD>(m_autoMode));
     writeDw(L"StartupMechanism",    static_cast<DWORD>(m_startupMechanism));
     writeDw(L"ShowNotifications",   m_notificationsEnabled ? 1 : 0);
-    writeDw(L"TrackpadMouse",       m_controller->IsTrackpadMouseEnabled()  ? 1 : 0);
-    writeDw(L"UseLeftTrackpad",     m_controller->IsUseLeftTrackpad()       ? 1 : 0);
-    writeDw(L"ControllerPlatform",  m_controller->GetControllerPlatform() == ControllerPlatform::PlayStation ? 1 : 0);
 
-    const auto& cfg = m_controller->GetBackButtonConfig();
-    writeDw(L"BackBtnL4", cfg.l4.Pack());
-    writeDw(L"BackBtnL5", cfg.l5.Pack());
-    writeDw(L"BackBtnR4", cfg.r4.Pack());
-    writeDw(L"BackBtnR5", cfg.r5.Pack());
+    // Always the default profile, never ControllerManager's live one: a game
+    // profile can be active here, and persisting that would overwrite the
+    // user's own settings with a per-game override.
+    const auto& profile = m_defaultProfile;
+    writeDw(L"ControllerPlatform",
+            profile.platform == ControllerPlatform::PlayStation ? 1 : 0);
+    writeDw(L"BackBtnL4", profile.back.l4.Pack());
+    writeDw(L"BackBtnL5", profile.back.l5.Pack());
+    writeDw(L"BackBtnR4", profile.back.r4.Pack());
+    writeDw(L"BackBtnR5", profile.back.r5.Pack());
+
+    writeDw(L"LeftPadMode",       static_cast<DWORD>(profile.leftPad.mode));
+    writeDw(L"LeftPadClick",      profile.leftPad.click.Pack());
+    writeDw(L"LeftPadScrollDir",  static_cast<DWORD>(profile.leftPad.scrollDir));
+    writeDw(L"RightPadMode",      static_cast<DWORD>(profile.rightPad.mode));
+    writeDw(L"RightPadClick",     profile.rightPad.click.Pack());
+    writeDw(L"RightPadScrollDir", static_cast<DWORD>(profile.rightPad.scrollDir));
+    // Written last and unconditionally: its presence is what tells the next
+    // launch the per-pad values above are authoritative.
+    writeDw(L"PadsMigrated", 1);
 
     RegCloseKey(key);
 }
@@ -1173,8 +1369,6 @@ void TrayApp::SaveSettings() {
 void TrayApp::ShowContextMenu() {
     bool connected    = m_controller->IsConnected();
     bool gameModeOn   = m_controller->IsGameModeActive();
-    bool trackpadOn   = m_controller->IsTrackpadMouseEnabled();
-    bool leftPad      = m_controller->IsUseLeftTrackpad();
     bool startupOn    = m_startupEnabled;
 
     HMENU menu = CreatePopupMenu();
@@ -1219,24 +1413,11 @@ void TrayApp::ShowContextMenu() {
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
-    AppendMenuW(menu, MF_STRING | (trackpadOn ? MF_CHECKED : MF_UNCHECKED),
-                IDM_TRACKPAD, L"Enable Trackpad Mouse");
-
-    AppendMenuW(menu, MF_STRING | (leftPad ? MF_CHECKED : MF_UNCHECKED),
-                IDM_LEFT_TRACKPAD, L"Use Left Trackpad Instead");
-
-    AppendMenuW(menu, MF_STRING, IDM_REMAP_BACK, L"Remap Back Buttons...");
-
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-
-    bool isPS = (m_controller->GetControllerPlatform() == ControllerPlatform::PlayStation);
-    HMENU platformMenu = CreatePopupMenu();
-    AppendMenuW(platformMenu, MF_STRING | (!isPS ? MF_CHECKED : MF_UNCHECKED),
-                IDM_PLATFORM_XBOX, L"Xbox");
-    AppendMenuW(platformMenu, MF_STRING | (isPS ? MF_CHECKED : MF_UNCHECKED),
-                IDM_PLATFORM_PS, L"PlayStation");
-    AppendMenuW(menu, MF_STRING | MF_POPUP,
-                reinterpret_cast<UINT_PTR>(platformMenu), L"Controller Platform");
+    // Everything about how the controller behaves — trackpads, paddles, and
+    // which kind of pad the game sees — is configured in one window now, per
+    // profile. This menu used to carry three separate entries for pieces of
+    // that, none of which could be set per game.
+    AppendMenuW(menu, MF_STRING, IDM_REMAP_BACK, L"Customize Controls...");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
@@ -1246,7 +1427,7 @@ void TrayApp::ShowContextMenu() {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_OPENLOG, L"Open Event Log");
     AppendMenuW(menu, MF_STRING | (m_notificationsEnabled ? MF_CHECKED : MF_UNCHECKED),
-                IDM_NOTIFICATIONS, L"Disconnect Notifications");
+                IDM_NOTIFICATIONS, L"Show Notifications");
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"Exit");
 
     // SetForegroundWindow is required for the menu to dismiss on click-away.

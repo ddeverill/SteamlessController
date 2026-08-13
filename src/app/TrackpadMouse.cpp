@@ -6,21 +6,20 @@
 #include <cstring>
 #include <cstdint>
 
-static void SendMouseButton(DWORD flags) {
-    INPUT input{};
-    input.type       = INPUT_MOUSE;
-    input.mi.dwFlags = flags;
-    InputInjection::Send(input, "trackpad-click");
+void TrackpadMouse::SetMode(TrackpadMode mode) {
+    if (mode == m_mode) return;
+    m_mode = mode;
+    Reset();  // carried remainders and touch state mean nothing to the new mode
 }
 
 void TrackpadMouse::Reset() {
-    if (m_prevClick) SendMouseButton(MOUSEEVENTF_LEFTUP);
-    m_touching  = false;
-    m_prevClick = false;
-    m_prevX     = 0;
-    m_prevY     = 0;
-    m_remX      = 0.0f;
-    m_remY      = 0.0f;
+    m_touching   = false;
+    m_prevX      = 0;
+    m_prevY      = 0;
+    m_remX       = 0.0f;
+    m_remY       = 0.0f;
+    m_scrollRemX = 0.0f;
+    m_scrollRemY = 0.0f;
     m_haveRef    = false;
     m_travelSent = 0;
 }
@@ -52,23 +51,84 @@ void TrackpadMouse::NoteMovementSent(long px, bool haveCursor,
     }
 }
 
+void TrackpadMouse::UpdatePointer(int dx, int dy) {
+    // Carry sub-pixel remainders between frames — per-frame deltas scaled by
+    // sensitivity are often below one pixel, and truncating them each frame
+    // would discard slow movement entirely.
+    const float fx = static_cast<float>(dx) * SENSITIVITY + m_remX;
+    const float fy = static_cast<float>(dy) * SENSITIVITY + m_remY;
+    const LONG  ix = static_cast<LONG>(fx);
+    const LONG  iy = static_cast<LONG>(fy);
+    m_remX = fx - static_cast<float>(ix);
+    m_remY = fy - static_cast<float>(iy);
+    if (ix == 0 && iy == 0) return;
+
+    INPUT input{};
+    input.type       = INPUT_MOUSE;
+    input.mi.dwFlags = MOUSEEVENTF_MOVE;
+    input.mi.dx      = ix;
+    input.mi.dy      = iy;
+    // Read the cursor before sending: SendInput queues the event rather than
+    // applying it, so a position read straight after would still be the old one.
+    POINT      before{};
+    const bool haveBefore = GetCursorPos(&before) != FALSE;
+    if (InputInjection::Send(input, "trackpad-move")) {
+        NoteMovementSent(std::labs(ix) + std::labs(iy),
+                         haveBefore, before.x, before.y);
+    }
+}
+
+// Wheel events are quantised to WHEEL_DELTA notches, which is much coarser
+// than a pad frame's movement — so the same remainder-carry the pointer path
+// uses is what makes slow scrolling work at all here.
+//
+// Takes raw pad deltas (Y growing upward). Natural scrolling means the
+// content follows the finger, which is the opposite sense to the wheel's own
+// convention that positive is "away from the user" — hence the inversion
+// here rather than at the call site.
+void TrackpadMouse::UpdateScroll(int dx, int dy) {
+    if (m_scrollDir == ScrollDirection::Natural) { dx = -dx; dy = -dy; }
+
+    const float fy = static_cast<float>(dy) * SCROLL_SENSITIVITY + m_scrollRemY;
+    const float fx = static_cast<float>(dx) * SCROLL_SENSITIVITY + m_scrollRemX;
+    const LONG  iy = static_cast<LONG>(fy);
+    const LONG  ix = static_cast<LONG>(fx);
+    m_scrollRemY = fy - static_cast<float>(iy);
+    m_scrollRemX = fx - static_cast<float>(ix);
+
+    if (iy != 0) {
+        INPUT input{};
+        input.type         = INPUT_MOUSE;
+        input.mi.dwFlags   = MOUSEEVENTF_WHEEL;
+        input.mi.mouseData = static_cast<DWORD>(iy);
+        InputInjection::Send(input, "trackpad-scroll");
+    }
+    if (ix != 0) {
+        INPUT input{};
+        input.type         = INPUT_MOUSE;
+        input.mi.dwFlags   = MOUSEEVENTF_HWHEEL;
+        input.mi.mouseData = static_cast<DWORD>(ix);
+        InputInjection::Send(input, "trackpad-hscroll");
+    }
+}
+
 void TrackpadMouse::Update(const uint8_t* buf, size_t n) {
-    // Back paddles mapped to a mouse button are handled by ControllerManager,
-    // alongside every other paddle binding.
-    if (n < 30 || !m_trackpadEnabled) return;
+    // Pad clicks are handled by ControllerManager, alongside every other
+    // binding — this is movement only. Only the two desktop-driving modes
+    // produce anything here; None and DS4Touchpad are both "not the desktop's".
+    if (n < 30
+        || (m_mode != TrackpadMode::MousePointer && m_mode != TrackpadMode::ScrollWheel))
+        return;
 
     const uint8_t b2 = buf[4];
     const uint8_t b3 = buf[5];
 
-    const bool touching = m_useLeftTrackpad
-        ? (b3 & SteamController::BTN_TP_LT)       != 0
-        : (b2 & SteamController::BTN_TP_RT)        != 0;
-    const bool clicking = m_useLeftTrackpad
-        ? (b3 & SteamController::BTN_TP_LT_CLICK)  != 0
-        : (b2 & SteamController::BTN_TP_RT_CLICK)   != 0;
+    const bool touching = m_isLeftPad
+        ? (b3 & SteamController::BTN_TP_LT) != 0
+        : (b2 & SteamController::BTN_TP_RT) != 0;
 
     int16_t x = 0, y = 0;
-    if (m_useLeftTrackpad) {
+    if (m_isLeftPad) {
         memcpy(&x, buf + 18, 2);
         memcpy(&y, buf + 20, 2);
     } else {
@@ -77,42 +137,19 @@ void TrackpadMouse::Update(const uint8_t* buf, size_t n) {
     }
 
     if (touching && m_touching) {
-        const int dx =  static_cast<int>(x - m_prevX);
-        const int dy = -static_cast<int>(y - m_prevY);
-        if (dx != 0 || dy != 0) {
-            // Carry sub-pixel remainders between frames — per-frame deltas
-            // scaled by sensitivity are often below one pixel, and truncating
-            // them each frame would discard slow movement entirely.
-            const float fx = static_cast<float>(dx) * SENSITIVITY + m_remX;
-            const float fy = static_cast<float>(dy) * SENSITIVITY + m_remY;
-            const LONG  ix = static_cast<LONG>(fx);
-            const LONG  iy = static_cast<LONG>(fy);
-            m_remX = fx - static_cast<float>(ix);
-            m_remY = fy - static_cast<float>(iy);
-            if (ix != 0 || iy != 0) {
-                INPUT input{};
-                input.type       = INPUT_MOUSE;
-                input.mi.dwFlags = MOUSEEVENTF_MOVE;
-                input.mi.dx      = ix;
-                input.mi.dy      = iy;
-                // Read the cursor before sending: SendInput queues the event
-                // rather than applying it, so a position read straight after
-                // would still be the old one.
-                POINT      before{};
-                const bool haveBefore = GetCursorPos(&before) != FALSE;
-                if (InputInjection::Send(input, "trackpad-move")) {
-                    NoteMovementSent(std::labs(ix) + std::labs(iy),
-                                     haveBefore, before.x, before.y);
-                }
+        const int dxRaw = static_cast<int>(x - m_prevX);
+        const int dyRaw = static_cast<int>(y - m_prevY);
+        if (dxRaw != 0 || dyRaw != 0) {
+            if (m_mode == TrackpadMode::MousePointer) {
+                // Pad Y grows upward, screen Y grows downward.
+                UpdatePointer(dxRaw, -dyRaw);
+            } else {
+                // Raw deltas — UpdateScroll owns the direction convention.
+                UpdateScroll(dxRaw, dyRaw);
             }
         }
     }
 
     if (touching) { m_prevX = x; m_prevY = y; }
     m_touching = touching;
-
-    if (clicking != m_prevClick) {
-        SendMouseButton(clicking ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP);
-        m_prevClick = clicking;
-    }
 }

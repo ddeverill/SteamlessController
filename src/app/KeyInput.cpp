@@ -44,6 +44,10 @@ const JsCodeToVk kCodeMap[] = {
     {"ShiftLeft",    VK_LSHIFT},   {"ShiftRight",   VK_RSHIFT},
     {"ControlLeft",  VK_LCONTROL}, {"ControlRight", VK_RCONTROL},
     {"AltLeft",      VK_LMENU},    {"AltRight",     VK_RMENU},
+    // Present for completeness, not because they can be captured: Windows
+    // opens the Start menu on the way down, so the page is never told. A
+    // binding that wants Windows carries it as a modifier flag instead.
+    {"MetaLeft",     VK_LWIN},     {"MetaRight",    VK_RWIN},
 
     // Function row
     {"F1",VK_F1},{"F2",VK_F2},{"F3",VK_F3},{"F4",VK_F4},{"F5",VK_F5},{"F6",VK_F6},
@@ -119,6 +123,89 @@ uint16_t VkFromJsCode(const std::string& jsCode) {
     for (const auto& e : kCodeMap)
         if (jsCode == e.code) return e.vk;
     return 0;
+}
+
+namespace {
+
+// The physical key each modifier flag sends. Left-hand keys throughout:
+// applications test the merged state, and a left modifier is what a user
+// pressing the shortcut themselves would almost always produce.
+struct ModifierKey { BackButtonBinding::Modifier flag; uint16_t vk; const wchar_t* name; };
+
+// Order matters twice over: it is the order modifiers are pressed in, and the
+// order they read in a label. Ctrl, Alt, Shift, Win is the convention Windows
+// itself uses when it spells out a shortcut.
+const ModifierKey kModifierKeys[] = {
+    { BackButtonBinding::ModCtrl,  VK_LCONTROL, L"Ctrl"  },
+    { BackButtonBinding::ModAlt,   VK_LMENU,    L"Alt"   },
+    { BackButtonBinding::ModShift, VK_LSHIFT,   L"Shift" },
+    { BackButtonBinding::ModWin,   VK_LWIN,     L"Win"   },
+};
+
+// How many live bindings are currently holding each modifier down, indexed
+// alongside kModifierKeys. Only ever touched from the read thread that
+// dispatches bindings, which is the same thread for every slot.
+int g_modifierHolds[std::size(kModifierKeys)] = {};
+
+// Whether this app is the one holding the key down, as opposed to having
+// found it already held. Recorded rather than re-tested on release, because
+// the test cannot tell the two apart: an injected key reads as pressed to
+// GetAsyncKeyState exactly like a real one, so asking again on the way out
+// would see our own press and decline to undo it.
+bool g_modifierSentByUs[std::size(kModifierKeys)] = {};
+
+// Whether the key is down right now, by anyone's hand. Checked only before a
+// press, where the answer means "the user is holding it" — nothing of ours is
+// down at that point, or the hold count would have caught it first.
+bool PhysicallyHeld(uint16_t vk) {
+    // The merged virtual key, not the left/right one: the user may be holding
+    // the right-hand key while this sends the left, and either satisfies the
+    // shortcut.
+    uint16_t merged = vk;
+    switch (vk) {
+    case VK_LCONTROL: merged = VK_CONTROL; break;
+    case VK_LMENU:    merged = VK_MENU;    break;
+    case VK_LSHIFT:   merged = VK_SHIFT;   break;
+    default: break;
+    }
+    return (GetAsyncKeyState(merged) & 0x8000) != 0;
+}
+
+}  // namespace
+
+void SendModifiers(uint8_t mods, bool down) {
+    for (size_t i = 0; i < std::size(kModifierKeys); ++i) {
+        const auto& m = kModifierKeys[i];
+        if (!(mods & m.flag)) continue;
+
+        if (down) {
+            // Only the first binding to want it does anything; the rest just
+            // join the count so the key outlives their individual releases.
+            if (g_modifierHolds[i]++ > 0) continue;
+            // Already down under the user's own finger — leave it theirs, and
+            // remember not to release what we never pressed.
+            g_modifierSentByUs[i] = !PhysicallyHeld(m.vk);
+            if (g_modifierSentByUs[i]) SendKeyInput(m.vk, true);
+        } else {
+            if (g_modifierHolds[i] == 0) continue;      // never pressed, or already undone
+            if (--g_modifierHolds[i] > 0) continue;     // another binding still wants it
+            if (!g_modifierSentByUs[i]) continue;
+            g_modifierSentByUs[i] = false;
+            SendKeyInput(m.vk, false);
+        }
+    }
+}
+
+std::wstring KeyComboDisplayName(const BackButtonBinding& binding) {
+    if (binding.kind != BackButtonBinding::Kind::Key) return L"Key";
+
+    std::wstring name;
+    for (const auto& m : kModifierKeys) {
+        if (!(binding.mods & m.flag)) continue;
+        name += m.name;
+        name += L" + ";
+    }
+    return name + KeyDisplayName(binding.code);
 }
 
 std::wstring KeyDisplayName(uint16_t vk) {

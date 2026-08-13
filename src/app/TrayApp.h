@@ -4,7 +4,10 @@
 #include <mutex>
 #include <string>
 #include "DeviceRestart.h"
+#include "ForegroundWatcher.h"
+#include "GameProfiles.h"
 #include "RemapWindow.h"
+#include "SteamAppLocator.h"
 #include "SteamWatcher.h"
 
 class ControllerManager;
@@ -37,9 +40,13 @@ private:
     // What clicking the balloon should do. Balloons are transient and the click
     // arrives long after the call that raised one, so the action travels with
     // it rather than being inferred at click time.
-    enum class BalloonAction { ViGEmDownload, EnableDisabledDevice };
+    enum class BalloonAction { ViGEmDownload, EnableDisabledDevice, None };
+    // infoFlags picks the icon Windows draws: a warning by default, because
+    // most of these report something the user has to act on. Purely
+    // informational notices pass NIIF_INFO and BalloonAction::None.
     void ShowAlertBalloon(const std::wstring& title, const std::wstring& text,
-                          BalloonAction action = BalloonAction::ViGEmDownload);
+                          BalloonAction action = BalloonAction::ViGEmDownload,
+                          DWORD infoFlags = NIIF_WARNING);
     void OpenEventLog();
     void ShowContextMenu();
     void LoadSettings();
@@ -58,6 +65,25 @@ private:
     void SetRunKey(bool enabled);
     void DeleteLegacyStartupTask();
     void UpdateStartupRegistration();
+
+    // Per-game profile switching. The foreground application decides which
+    // profile is live; see ForegroundWatcher for why focus rather than
+    // "is it running" is the question being asked.
+    void OnForegroundChanged(const ForegroundIdentity& id);
+    // The profile id matching an application, or empty when none does.
+    std::wstring MatchProfile(const ForegroundIdentity& id) const;
+    // Make `gameId`'s profile the live one (empty selects the default).
+    // Cheap and idempotent when it is already live.
+    void ActivateProfile(const std::wstring& gameId);
+    // Re-resolve the foreground now, for the moments where the answer can
+    // have changed while nobody was listening — taking the controller back,
+    // or closing the window that suppresses switching.
+    void RefreshActiveProfile();
+    // Re-read Steam's install manifests. Driven by events rather than a
+    // timer: startup, and whenever the user opens the window where profiles
+    // are created. A game installed after that is invisible until one of
+    // those happens again, which is the price of not polling the disk.
+    void RefreshSteamApps();
 
     // Control plumbing, shared by every mode.
     void SetAutoMode(AutoMode mode);
@@ -99,7 +125,10 @@ private:
     bool                               m_vigemBalloonShown     = false;
     bool                               m_startupEnabled   = false;
     int                                m_startupMechanism = 0;  // 0 none, 1 Run key, 2 elevated task
-    bool                               m_notificationsEnabled = true;  // disconnect/stall balloons
+    // Every balloon this app raises, not just the disconnect and stall ones
+    // it started out covering — a per-game profile loading is announced
+    // through it too.
+    bool                               m_notificationsEnabled = true;
     BalloonAction                      m_balloonAction = BalloonAction::ViGEmDownload;
     // Unbiased interrupt time at the last heartbeat, and the tick this instance
     // started. Unbiased so that time the machine spent asleep does not read as
@@ -120,16 +149,38 @@ private:
     std::wstring                       m_alertText;    // consumed on WM_ALERT
     std::unique_ptr<ControllerManager> m_controller;
     SteamWatcher                       m_steamWatcher;
+    ForegroundWatcher                  m_foregroundWatcher;
+    // Bridges a Steam profile's app id to the running executable. Refreshed
+    // at the few moments the answer can have changed — see RefreshSteamApps.
+    SteamAppLocator                    m_steamApps;
     RemapWindow                        m_remapWindow;
+    // Per-game overrides, keyed by GameLibrary's opaque game id.
+    // Most users never populate this; empty by default.
+    std::map<std::wstring, ControllerProfile> m_gameProfiles;
+    // The user's own settings, and the only profile that is ever persisted to
+    // the app's registry key. Deliberately not the same thing as whatever
+    // ControllerManager is running: while a game profile is active that is a
+    // per-game override, and writing it back would quietly replace the user's
+    // defaults with some game's bindings.
+    ControllerProfile                  m_defaultProfile;
+    // Which game's profile is live, or empty for the default. The key into
+    // m_gameProfiles, so it is also the answer to "did the active profile
+    // actually change" without comparing whole profiles.
+    std::wstring                       m_activeGameId;
+    // The game the "profile loaded" balloon last named, so alt-tabbing in and
+    // out of one game does not raise it over and over.
+    std::wstring                       m_toastedGameId;
 
     static constexpr UINT IDM_TOGGLE        = 1001;
     static constexpr UINT IDM_EXIT          = 1002;
-    static constexpr UINT IDM_TRACKPAD      = 1003;
+    // 1003 and 1005 were the retired "Enable Trackpad Mouse" and "Use Left
+    // Trackpad Instead" items — left unused rather than reassigned, so a
+    // stale menu message from an old build can't land on a new command.
     static constexpr UINT IDM_REMAP_BACK    = 1004;
-    static constexpr UINT IDM_LEFT_TRACKPAD = 1005;
     static constexpr UINT IDM_STARTUP       = 1006;
-    static constexpr UINT IDM_PLATFORM_XBOX = 1008;
-    static constexpr UINT IDM_PLATFORM_PS   = 1009;
+    // 1008 and 1009 were the retired "Controller Platform" submenu items,
+    // now a dropdown in the customization window. Left unused rather than
+    // reassigned, like 1003/1005 above.
     static constexpr UINT IDM_MODE_MANUAL   = 1010;
     static constexpr UINT IDM_MODE_STEAM    = 1011;
     static constexpr UINT IDM_MODE_GAME     = 1012;

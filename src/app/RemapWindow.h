@@ -3,7 +3,12 @@
 #include <wrl.h>
 #include <WebView2.h>
 #include <functional>
+#include <map>
+#include <vector>
 #include "BackButtonConfig.h"
+#include "ControllerPlatform.h"
+#include "GameLibrary.h"
+#include "TrackpadConfig.h"
 
 class ControllerManager;
 
@@ -17,12 +22,25 @@ public:
     // Opens (or re-focuses) the remap window.
     // Shows a "not supported" message box and returns without opening if WebView2
     // is unavailable (Windows 7/8 or no runtime installed).
-    // applyCallback fires on the UI thread when the user clicks Apply.
-    void Open(HINSTANCE hInst, ControllerManager* mgr, const BackButtonConfig& cfg,
-              std::function<void(const BackButtonConfig&)> applyCallback);
+    // games populates the per-game picker; gameProfiles supplies whatever
+    // overrides already exist for entries in it. applyCallback fires on the
+    // UI thread when the user clicks Apply — the game id identifies whichever
+    // game was selected, or is empty for the default profile.
+    void Open(HINSTANCE hInst, ControllerManager* mgr, const ControllerProfile& profile,
+              std::vector<InstalledGame> games,
+              std::map<std::wstring, ControllerProfile> gameProfiles,
+              std::function<void(const std::wstring&, const ControllerProfile&)> applyCallback);
 
     void BringToFront() const;
-    bool IsOpen()       const { return m_hwnd != nullptr; }
+    // Open in the sense that matters to callers: visible and being edited.
+    // A window that has been closed is only hidden, not destroyed, so the
+    // handle alone does not answer this.
+    bool IsOpen()       const { return m_hwnd != nullptr && IsWindowVisible(m_hwnd); }
+
+    // Fires when the window is dismissed. Set once and kept for the object's
+    // lifetime — profile switching is suppressed while the window is up, so
+    // somebody has to re-evaluate once it comes down.
+    void SetOnClose(std::function<void()> fn) { m_onClose = std::move(fn); }
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -41,12 +59,19 @@ private:
     // Called from the read thread via PostMessage — marshals a captured button
     // back to the UI thread so we can call PostWebMessageAsString safely.
     static constexpr UINT WM_BUTTON_CAPTURED = WM_APP + 1;
+    // The page has resolved its unsaved-changes prompt and the window may now
+    // be hidden. Distinct from WM_CLOSE so the confirmed close does not loop
+    // back into asking the page again.
+    static constexpr UINT WM_CLOSE_CONFIRMED = WM_APP + 2;
 
     HWND              m_hwnd     = nullptr;
     HINSTANCE         m_hInst   = nullptr;
     ControllerManager* m_mgr    = nullptr;
-    BackButtonConfig  m_config;
-    std::function<void(const BackButtonConfig&)> m_applyCallback;
+    ControllerProfile m_config;
+    std::vector<InstalledGame>                 m_games;
+    std::map<std::wstring, ControllerProfile>  m_gameProfiles;
+    std::function<void(const std::wstring&, const ControllerProfile&)> m_applyCallback;
+    std::function<void()> m_onClose;
 
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_env;
     Microsoft::WRL::ComPtr<ICoreWebView2Controller>  m_controller;
