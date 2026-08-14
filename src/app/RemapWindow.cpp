@@ -15,8 +15,9 @@ RemapWindow* RemapWindow::s_instance = nullptr;
 // ---------------------------------------------------------------------------
 
 static const std::wstring& GetHtml() {
-    // Narrow literal (65 535 byte limit — much more than needed) avoids MSVC
-    // C2026 "string too big" that fires at ~16 K for wide literals.
+    // Narrow literal: a wide one would hit MSVC's C2026 "string too big" far
+    // sooner. Each piece still has to stay under ~16 K on its own (65 535 is
+    // only the limit on the concatenated result), hence the splits below.
     // HTML is ASCII-only (JS glyphs use \uXXXX escapes); each byte widens 1:1.
     static const std::wstring html = []() -> std::wstring {
         static const char kHtml[] = R"HTML(
@@ -231,7 +232,7 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 </div>
 )HTML"
 // Split here only to stay under MSVC's ~16KB limit on a single string literal
-// (C2026); the two halves are concatenated back into one document. Markup and
+// (C2026); the pieces are concatenated back into one document. Markup and
 // styles above, script below — keep any new content on whichever side is
 // smaller rather than rejoining these.
 R"HTML(
@@ -556,7 +557,11 @@ function resolveModal(choice){
   if(choice==='save') saveCurrent();
   if(action) action();
 }
-
+)HTML"
+// Second split, same C2026 limit as above — the script outgrew one literal
+// once per-game profiles landed. The picker and everything below it live
+// here; keep new script on whichever of the two halves is smaller.
+R"HTML(
 // ---- Per-game picker (searchable combo box) ----
 function gameName(gameId){
   for(var i=0;i<GAMES.length;i++) if(GAMES[i].id===gameId) return GAMES[i].name;
