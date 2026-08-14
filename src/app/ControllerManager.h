@@ -31,7 +31,13 @@ public:
     // a contested one. A puck publishes a slot interface whether or not a
     // controller is paired into it, and cycling the device because nothing is
     // switched on is pointless churn.
-    enum class GameModeOutcome { Enabled, NoActiveController, Blocked };
+    //
+    // VirtualPadUnavailable is emphatically not Blocked: nothing is wrong with
+    // the controller, so retrying fast or restarting its devnode accomplishes
+    // nothing. Reporting it as Blocked is what pointed the device-cycling
+    // machinery at a reporter's puck over a missing bus driver and left its
+    // HID collections disabled (#65).
+    enum class GameModeOutcome { Enabled, NoActiveController, Blocked, VirtualPadUnavailable };
 
     // stateWaitMs is how long each slot is given to prove it is live. Short
     // values are for polling a receiver whose controller is switched off —
@@ -65,6 +71,14 @@ public:
     bool IsGameModeActive()         const;
     const ControllerProfile& GetProfile() const { return m_profile; }
 
+    // Set when a virtual pad could not be created, so the tray can say which
+    // of the two very different problems it was: no bus driver at all (go
+    // install one) or a bus that is present and did not work (a rebranded fork
+    // is the usual reason, and telling the user to install ViGEmBus again
+    // would be wrong). Both are only meaningful after a failed enable.
+    bool                LastPadDriverMissing() const { return m_lastPadDriverMissing; }
+    const std::wstring& LastBusReport()        const { return m_lastBusReport; }
+
     // Called by RemapWindow when a row enters/exits listening state.
     // Callback fires on the read thread — use PostMessage to marshal to the UI thread.
     void StartButtonCapture(std::function<void(const BackButtonBinding&)> callback);
@@ -75,14 +89,14 @@ private:
 
     void SyncDevices();
     void OpenSlot(const std::wstring& path);
-    GameModeOutcome EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
+    GameModeOutcome EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
                                        uint32_t stateWaitMs);
     void DisableGameModeSlot(Slot& slot);
     void ReleaseHeldPaddleInputs(Slot& slot);
     void StartReadLoop(Slot& slot);
     void StopReadLoop(Slot& slot);
     void ReadLoop(Slot* slot);
-    void NotifyStateChanged(bool vigemMissing = false);
+    void NotifyStateChanged(bool padUnavailable = false);
 
     // Pushes the current profile's pad settings into one slot's trackpads and
     // its virtual controller. Shared by SetProfile and slot creation.
@@ -92,6 +106,8 @@ private:
     AlertFn                            m_alertFn;
     std::vector<std::unique_ptr<Slot>> m_slots;
     bool                               m_steamPresent         = false;
+    bool                               m_lastPadDriverMissing = false;
+    std::wstring                       m_lastBusReport;
     ControllerProfile                  m_profile;
 
     std::atomic<bool>                            m_capturing{false};
