@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <atomic>
 #include <functional>
+#include <string>
 #include <thread>
 #include "BackButtonConfig.h"
 #include "ControllerPlatform.h"
@@ -18,6 +19,10 @@ public:
     VirtualController& operator=(const VirtualController&) = delete;
 
     bool IsValid()        const { return m_valid; }
+    // Established by asking the system what buses exist, not inferred from an
+    // error code — VIGEM_ERROR_BUS_NOT_FOUND is returned for causes other than
+    // an absent driver, and reporting those as "driver missing" is what sent
+    // the reporter in #65 looking for a driver they already had.
     bool IsDriverMissing() const { return m_driverMissing; }
 
     // Why construction failed. Only meaningful when !IsValid(); FailStage() names
@@ -25,6 +30,10 @@ public:
     // (0 when the failing call returns no code, e.g. the allocators).
     const char* FailStage() const { return m_failStage; }
     uint32_t    LastError() const { return m_lastError; }
+
+    // What buses were on the machine when construction failed, for the log and
+    // for choosing what to tell the user. Empty unless a connect failed.
+    const std::wstring& BusReport() const { return m_busReport; }
 
     void Update(const uint8_t* buf, size_t n, const ControllerProfile& profile);
     void OnRumble(uint8_t largeMotor, uint8_t smallMotor);
@@ -45,6 +54,7 @@ private:
     bool   m_driverMissing = false;
     const char* m_failStage = "none";
     uint32_t    m_lastError = 0;
+    std::wstring m_busReport;
 
     // DS4 touchpad tracking. Which pads feed it is read from the profile
     // handed to Update every frame, so none of that is duplicated here.

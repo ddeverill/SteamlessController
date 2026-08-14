@@ -1,4 +1,5 @@
 #include "VirtualController.h"
+#include "ViGEmBusInfo.h"
 #include "steam/SteamController.h"
 #include <ViGEm/Client.h>
 #include <algorithm>
@@ -162,8 +163,13 @@ VirtualController::VirtualController(ControllerPlatform platform, RumbleCallback
     if (!VIGEM_SUCCESS(err)) {
         m_failStage = "vigem_connect";
         m_lastError = static_cast<uint32_t>(err);
-        if (err == VIGEM_ERROR_BUS_NOT_FOUND || err == VIGEM_ERROR_BUS_ACCESS_FAILED)
-            m_driverMissing = true;
+        // The error code cannot tell these apart: the client returns
+        // BUS_NOT_FOUND both when no bus is installed and when one is present
+        // but did not answer, and it never says which product's bus it tried.
+        // Ask the system what is actually there and report only that.
+        const auto buses = ViGEmBusInfo::Enumerate();
+        m_busReport     = ViGEmBusInfo::Describe(buses);
+        m_driverMissing = buses.empty();
         vigem_free(static_cast<PVIGEM_CLIENT>(m_client));
         m_client = nullptr;
         return;
