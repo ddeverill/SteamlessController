@@ -48,6 +48,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "build\release\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "build\release\Release\SteamlessDeviceCycle.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Setup's driver check, and the thing to ask a user to run when a controller
+; never reaches a game. Installed rather than temporary for the second reason.
+Source: "build\release\Release\ViGEmBusProbe.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "resources\{#ViGEmSetup}"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
@@ -64,4 +67,74 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 
 [UninstallRun]
 Filename: "{app}\SteamlessDeviceCycle.exe"; Parameters: "--unregister"; RunOnceId: "RemoveCycleTask"; Flags: waituntilterminated runhidden
+
+[Code]
+// Did ViGEmBus actually install? Established the way the app establishes it at
+// runtime — by enumerating the ViGEm bus interface — because every cheaper
+// answer has been measured and found to lie:
+//
+//   * the bundle exits 0 when it finds a related product already registered
+//     and decides there is nothing for it to do
+//   * the registry records the product whether or not a driver ever landed
+//   * the driver's own version is no guide either: 1.22.0 ships a binary still
+//     stamped 1.21.442.0
+//
+// Reported in #68: with another program's rebranded ViGEm already present,
+// setup looked entirely successful and left the machine with no working bus.
+// The user found out when they clicked Enable Steamless Mode.
+function ViGEmBusPresent(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  // Assume the best when the check itself cannot run. A missing or broken
+  // probe is our bug, and telling every user their driver failed on account of
+  // it would be worse than saying nothing at all.
+  Result := True;
+  if not Exec(ExpandConstant('{app}\ViGEmBusProbe.exe'), '', '',
+              SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log('ViGEmBus verification: probe could not be run');
+    Exit;
+  end;
+  Log('ViGEmBus verification: probe exit code ' + IntToStr(ResultCode));
+  Result := ResultCode = 0;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  WarningText: String;
+begin
+  // ssPostInstall runs after the [Run] entries above, so the driver installer
+  // has finished by the time this fires. Worth stating because it is
+  // load-bearing: were that ordering ever wrong, every healthy install would
+  // warn. That is a loud failure rather than a quiet one, which is why the
+  // check sits here rather than behind a wrapper built to guarantee ordering.
+  if CurStep <> ssPostInstall then
+    Exit;
+  if ViGEmBusPresent() then
+    Exit;
+
+  WarningText :=
+    'SteamlessController is installed, but the ViGEmBus driver is not.' + #13#10 + #13#10 +
+    'That driver is what presents your controller to games. Setup ran its ' +
+    'installer, but no virtual gamepad bus is present afterwards. Usually this ' +
+    'means another program has already registered a version of it — Oculus and ' +
+    'Virtual Desktop both ship their own copy — which stops the bundled ' +
+    'installer from doing anything.' + #13#10 + #13#10 +
+    'To finish:' + #13#10 + #13#10 +
+    '    1. Download ViGEmBus from' + #13#10 +
+    '        https://github.com/nefarius/ViGEmBus/releases/latest' + #13#10 +
+    '    2. Run it, choosing Repair if it offers that rather than a fresh install' + #13#10 +
+    '    3. Start SteamlessController — it picks the driver up on its own,' + #13#10 +
+    '        with no reinstall and no restart needed' + #13#10 + #13#10 +
+    'To check again later, run ViGEmBusProbe.exe from the installation folder.';
+
+  // An unattended install must not stop on a dialog nobody is there to close.
+  // The Inno log carries the same finding either way, and so will the app's
+  // event log the first time somebody enables Steamless Mode.
+  if WizardSilent() then
+    Log('ViGEmBus verification: no bus present after install (silent, not shown)')
+  else
+    MsgBox(WarningText, mbInformation, MB_OK);
+end;
 
