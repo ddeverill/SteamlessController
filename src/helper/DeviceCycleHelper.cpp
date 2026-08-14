@@ -20,6 +20,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <clocale>
 #include <cstdarg>
 #include <cstdio>
 #include <string>
@@ -332,6 +333,11 @@ static int FindHoldersOnly() {
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR cmdLine, int) {
+    // cycle.log has the same %ls problem the event log does, and more to lose
+    // by it: the holder lists and veto names it exists to record are exactly
+    // the values that carry non-ASCII. See the note in the tray app's main.
+    setlocale(LC_CTYPE, ".UTF8");
+
     if (cmdLine && wcsstr(cmdLine, L"--register"))     return RegisterTask();
     if (cmdLine && wcsstr(cmdLine, L"--unregister"))   return UnregisterTask();
     if (cmdLine && wcsstr(cmdLine, L"--find-holders")) return FindHoldersOnly();
