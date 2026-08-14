@@ -95,6 +95,19 @@ if (MSVC)
     set_target_properties(BindingCodecProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
 endif()
 
+# Virtual gamepad bus probe — dumps every bus the ViGEm client can see, which
+# is the one question a "vigem_connect failed" report cannot answer on its own
+add_executable(ViGEmBusProbe
+    src/probe/ViGEmBusProbe.cpp
+    src/app/ViGEmBusInfo.cpp
+)
+target_include_directories(ViGEmBusProbe PRIVATE src)
+target_link_libraries(ViGEmBusProbe PRIVATE ViGEmClient)
+if (MSVC)
+    target_compile_options(ViGEmBusProbe PRIVATE /W4 /WX /utf-8 /wd4828)
+    set_target_properties(ViGEmBusProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+endif()
+
 # Elevated on-demand helper — restarts the controller device node so the tray
 # app (which never runs elevated) can take the device from a running Steam.
 add_executable(SteamlessDeviceCycle WIN32
@@ -149,6 +162,7 @@ add_executable(SteamlessController WIN32
     src/app/HandleFinder.cpp
     src/app/RemapWindow.cpp
     src/app/SteamAppLocator.cpp
+    src/app/ViGEmBusInfo.cpp
     resources/app.rc
 )
 target_include_directories(SteamlessController PRIVATE
