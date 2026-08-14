@@ -1,6 +1,7 @@
 #include "ControllerManager.h"
 #include "EventLog.h"
 #include "InputInjection.h"
+#include "ViGEmBusInfo.h"
 #include "VirtualController.h"
 #include "TrackpadMouse.h"
 #include "KeyInput.h"
@@ -200,6 +201,22 @@ void ControllerManager::EmergencyRestoreAll() noexcept {
     }
 }
 
+// EventLog's %ls reaches fprintf, which converts wide characters through the C
+// locale and silently abandons the rest of the line at the first one it cannot
+// encode. Measured: a bus report ending in an em dash logged as its first
+// clause and nothing else. Device names on a localised Windows will do the
+// same, so hand the log UTF-8 bytes and let %s pass them through untouched.
+static std::string Utf8(const std::wstring& text) {
+    if (text.empty()) return {};
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1,
+                                          nullptr, 0, nullptr, nullptr);
+    if (bytes <= 1) return {};
+    std::string out(static_cast<size_t>(bytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, out.data(), bytes, nullptr, nullptr);
+    out.resize(static_cast<size_t>(bytes) - 1);  // drop the terminator
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -243,22 +260,40 @@ void ControllerManager::OnDeviceChange() {
 }
 
 ControllerManager::GameModeOutcome ControllerManager::EnableGameMode(uint32_t stateWaitMs) {
-    bool anyVigemMissing = false;
-    bool anyBlocked      = false;
-    bool anyEnabled      = false;
+    // Once the absence of a bus driver is established, re-establish it the
+    // cheap way. Finding out by attempting an enable costs the user's
+    // controller: each attempt claims the device exclusively and toggles
+    // lizard mode off and back on, and the retry that waits for a driver to
+    // be installed would otherwise do that every 30 seconds for as long as
+    // the machine goes without one. Enumerating touches no device at all.
+    if (m_lastPadDriverMissing && ViGEmBusInfo::Enumerate().empty()) {
+        NotifyStateChanged(true);
+        return GameModeOutcome::VirtualPadUnavailable;
+    }
+
+    bool anyPadUnavailable = false;
+    bool anyBlocked        = false;
+    bool anyEnabled        = false;
     for (auto& slot : m_slots) {
-        switch (EnableGameModeSlot(*slot, anyVigemMissing, stateWaitMs)) {
-        case GameModeOutcome::Enabled:            anyEnabled = true; break;
-        case GameModeOutcome::Blocked:            anyBlocked = true; break;
-        case GameModeOutcome::NoActiveController: break;
+        switch (EnableGameModeSlot(*slot, anyPadUnavailable, stateWaitMs)) {
+        case GameModeOutcome::Enabled:               anyEnabled = true; break;
+        case GameModeOutcome::Blocked:               anyBlocked = true; break;
+        case GameModeOutcome::VirtualPadUnavailable: break;  // tracked by the out-param
+        case GameModeOutcome::NoActiveController:    break;
         }
     }
-    NotifyStateChanged(anyVigemMissing);
+    NotifyStateChanged(anyPadUnavailable);
     if (anyEnabled) return GameModeOutcome::Enabled;
     // Only report Blocked when something actually stood in the way. Slots that
     // are merely silent mean no controller is switched on, which no amount of
     // device cycling will change.
-    return anyBlocked ? GameModeOutcome::Blocked : GameModeOutcome::NoActiveController;
+    //
+    // Blocked outranks a missing pad: contention is the one of the two a
+    // device cycle can still resolve, so if any slot is contested the caller
+    // should hear about that rather than settle into the slow ViGEm retry.
+    if (anyBlocked)        return GameModeOutcome::Blocked;
+    if (anyPadUnavailable) return GameModeOutcome::VirtualPadUnavailable;
+    return GameModeOutcome::NoActiveController;
 }
 
 void ControllerManager::DisableGameMode() {
@@ -467,7 +502,7 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 // ---------------------------------------------------------------------------
 
 ControllerManager::GameModeOutcome
-ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
+ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
                                       uint32_t stateWaitMs) {
     if (slot.gameModeActive) return GameModeOutcome::Enabled;
     // The puck publishes a controller interface per slot and current firmware
@@ -523,11 +558,30 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& vigemMissingOut,
         EventLog::Write("GAMEMODE: ViGEm virtual controller failed (stage=%s, err=0x%08X, driverMissing=%d)",
                         slot.vc->FailStage(), slot.vc->LastError(),
                         slot.vc->IsDriverMissing() ? 1 : 0);
-        if (slot.vc->IsDriverMissing()) vigemMissingOut = true;
+        // The line above says a call failed; this one says what the machine
+        // actually looks like. A second bus is the most likely cause of an
+        // otherwise inexplicable connect failure and the hardest thing to
+        // guess at from the outside, so it goes in the log every time.
+        if (!slot.vc->BusReport().empty()) {
+            EventLog::Write("GAMEMODE: %s", Utf8(slot.vc->BusReport()).c_str());
+            m_lastBusReport = slot.vc->BusReport();
+        }
+        m_lastPadDriverMissing = slot.vc->IsDriverMissing();
+        padUnavailableOut      = true;
         slot.vc.reset();
         slot.sc->EnableLizardMode();
-        return GameModeOutcome::Blocked;
+        // Hand the device back. Without a virtual pad this slot is going
+        // nowhere, and an exclusive handle held for nothing locks Steam out
+        // and makes the app itself the holder that vetoes its own device
+        // cycle — which is the veto the reporter's #65 logs recorded.
+        slot.sc->ReleaseToShared();
+        return GameModeOutcome::VirtualPadUnavailable;
     }
+
+    // A pad was created, so whatever was missing is not missing now — clear it
+    // or the cheap pre-flight above would keep short-circuiting a machine that
+    // has since had the driver installed.
+    m_lastPadDriverMissing = false;
 
     if (m_profile.platform == ControllerPlatform::PlayStation)
         slot.sc->SetImuEnabled(true);
@@ -962,6 +1016,6 @@ void ControllerManager::ReadLoop(Slot* slot) {
     }
 }
 
-void ControllerManager::NotifyStateChanged(bool vigemMissing) {
-    m_onStateChanged(!m_slots.empty(), IsGameModeActive(), vigemMissing);
+void ControllerManager::NotifyStateChanged(bool padUnavailable) {
+    m_onStateChanged(!m_slots.empty(), IsGameModeActive(), padUnavailable);
 }

@@ -499,6 +499,9 @@ void TrayApp::ReleaseControl() {
     m_acquireRetries = 0;
     m_lastCycleTick  = 0;
     m_cycleInFlight  = false;  // cleared with the tick it is measured against
+    // One driver notice per attempt, and letting go ends the attempt. Turning
+    // Steamless Mode back on is a fresh ask and deserves a fresh answer.
+    m_vigemBalloonShown = false;
     // Whatever game profile was live belongs to a controller we no longer
     // have. Dropping it now means re-acquiring starts from the default and
     // re-resolves, rather than resuming a profile for a game long since quit.
@@ -554,7 +557,14 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     // A short burst of rapid retries: right after a device cycle we race
     // Steam's re-enumeration for the exclusive open, and starting the claim
     // the instant the device arrives is what wins that race.
-    for (int i = 0; i < 10 && !m_controller->IsGameModeActive(); ++i) {
+    //
+    // A missing virtual pad is not a race with anybody, so the burst is called
+    // off the moment that is the answer. Left running it re-attempted eleven
+    // times in half a second and re-armed the driver notification on each
+    // pass — the toast storm reported in #68.
+    for (int i = 0; i < 10
+                 && outcome != ControllerManager::GameModeOutcome::VirtualPadUnavailable
+                 && !m_controller->IsGameModeActive(); ++i) {
         Sleep(50);
         m_controller->OnDeviceChange();
         outcome = m_controller->EnableGameMode(stateWaitMs);
@@ -571,6 +581,22 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
         return;
     }
     if (!m_controller->IsConnected()) return;  // nothing plugged in — arrival will retrigger
+
+    // The controller is fine; we just have nowhere to send its input. None of
+    // the machinery below applies — the retry counter, the cycling, and the
+    // holder scan all exist to get a HID handle away from another process,
+    // and no amount of restarting the puck installs a bus driver. Cycling
+    // here is exactly what disabled a reporter's HID collections in #65.
+    //
+    // So sit on a slow timer instead. The user is being told what to install,
+    // and this is what notices once they have.
+    if (outcome == ControllerManager::GameModeOutcome::VirtualPadUnavailable) {
+        // A verdict left pending by an earlier contested attempt would report
+        // this as Steam holding the controller, which it plainly is not.
+        KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
+        SetTimer(m_hwnd, IDT_ACQUIRE, VIGEM_RETRY_MS, nullptr);
+        return;
+    }
 
     // No slot is emitting state: the controller is off, asleep, or the
     // receiver has no controller paired into it. Cycling cannot conjure one
@@ -990,16 +1016,21 @@ void TrayApp::RemoveTrayIcon() {
     Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
-void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool vigemMissing) {
-    if (vigemMissing) ShowViGEmBalloon();
-    else              m_vigemBalloonShown = false;
+void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool padUnavailable) {
+    if (padUnavailable) ShowViGEmBalloon();
+    // Cleared only by a pad that actually came up, not by any notification
+    // that happens to carry false. The acquire path notifies repeatedly within
+    // a single attempt, so clearing on false re-armed the balloon between
+    // consecutive failures and turned one attempt into a burst of toasts.
+    // ReleaseControl clears it too, so a deliberate re-enable says it again.
+    else if (gameModeActive) m_vigemBalloonShown = false;
 
     // Fall through rather than returning early — the icon and tooltip still need
     // to track the controller while the driver is unavailable.
-    const wchar_t* tip = gameModeActive ? L"Steamless Controller — Steamless Mode ON"
-                       : vigemMissing   ? L"Steamless Controller — ViGEmBus driver unavailable"
-                       : connected      ? L"Steamless Controller — Connected (Steamless Mode OFF)"
-                                        : L"Steamless Controller — No controller found";
+    const wchar_t* tip = gameModeActive  ? L"Steamless Controller — Steamless Mode ON"
+                       : padUnavailable  ? L"Steamless Controller — no virtual gamepad bus"
+                       : connected       ? L"Steamless Controller — Connected (Steamless Mode OFF)"
+                                         : L"Steamless Controller — No controller found";
 
     NOTIFYICONDATAW nid{};
     nid.cbSize = sizeof(nid);
@@ -1039,8 +1070,22 @@ void TrayApp::OpenEventLog() {
 // gets a wall of identical balloons. UpdateTrayIcon clears the latch once the
 // driver is reachable again, so a genuine mid-session disappearance still warns.
 void TrayApp::ShowViGEmBalloon() {
+    if (!m_notificationsEnabled) return;
     if (m_vigemBalloonShown) return;
     m_vigemBalloonShown = true;
+
+    // Two different problems wear the same failure internally, and the advice
+    // for one is wrong for the other. Telling somebody who already has a bus
+    // to go install ViGEmBus is what #65 spent three weeks on, so say which
+    // case this is — the manager established it by enumerating, not by
+    // guessing from an error code.
+    //
+    // Missing is by far the likelier of the two: the one confirmed way to get
+    // here is an installer that skipped ViGEmBus (#68). The other branch names
+    // no culprit on purpose — a bus that is present and unusable has several
+    // possible causes and we have never seen one in the field.
+    const bool missing = m_controller->LastPadDriverMissing();
+    m_balloonAction = missing ? BalloonAction::ViGEmDownload : BalloonAction::None;
 
     NOTIFYICONDATAW nid{};
     nid.cbSize           = sizeof(nid);
@@ -1048,10 +1093,14 @@ void TrayApp::ShowViGEmBalloon() {
     nid.uID              = TRAY_UID;
     nid.uFlags           = NIF_INFO;
     nid.dwInfoFlags      = NIIF_WARNING;
-    wcscpy_s(nid.szInfoTitle, L"Driver required");
+    wcscpy_s(nid.szInfoTitle, missing ? L"Driver required" : L"Virtual gamepad unavailable");
     wcscpy_s(nid.szInfo,
-             L"ViGEmBus is unavailable — not installed, or disabled in Device "
-             L"Manager under System devices. Click here to download it.");
+             missing
+                 ? L"ViGEmBus is unavailable — not installed, or disabled in Device "
+                   L"Manager under System devices. Click here to download it."
+                 : L"A virtual gamepad bus is present but would not accept a "
+                   L"controller. It may be disabled, or a version this app cannot "
+                   L"talk to. The event log has the details.");
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
 
@@ -1367,6 +1416,17 @@ void TrayApp::SaveSettings() {
 }
 
 void TrayApp::ShowContextMenu() {
+    // Re-enumerate before reading state off the manager. Releasing the
+    // controller clears its slot list and only a device event refills it, so
+    // after a manual disable the menu grayed out its own toggle as "(no
+    // controller detected)" and stayed that way — the controller was sitting
+    // right there, and only restarting the app brought the toggle back (#68).
+    //
+    // Not while a cycle we asked for is running, though: this opens handles,
+    // and an open handle is what vetoes a cycle, ours included.
+    if (!m_cycleInFlight)
+        m_controller->OnDeviceChange();
+
     bool connected    = m_controller->IsConnected();
     bool gameModeOn   = m_controller->IsGameModeActive();
     bool startupOn    = m_startupEnabled;

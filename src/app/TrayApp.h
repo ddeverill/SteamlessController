@@ -34,7 +34,7 @@ private:
 
     void AddTrayIcon();
     void RemoveTrayIcon();
-    void UpdateTrayIcon(bool connected, bool gameModeActive, bool vigemMissing = false);
+    void UpdateTrayIcon(bool connected, bool gameModeActive, bool padUnavailable = false);
     void ShowViGEmBalloon();
 
     // What clicking the balloon should do. Balloons are transient and the click
@@ -122,6 +122,11 @@ private:
     // Verdict of the most recent device cycle, read back from the helper.
     DeviceRestart::CycleResult         m_lastCycleStatus;
     bool                               m_elevationBalloonShown = false;
+    // Latched for the lifetime of one attempt, and deliberately not cleared by
+    // an ordinary state notification: the acquire path notifies several times
+    // per attempt, and clearing it there let a single attempt raise a balloon
+    // on every pass. Reported from the field as toasts Windows was still
+    // replaying minutes after the app had been closed (#68).
     bool                               m_vigemBalloonShown     = false;
     bool                               m_startupEnabled   = false;
     int                                m_startupMechanism = 0;  // 0 none, 1 Run key, 2 elevated task
@@ -218,6 +223,12 @@ private:
     static constexpr UINT ACQUIRE_RETRY_MS   = 4000;
     // Grace after the final cycle before reporting failure to the user.
     static constexpr UINT ACQUIRE_VERDICT_MS = 3000;
+    // Retry spacing when the controller is fine but no virtual pad can be
+    // created. Nothing here is a race, so the fast cadence above buys nothing:
+    // what it is waiting for is a human installing a driver. Slow enough that
+    // waiting through the whole thing costs a handful of log lines, quick
+    // enough that the app picks a new driver up on its own.
+    static constexpr UINT VIGEM_RETRY_MS = 30000;
     // Minimum spacing between device cycles. A cycle is asynchronous, so
     // without this the arrivals it generates re-enter the acquire path and
     // fire another one on top of it.
