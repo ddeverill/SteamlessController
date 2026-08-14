@@ -8,6 +8,10 @@
 // events.old.log at ~512 KB, so it can run forever without growing unbounded.
 //
 // Thread-safe. printf-style formatting; use %ls for wide strings (paths).
+//
+// %ls only survives non-ASCII because wWinMain sets LC_CTYPE to UTF-8 — see
+// the note there. Without it fprintf abandons the line partway through rather
+// than reporting an error.
 namespace EventLog {
 
 // Annotated so the compiler type-checks every format string against its

@@ -201,22 +201,6 @@ void ControllerManager::EmergencyRestoreAll() noexcept {
     }
 }
 
-// EventLog's %ls reaches fprintf, which converts wide characters through the C
-// locale and silently abandons the rest of the line at the first one it cannot
-// encode. Measured: a bus report ending in an em dash logged as its first
-// clause and nothing else. Device names on a localised Windows will do the
-// same, so hand the log UTF-8 bytes and let %s pass them through untouched.
-static std::string Utf8(const std::wstring& text) {
-    if (text.empty()) return {};
-    const int bytes = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1,
-                                          nullptr, 0, nullptr, nullptr);
-    if (bytes <= 1) return {};
-    std::string out(static_cast<size_t>(bytes), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, out.data(), bytes, nullptr, nullptr);
-    out.resize(static_cast<size_t>(bytes) - 1);  // drop the terminator
-    return out;
-}
-
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -563,7 +547,7 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
         // otherwise inexplicable connect failure and the hardest thing to
         // guess at from the outside, so it goes in the log every time.
         if (!slot.vc->BusReport().empty()) {
-            EventLog::Write("GAMEMODE: %s", Utf8(slot.vc->BusReport()).c_str());
+            EventLog::Write("GAMEMODE: %ls", slot.vc->BusReport().c_str());
             m_lastBusReport = slot.vc->BusReport();
         }
         m_lastPadDriverMissing = slot.vc->IsDriverMissing();
