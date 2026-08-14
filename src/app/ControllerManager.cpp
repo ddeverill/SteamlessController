@@ -5,6 +5,7 @@
 #include "VirtualController.h"
 #include "TrackpadMouse.h"
 #include "KeyInput.h"
+#include "TouchKeyboard.h"
 #include "steam/SteamController.h"
 #include <Windows.h>
 #include <algorithm>
@@ -386,6 +387,17 @@ static bool SendPaddleInput(const BackButtonBinding& binding, bool down) {
         }
         if (binding.IsAction(BackButtonAction::RightMouseButton)) {
             sendMouse(down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP);
+            return true;
+        }
+        if (binding.IsAction(BackButtonAction::TouchKeyboard)) {
+            // A toggle, not a held input: the press acts and the release has
+            // nothing to undo. It still reports true so the caller records it
+            // as held, which is what keeps the release path and
+            // ReleaseHeldPaddleInputs symmetric with every other binding —
+            // both land back here and do nothing. Auto-repeat cannot reach it
+            // either, being restricted to Kind::Key, so leaning on the paddle
+            // will not flap the keyboard.
+            if (down) TouchKeyboard::Toggle();
             return true;
         }
         return false;

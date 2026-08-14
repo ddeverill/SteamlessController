@@ -367,6 +367,7 @@ var INPUTS = [
   {id:'view',      glyph:'VEW',     label:'View',        bg:'#2a3a2a',fg:'#9ac89a'},
   {id:'L3',        glyph:'L3',      label:'L3 Stick',    bg:'#37485a',fg:'#cdd9e3'},
   {id:'R3',        glyph:'R3',      label:'R3 Stick',    bg:'#37485a',fg:'#cdd9e3'},
+  {id:'touchKeyboard',glyph:'KBD',  label:'Touch Keyboard',bg:'#2a3a2a',fg:'#9ac89a'},
   {id:'none',      glyph:'OFF',     label:'Off',         bg:'#1e2d3d',fg:'#5a7a9a'},
 ];
 var byId = {};
@@ -379,7 +380,7 @@ var PICKER_ROWS = [
   ['Up','Down','Left','Right'],
   ['L3','R3','menu','view'],
   ['leftMouse','rightMouse','mouse:middle','mouse:x1','mouse:x2'],
-  ['none'],
+  ['touchKeyboard','none'],
 ];
 
 // Every rebindable row, trackpad clicks included — they are the same kind of

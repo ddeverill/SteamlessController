@@ -17,6 +17,10 @@ enum class BackButtonAction : uint8_t {
     None,
     Menu, View,
     L3, R3,
+    // Row 5 — system actions. Appended, so a profile naming it reads back as
+    // None (see Unpack) on a build that predates it rather than as some other
+    // action that happened to take the value.
+    TouchKeyboard,
     COUNT
 };
 
@@ -27,7 +31,8 @@ inline const char* BackButtonActionId(BackButtonAction a) {
         "LB","RB","LT","RT",
         "Up","Down","Left","Right",
         "leftMouse","rightMouse",
-        "none","menu","view","L3","R3"
+        "none","menu","view","L3","R3",
+        "touchKeyboard"
     };
     auto i = static_cast<size_t>(a);
     return i < static_cast<size_t>(BackButtonAction::COUNT) ? ids[i] : "none";
@@ -52,6 +57,7 @@ inline BackButtonAction BackButtonActionFromId(const std::string& id) {
     if (id == "view")       return BackButtonAction::View;
     if (id == "L3")         return BackButtonAction::L3;
     if (id == "R3")         return BackButtonAction::R3;
+    if (id == "touchKeyboard") return BackButtonAction::TouchKeyboard;
     return BackButtonAction::None;
 }
 

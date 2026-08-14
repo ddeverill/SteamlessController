@@ -51,6 +51,7 @@ static void ApplyBackActionX360(const BackButtonBinding& binding, XUSB_REPORT& r
     case BackButtonAction::None:
     case BackButtonAction::LeftMouseButton:
     case BackButtonAction::RightMouseButton:
+    case BackButtonAction::TouchKeyboard:
     default: break;
     }
 }

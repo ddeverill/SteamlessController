@@ -33,6 +33,7 @@ int main() {
     RoundTrip("Ctrl+Alt+Shift+Win", B::FromKey('K', B::ModCtrl | B::ModAlt | B::ModShift | B::ModWin));
     RoundTrip("Win+G",              B::FromKey('G', B::ModWin));
     RoundTrip("action A",           B::FromAction(BackButtonAction::A));
+    RoundTrip("touch keyboard",     B::FromAction(BackButtonAction::TouchKeyboard));
     RoundTrip("middle mouse",       B::FromMouseButton(B::MouseButtonCode::Middle));
 
     printf("\nValues written before modifiers existed\n");
@@ -58,6 +59,11 @@ int main() {
     // A future build inventing a fifth modifier must not poison the binding.
     const B futureMods = B::Unpack((0xF0u << 24) | (1u << 16) | 'K');
     Check(futureMods == B::FromKey('K'), "unknown modifier bits dropped, key kept");
+    // What an older build sees in a profile that binds an action it predates:
+    // unbound, never some other action that happens to hold the value now.
+    const uint32_t futureAction = static_cast<uint32_t>(BackButtonAction::COUNT);
+    Check(B::Unpack(futureAction) == B::FromAction(BackButtonAction::None),
+          "action from a newer build decodes as unbound");
 
     printf("\n%s (%d failure(s))\n", g_failures ? "FAILED" : "All checks passed", g_failures);
     return g_failures ? 1 : 0;
