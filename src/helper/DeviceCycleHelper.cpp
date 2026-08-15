@@ -24,9 +24,11 @@
 #include <cstdarg>
 #include <cstdio>
 #include <string>
-#include "app/DeviceRestart.h"
-#include "app/HandleFinder.h"
-#include "steam/SteamController.h"
+#include "core/Text.h"
+#include "platform/win/DeviceRestart.h"
+#include "platform/win/HandleFinder.h"
+#include "platform/win/WinHidDevice.h"
+#include "core/SteamController.h"
 
 // The helper runs windowless from Task Scheduler, so a failed cycle is
 // otherwise completely silent. It cannot share the tray app's events.log —
@@ -107,15 +109,17 @@ static int CycleDevices() {
     ReconcilePending();
 
     bool any = false;
-    const auto paths = SteamController::EnumerateAll();
-    CycleLog("START: %zu interface(s) to cycle", paths.size());
+    WinHidBackend hid;
+    const auto infos = SteamController::EnumerateAll(hid);
+    CycleLog("START: %zu interface(s) to cycle", infos.size());
 
     // Summarised for the tray app, which has to explain any failure to the
     // user. Best outcome wins: if even one interface genuinely went down,
     // handles were broken and this was not a do-nothing cycle.
     DeviceRestart::CycleResult summary;
 
-    for (const auto& path : paths) {
+    for (const auto& info : infos) {
+        const std::wstring path = Utf8ToWide(info.path);
         DeviceRestart::CycleResult r;
         const bool ok = DeviceRestart::RestartInterfaceDevice(path, r);
 
@@ -207,13 +211,13 @@ static int CycleDevices() {
                 && r.vetoType != PNP_VetoTypeUnknown) {
             CycleLog("%s (transport=%s err=%lu veto=%s '%ls') %ls",
                      DeviceRestart::CycleKindName(r.kind),
-                     SteamController::TransportName(SteamController::TransportFromPath(path)),
+                     SteamController::TransportName(SteamController::TransportFrom(info)),
                      r.error, DeviceRestart::VetoTypeName(r.vetoType),
                      r.vetoName.c_str(), path.c_str());
         } else {
             CycleLog("%s (transport=%s err=%lu) %ls",
                      DeviceRestart::CycleKindName(r.kind),
-                     SteamController::TransportName(SteamController::TransportFromPath(path)),
+                     SteamController::TransportName(SteamController::TransportFrom(info)),
                      r.error, path.c_str());
         }
 
@@ -319,7 +323,9 @@ static int UnregisterTask() {
 // demand rather than only in the failure it is meant to explain.
 static int FindHoldersOnly() {
     CycleLog("FIND: holder scan requested directly");
-    for (const auto& path : SteamController::EnumerateAll()) {
+    WinHidBackend hid;
+    for (const auto& info : SteamController::EnumerateAll(hid)) {
+        const std::wstring path = Utf8ToWide(info.path);
         const auto scan = HandleFinder::FindDeviceHolders(path);
         CycleLog("FIND: %s in %lu ms, target='%ls' typeIndex=%u candidates=%u queried=%u",
                  scan.completed ? "completed" : "HIT DEADLINE",

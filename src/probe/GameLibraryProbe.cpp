@@ -2,7 +2,7 @@
 // walking the Start Menu, so the path-matching approach can be checked
 // against a real machine's installed games without going through the
 // remap window's UI.
-#include "app/GameLibrary.h"
+#include "platform/win/WinGameLibrary.h"
 #include <cstdio>
 
 int main() {
