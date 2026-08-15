@@ -478,6 +478,8 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
                         SteamController::TransportName(slot.transport), slot.path.c_str());
         return GameModeOutcome::NoActiveController;
     }
+    EventLog::Write("GAMEMODE: state report seen (transport=%s), proceeding %s",
+                    SteamController::TransportName(slot.transport), slot.path.c_str());
 
     const auto claim = slot.sc->ClaimGameModeAccess();
     if (claim == SteamController::AccessClaim::Failed) {

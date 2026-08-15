@@ -133,8 +133,17 @@ bool SteamController::WaitForStateReport(uint32_t timeoutMs) {
             deadline - before);
         const auto waitMs = static_cast<uint32_t>(std::max<int64_t>(1, remaining.count()));
         const size_t n = ReadReport(report, sizeof(report), waitMs);
-        if (n > 0 && IsStateReportId(report[0]))
+        if (n > 0 && IsStateReportId(report[0])) {
+            // The puck's empty slots are known to answer feature commands
+            // with a stall despite this having passed — logged so a failure
+            // right after this returns true can be told apart from one where
+            // no report ever arrived at all, without needing a USB capture.
+            printf("[SC] state report id=0x%02X len=%zu bytes=%02X %02X %02X %02X %02X %02X %02X %02X\n",
+                   report[0], n,
+                   report[0], report[1], report[2], report[3],
+                   report[4], report[5], report[6], report[7]);
             return true;
+        }
         // A silent slot times out and consumes the wait; returning nothing
         // instantly means the read failed outright, so stop rather than spin
         // on a dead handle for the rest of the window.
