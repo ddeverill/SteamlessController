@@ -442,7 +442,11 @@ void TrayApp::RefreshSteamApps() {
 const ControllerProfile& TrayApp::ActiveProfile() const {
     if (!m_activeGameId.empty()) {
         auto it = m_gameProfiles.find(m_activeGameId);
-        if (it != m_gameProfiles.end()) return it->second;
+        // A profile that follows the default resolves to it here rather than
+        // being copied anywhere, so editing the default reaches every game
+        // following it without touching a single stored profile.
+        if (it != m_gameProfiles.end() && !it->second.useDefaultMappings)
+            return it->second;
     }
     return m_defaultProfile;
 }
@@ -1113,9 +1117,24 @@ void TrayApp::OpenRemapWindow() {
                 m_gameProfiles[gameId] = profile;
                 GameProfiles::Save(m_gameProfiles);
             }
-            // Editing whichever profile happens to be live should be visible
-            // straight away; editing any other one must not disturb it.
-            if (gameId == m_activeGameId) m_controller->SetProfile(profile);
+            // Editing whichever profile is live should be visible straight
+            // away. Asked unconditionally rather than by comparing ids,
+            // because the live profile may not be the edited one but may be
+            // following it — only ActiveProfile knows that, and for anything
+            // genuinely unrelated this resolves to what is already loaded.
+            PushActiveProfile();
+        },
+        [this](const std::wstring& gameId) {
+            m_gameProfiles.erase(gameId);
+            GameProfiles::Save(m_gameProfiles);
+            EventLog::Write("PROFILE: deleted %ls", gameId.c_str());
+            // No control decision here, for the same reason applying makes
+            // none: the window is open and may have a row listening for a
+            // button, and dropping the controller under it would end that
+            // mid-capture. ActiveProfile already resolves a now-missing id to
+            // the default, and closing the window re-evaluates — which is
+            // what lets go of a controller this profile was holding.
+            PushActiveProfile();
         });
 }
 
