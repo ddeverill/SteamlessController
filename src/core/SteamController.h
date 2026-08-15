@@ -244,6 +244,11 @@ private:
 
     IHidBackend&                 m_backend;
     std::unique_ptr<IHidDevice>  m_device;
+    // Kept only to name the device in diagnostic output — with several
+    // slots open at once and stdout/stderr buffered independently under
+    // systemd, log line order alone doesn't reliably say which slot a
+    // message is about.
+    std::string       m_path;
     std::thread       m_rumbleThread;
     std::atomic<bool> m_running{false};
 

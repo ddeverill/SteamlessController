@@ -35,7 +35,11 @@ public:
     size_t ReadInputReport(uint8_t* buffer, size_t size, uint32_t timeoutMs = 1000) override;
 
 private:
-    int      m_fd               = -1;
-    uint32_t m_outputReportLen  = 64;
-    uint32_t m_featureReportLen = 64;
+    int         m_fd               = -1;
+    uint32_t    m_outputReportLen  = 64;
+    uint32_t    m_featureReportLen = 64;
+    // Kept only so failure messages can name the node they're about — with
+    // several devices open at once and stdout/stderr buffered independently
+    // under systemd, log line order alone doesn't tell them apart.
+    std::string m_path;
 };

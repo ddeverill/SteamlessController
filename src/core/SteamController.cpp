@@ -110,6 +110,7 @@ bool SteamController::Open(const std::string& path) {
     auto device = m_backend.Create();
     if (!device->Open(path)) return false;
     m_device = std::move(device);
+    m_path   = path;
     printf("[SC] Opened controller at path %s\n", path.c_str());
     return true;
 }
@@ -138,8 +139,8 @@ bool SteamController::WaitForStateReport(uint32_t timeoutMs) {
             // with a stall despite this having passed — logged so a failure
             // right after this returns true can be told apart from one where
             // no report ever arrived at all, without needing a USB capture.
-            printf("[SC] state report id=0x%02X len=%zu bytes=%02X %02X %02X %02X %02X %02X %02X %02X\n",
-                   report[0], n,
+            printf("[SC] %s: state report id=0x%02X len=%zu bytes=%02X %02X %02X %02X %02X %02X %02X %02X\n",
+                   m_path.c_str(), report[0], n,
                    report[0], report[1], report[2], report[3],
                    report[4], report[5], report[6], report[7]);
             return true;
@@ -193,7 +194,7 @@ bool SteamController::DisableLizardMode() {
     {
         std::lock_guard<std::mutex> lock(m_writeMutex);
         if (!m_device->SendFeatureReport(buf, sizeof(buf))) {
-            printf("Failed to send CLEAR_DIGITAL_MAPPINGS.\n");
+            printf("Failed to send CLEAR_DIGITAL_MAPPINGS on %s.\n", m_path.c_str());
             return false;
         }
     }
@@ -204,7 +205,7 @@ bool SteamController::DisableLizardMode() {
     {
         std::lock_guard<std::mutex> lock(m_writeMutex);
         if (!m_device->SendFeatureReport(buf, sizeof(buf))) {
-            printf("Failed to disable IMU mode.\n");
+            printf("Failed to disable IMU mode on %s.\n", m_path.c_str());
             return false;
         }
     }
@@ -217,7 +218,7 @@ bool SteamController::DisableLizardMode() {
     {
         std::lock_guard<std::mutex> lock(m_writeMutex);
         if (!m_device->SendFeatureReport(buf, sizeof(buf))) {
-            printf("Failed to send SET_SETTINGS_VALUES.\n");
+            printf("Failed to send SET_SETTINGS_VALUES on %s.\n", m_path.c_str());
             return false;
         }
     }

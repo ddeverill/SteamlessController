@@ -10,6 +10,7 @@
 
 bool LinuxHidDevice::Open(const std::string& path) {
     Close();
+    m_path = path;
     m_fd = open(path.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (m_fd < 0) {
         fprintf(stderr, "open(%s) failed: %s\n", path.c_str(), strerror(errno));
@@ -44,7 +45,8 @@ bool LinuxHidDevice::SendOutputReport(const uint8_t* data, size_t size) {
     if (size > sizeof(buf.data)) size = sizeof(buf.data);
     memcpy(buf.data, data, size);
     if (ioctl(m_fd, HIDIOCSOUTPUT(size), &buf) < 0) {
-        fprintf(stderr, "SendOutputReport(0x%02X) failed: %s\n", data[0], strerror(errno));
+        fprintf(stderr, "SendOutputReport(0x%02X) failed on %s: %s\n",
+                data[0], m_path.c_str(), strerror(errno));
         return false;
     }
     return true;
@@ -57,8 +59,8 @@ bool LinuxHidDevice::WriteOutputReport(const uint8_t* data, size_t size) {
     // bytes the firmware does not expect.
     const ssize_t written = write(m_fd, data, size);
     if (written < 0 || static_cast<size_t>(written) != size) {
-        fprintf(stderr, "WriteOutputReport(0x%02X, %zu bytes) failed: %s\n",
-                data[0], size, strerror(errno));
+        fprintf(stderr, "WriteOutputReport(0x%02X, %zu bytes) failed on %s: %s\n",
+                data[0], size, m_path.c_str(), strerror(errno));
         return false;
     }
     return true;
@@ -83,8 +85,8 @@ bool LinuxHidDevice::SendFeatureReport(const uint8_t* data, size_t size) {
         if (errno != EPIPE) break;
         usleep(4000 << attempt);  // 4ms, 8ms, 16ms
     }
-    fprintf(stderr, "SendFeatureReport(reportId=0x%02X cmd=0x%02X) failed: %s\n",
-            buf.data[0], size > 1 ? buf.data[1] : 0, strerror(errno));
+    fprintf(stderr, "SendFeatureReport(reportId=0x%02X cmd=0x%02X) failed on %s: %s\n",
+            buf.data[0], size > 1 ? buf.data[1] : 0, m_path.c_str(), strerror(errno));
     return false;
 }
 
