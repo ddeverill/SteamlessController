@@ -19,6 +19,22 @@ enum class AutoMode {
     OffWhileSteam = 1,  // yield whenever steam.exe is running
     OffOnlyInGame = 2,  // yield only while a game is running (needs admin to
                         // wrest the device from a running Steam)
+    // Hold the controller only while a game the user has made a profile for is
+    // in front, and leave it alone the rest of the time.
+    //
+    // The one mode where a profile outranks yielding to Steam: the other two
+    // ask "is Steam busy", and this one asks "did the user say they want us
+    // driving this game". Having made a profile for it is that answer, so a
+    // running Steam is not a reason to refuse — which is the only way a Steam
+    // game launched from the Steam client can ever use one of our profiles.
+    // Needs the same elevated cycle helper OffOnlyInGame does, for the same
+    // reason: taking the device from a live Steam.
+    //
+    // Deliberately keyed on a profile existing rather than on the app being a
+    // game, because "is this a game" is the harder question and this mode is
+    // the place it will eventually be answered — widening the test is all it
+    // takes to become "off unless in a game".
+    OffUnlessProfile = 3,
 };
 
 class TrayApp {
@@ -73,9 +89,20 @@ private:
     void OnForegroundChanged(const ForegroundIdentity& id);
     // The profile id matching an application, or empty when none does.
     std::wstring MatchProfile(const ForegroundIdentity& id) const;
-    // Make `gameId`'s profile the live one (empty selects the default).
-    // Cheap and idempotent when it is already live.
-    void ActivateProfile(const std::wstring& gameId);
+    // Record `gameId`'s profile as the selected one (empty selects the
+    // default), and nothing else. Returns whether the selection changed.
+    //
+    // Deliberately separate from applying it: whether we want the controller
+    // at all now depends on which profile is live, so the selection has to be
+    // on record before EvaluateControl can read it. Keeping the two joined is
+    // what made ReleaseControl and profile switching call each other.
+    bool SelectProfile(const std::wstring& gameId);
+    // The selected profile — a game's if one is selected, else the default.
+    const ControllerProfile& ActiveProfile() const;
+    // Push the selected profile's bindings into ControllerManager. Safe while
+    // the controller is not ours, and called before acquiring rather than
+    // after so the pad comes up already carrying the right bindings.
+    void PushActiveProfile();
     // Re-resolve the foreground now, for the moments where the answer can
     // have changed while nobody was listening — taking the controller back,
     // or closing the window that suppresses switching.
@@ -88,7 +115,19 @@ private:
 
     // Control plumbing, shared by every mode.
     void SetAutoMode(AutoMode mode);
-    bool WantControl(SteamState state) const;
+    // Whether Steam's current state leaves the controller available to us.
+    // A rule rather than a preference: no profile setting may vote itself
+    // into driving the pad alongside Steam Input, which is worse than not
+    // running at all (see ControllerManager's shared-handle note).
+    bool SteamAllowsControl(SteamState state) const;
+    // Do we want the controller right now? One question per mode — the tray
+    // toggle, Steam's state, or whether a game profile is in front — rather
+    // than one answer assembled from settings that override each other.
+    bool WantControlNow() const;
+    // Act on that answer — acquire, or schedule a release. The one place that
+    // turns intent into an acquire or a release, so every caller that can
+    // change the answer routes through here.
+    void EvaluateControl();
     void ApplySteamState(SteamState state);
     void TryAcquireController(uint32_t stateWaitMs = 250);
     void ReleaseControl();
@@ -199,6 +238,7 @@ private:
     static constexpr UINT IDM_OPENLOG       = 1013;
     static constexpr UINT IDM_NOTIFICATIONS = 1014;
     static constexpr UINT IDM_ENABLE_DEVICE = 1015;
+    static constexpr UINT IDM_MODE_PROFILE  = 1016;
     static constexpr UINT WM_TRAY           = WM_APP + 1;
     static constexpr UINT WM_STEAMSTATE     = WM_APP + 2;
     static constexpr UINT WM_ALERT          = WM_APP + 3;
@@ -207,6 +247,7 @@ private:
     static constexpr UINT_PTR IDT_ACQUIRE_VERDICT = 2;
     static constexpr UINT_PTR IDT_WAKE_POLL       = 3;
     static constexpr UINT_PTR IDT_HEARTBEAT       = 4;
+    static constexpr UINT_PTR IDT_RELEASE_GRACE   = 5;
     // Long enough that idling for a month costs a fraction of the log's 512 KB,
     // short enough to bound when the app stopped responding to within a
     // quarter hour. Resolution only has to beat "somewhere in the last 33
@@ -236,6 +277,14 @@ private:
     // waiting through the whole thing costs a handful of log lines, quick
     // enough that the app picks a new driver up on its own.
     static constexpr UINT VIGEM_RETRY_MS = 30000;
+    // Grace before a profile-driven release actually happens. Quick to engage
+    // and slow to disengage, the same asymmetry SteamWatcher uses for Steam
+    // going away — because each release and re-acquire round trip unplugs and
+    // replugs the virtual pad, which a running game sees as the controller
+    // being yanked out. Alt-tabbing to a browser mid-game is common enough
+    // that doing it immediately would read as a bug. Steam turning up is the
+    // one release that skips this; see EvaluateControl.
+    static constexpr UINT RELEASE_GRACE_MS = 5000;
     // Minimum spacing between device cycles. A cycle is asynchronous, so
     // without this the arrivals it generates re-enter the acquire path and
     // fire another one on top of it.

@@ -60,6 +60,14 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 .badge-id{font-size:15px;font-weight:800;color:#fff;line-height:1;}
 .badge-pos{font-family:'JetBrains Mono',monospace;font-size:8px;color:#5c6b78;letter-spacing:.5px;margin-top:2px;}
 .pos-label{font-size:13.5px;color:#aeb9c2;font-weight:500;flex:none;}
+.inherit-row{display:flex;align-items:center;gap:10px;padding:14px 0 0 0;}
+.inherit-row input{width:16px;height:16px;accent-color:#4a9eff;cursor:pointer;flex:none;margin:0;}
+.inherit-row label{font-size:13.5px;color:#aeb9c2;font-weight:500;cursor:pointer;}
+.inherit-note{font-size:12px;color:#7d8b96;padding:8px 0 14px 26px;line-height:1.45;}
+.combo-badge{margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.6px;color:#c9a86a;border:1px solid rgba(201,168,106,.35);border-radius:3px;padding:1px 5px;}
+.missing-note{margin-top:11px;font-size:12px;color:#c9a86a;line-height:1.45;}
+/* Following the default leaves nothing below worth reading as editable. */
+#settings.inherited{opacity:.38;pointer-events:none;}
 .connector{flex:1;height:1.5px;border-top:1.5px dashed rgba(255,255,255,.1);}
 .row-right{display:flex;align-items:center;gap:11px;flex:none;}
 .chip-lg{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex:none;}
@@ -119,6 +127,14 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 .btn-discard:hover{border-color:#c0392b;color:#fff;}
 .btn-modal-cancel{padding:8px 15px;border-radius:4px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:#aeb9c2;font-weight:600;font-size:13px;}
 .btn-modal-cancel:hover{color:#fff;}
+.btn-modal-delete{padding:8px 15px;border-radius:4px;border:none;background:#a33a3a;color:#fff;font-weight:700;font-size:13px;}
+.btn-modal-delete:hover{opacity:.9;}
+/* Same treatment as Apply — padding, radius, inset highlight — so it reads as
+   a peer of it rather than as a warning, but coloured for what it does. The
+   footer is space-between, so it sits at the far end from Apply: separated by
+   the whole width of the window rather than by a gap somebody can misjudge. */
+.btn-delete{padding:9px 16px;border-radius:3px;border:1px solid #7a2626;background:linear-gradient(to bottom,#b34141,#8a2727);color:#fff;font-weight:700;font-size:13.5px;box-shadow:0 1px 0 rgba(255,255,255,.18) inset;transition:opacity .15s;}
+.btn-delete:hover{opacity:.9;}
 .btn-save{padding:8px 18px;border-radius:4px;border:1px solid #4c7a1d;background:linear-gradient(to bottom,#94c63d,#5d8a1f);color:#13260a;font-weight:700;font-size:13px;}
 .btn-save:hover{opacity:.9;}
 </style>
@@ -154,7 +170,17 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
         <div id="combo-results"></div>
       </div>
     </div>
+    <div class="missing-note" id="missing-note" style="display:none;">This game wasn't found on this PC. Its profile is kept, and will start working again if the game comes back. Delete this if the game won't be coming back.</div>
   </div>
+  <div class="group" id="inherit-group" style="display:none;">
+    <div class="group-label">MAPPINGS</div>
+    <div class="inherit-row">
+      <input type="checkbox" id="use-default">
+      <label for="use-default">Use my default mappings</label>
+    </div>
+    <div class="inherit-note">This game turns the controller on and uses the controls from your default profile, including any later changes to it. Uncheck to give this game controls of its own.</div>
+  </div>
+  <div id="settings">
   <div class="group">
     <div class="group-label">CONTROLLER PLATFORM</div>
     <div class="row mode-row">
@@ -211,6 +237,7 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
     <div id="row-R4" class="row"></div>
     <div id="row-R5" class="row"></div>
   </div>
+  </div>
 </div>
 
 <div id="footer">
@@ -218,16 +245,18 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
     <button class="btn-reset" id="btn-reset">Reset this profile to default</button>
     <button class="btn-apply" id="btn-apply">Apply</button>
   </div>
+  <button class="btn-delete" id="btn-delete" style="display:none;">Delete Profile</button>
 </div>
 
 <div id="modal-backdrop" style="display:none;">
   <div class="modal">
-    <h3>Unsaved changes</h3>
+    <h3 id="modal-title">Unsaved changes</h3>
     <p id="modal-text">You have unsaved changes to this profile.</p>
     <div class="modal-btns">
       <button class="btn-modal-cancel" id="btn-modal-cancel">Cancel</button>
       <button class="btn-discard" id="btn-modal-discard">Discard</button>
       <button class="btn-save" id="btn-modal-save">Save</button>
+      <button class="btn-modal-delete" id="btn-modal-delete" style="display:none;">Delete</button>
     </div>
   </div>
 </div>
@@ -257,6 +286,9 @@ var modes = {LPAD:'none',RPAD:'none'};
 // every pad so switching modes back and forth does not lose the choice.
 var dirs = {LPAD:'natural',RPAD:'natural'};
 var platform = 'xbox';
+// This game follows the default profile's controls instead of carrying its
+// own. Only ever true for a game — the default has nothing to follow.
+var useDefault = false;
 // The DS4 touchpad only exists on a virtual PlayStation pad — an X360 report
 // has nothing to carry it. The option stays selectable either way (a profile
 // can legitimately be edited before its platform is), but it says so, and
@@ -496,7 +528,7 @@ function applyBindings(){
 }
 // Flatten the live editor state into the stored/wire profile shape.
 function currentProfile(){
-  var p={platform:platform};
+  var p={useDefault:useDefault?'1':'0',platform:platform};
   ROWS.forEach(function(r){p[r.id]=bindings[r.id];});
   PADS.forEach(function(x){p[x+'mode']=modes[x];p[x+'dir']=dirs[x];});
   return p;
@@ -506,6 +538,15 @@ function currentProfile(){
 // settings existed has no pad entries, and reads as the unclaimed default.
 function loadProfileInto(p){
   platform=p.hasOwnProperty('platform')?p.platform:DEFAULT_PLATFORM;
+  // A game we have never saved starts out following the default rather than
+  // forking a copy of it: under "off unless a game profile is running" most
+  // profiles exist only to turn the controller on, and a fork made for that
+  // reason stops tracking the default the moment it is created. A game that
+  // has been saved keeps whatever it was saved as, and the default profile
+  // itself can never follow anything.
+  useDefault = currentGame!=='' && (PROFILES.hasOwnProperty(currentGame)
+                                      ? p.useDefault==='1'
+                                      : true);
   bindings={};
   ROWS.forEach(function(r){
     bindings[r.id]=p.hasOwnProperty(r.id)?p[r.id]:DEFAULTS[r.id];
@@ -530,7 +571,8 @@ function saveCurrent(){
   msg.type='apply';
   msg.game=currentGame;
   postMsg(msg);
-  renderCombo();  // a newly saved game becomes a pinned entry
+  renderCombo();   // a newly saved game becomes a pinned entry
+  renderInherit(); // and gains a profile that can now be removed
 }
 
 // ---- Unsaved-changes guard ----
@@ -543,21 +585,59 @@ function isDirty(){
 // Run `action`, but if the current profile has unsaved edits, ask first.
 // Every path that would abandon those edits \u2014 switching selection, closing
 // the window \u2014 goes through here rather than duplicating the prompt.
+// One modal serves both prompts rather than two sharing the screen: Escape,
+// the backdrop and the keydown handler all have to know about exactly one
+// thing that can sit on top of everything else, and a second backdrop would
+// have to be taught to every one of them.
+function showModal(mode,title,text){
+  var del=(mode==='delete');
+  document.getElementById('modal-title').textContent=title;
+  document.getElementById('modal-text').textContent=text;
+  document.getElementById('btn-modal-discard').style.display=del?'none':'';
+  document.getElementById('btn-modal-save').style.display=del?'none':'';
+  document.getElementById('btn-modal-delete').style.display=del?'':'none';
+  document.getElementById('modal-backdrop').style.display='flex';
+}
 function guard(action){
   if(!isDirty()){action();return;}
   pendingAction=action;
   var name=currentGame===''?'the default profile':(gameName(currentGame)||'this game');
-  document.getElementById('modal-text').textContent=
-    'You have unsaved changes to '+name+'. Save them before continuing?';
-  document.getElementById('modal-backdrop').style.display='flex';
+  showModal('unsaved','Unsaved changes',
+            'You have unsaved changes to '+name+'. Save them before continuing?');
+}
+function confirmRemove(){
+  if(currentGame==='') return;  // the default profile is not removable
+  showModal('delete','Delete this profile?',
+            'The profile for '+(gameName(currentGame)||'this game')+
+            ' will be deleted. It will go back to default behavior.');
 }
 function resolveModal(choice){
   document.getElementById('modal-backdrop').style.display='none';
   var action=pendingAction;
   pendingAction=null;
   if(choice==='cancel') return;
+  // Delete opens on its own rather than in front of a pending action, so there
+  // is never one waiting behind it to run afterwards.
+  if(choice==='delete'){removeCurrent();return;}
   if(choice==='save') saveCurrent();
   if(action) action();
+}
+// Drop the selected game's profile and fall back to the default. Edits in
+// flight go with it — the user just said to throw the profile away, so asking
+// again about unsaved changes to it would be asking about nothing.
+function removeCurrent(){
+  if(currentGame==='') return;
+  var gone=currentGame;
+  var p={}; for(var k in PROFILES) if(k!==gone) p[k]=PROFILES[k];
+  PROFILES=p;
+  // An entry that existed only because a profile pointed at it goes with the
+  // profile. Left behind it stops being pinned, and the only section it could
+  // then appear in is the one labelled INSTALLED GAMES, which it never was.
+  if(gameMissing(gone))
+    GAMES=GAMES.filter(function(g){return g.id!==gone;});
+  postMsg({type:'delete',game:gone});
+  selectGame('');
+  renderCombo();  // it stops being a pinned entry
 }
 )HTML"
 // Second split, same C2026 limit as above — the script outgrew one literal
@@ -599,7 +679,7 @@ function renderCombo(){
     html+='<div class="combo-section-label">PROFILES</div><div class="combo-list">';
     if(showDefault)
       html+=itemHTML('','Default (all other games)');
-    pinned.forEach(function(g){html+=itemHTML(g.id,g.name);});
+    pinned.forEach(function(g){html+=itemHTML(g.id,g.name,g.missing==='1');});
     html+='</div>';
   }
 
@@ -611,7 +691,7 @@ function renderCombo(){
     }).slice(0,50);  // a two-letter query can match hundreds; cap the DOM work
     if(matches.length){
       html+='<div class="combo-section-label">INSTALLED GAMES</div><div class="combo-list">';
-      matches.forEach(function(g){html+=itemHTML(g.id,g.name);});
+      matches.forEach(function(g){html+=itemHTML(g.id,g.name,g.missing==='1');});
       html+='</div>';
     } else if(!pinned.length&&!showDefault){
       html+='<div class="combo-empty">No games match "'+escapeHTML(comboQuery)+'"</div>';
@@ -620,9 +700,15 @@ function renderCombo(){
 
   results.innerHTML=html;
 }
-function itemHTML(id,name){
+function itemHTML(id,name,missing){
   var cls='combo-item'+(id===currentGame?' active':'');
-  return '<div class="'+cls+'" onclick="pickGame(\''+id+'\')">'+escapeHTML(name)+'</div>';
+  var badge=missing?'<span class="combo-badge">NOT INSTALLED</span>':'';
+  return '<div class="'+cls+'" onclick="pickGame(\''+id+'\')">'+escapeHTML(name)+badge+'</div>';
+}
+// True for a picker entry that exists only because a profile refers to it.
+function gameMissing(gameId){
+  for(var i=0;i<GAMES.length;i++) if(GAMES[i].id===gameId) return GAMES[i].missing==='1';
+  return false;
 }
 function escapeHTML(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
@@ -678,7 +764,31 @@ function setPlatform(value){
   // have to be rebuilt rather than left as they are.
   renderModeSelects();
 }
+// The checkbox belongs to a game, never to the default profile, and while it
+// is ticked everything below it describes controls this game is not using —
+// so the settings are dimmed and inert, and "reset this profile" with them.
+function renderInherit(){
+  var group=document.getElementById('inherit-group');
+  if(group) group.style.display=(currentGame==='')?'none':'';
+  var box=document.getElementById('use-default');
+  if(box) box.checked=useDefault;
+  var settings=document.getElementById('settings');
+  if(settings) settings.className=(currentGame!==''&&useDefault)?'inherited':'';
+  var reset=document.getElementById('btn-reset');
+  if(reset) reset.disabled=(currentGame!==''&&useDefault);
+  // Only offered for a game that actually has something saved — a game merely
+  // being looked at has no profile to delete. Hidden rather than disabled so
+  // the footer holds nothing red at all for the default profile.
+  var del=document.getElementById('btn-delete');
+  if(del) del.style.display=
+    (currentGame!==''&&PROFILES.hasOwnProperty(currentGame))?'':'none';
+  // Says why this game is reachable at all when it is not on the PC, and that
+  // its profile is being kept rather than quietly ignored.
+  var miss=document.getElementById('missing-note');
+  if(miss) miss.style.display=(currentGame!==''&&gameMissing(currentGame))?'':'none';
+}
 function renderModeSelects(){
+  renderInherit();
   fillSelect('platform',PLATFORM_OPTIONS,platform);
   var opts=modeOptions();
   PADS.forEach(function(padId){
@@ -780,6 +890,13 @@ document.getElementById('btn-close').onclick=function(){guard(function(){postMsg
 document.getElementById('btn-reset').onclick=resetDefaults;
 document.getElementById('btn-apply').onclick=applyBindings;
 
+document.getElementById('use-default').addEventListener('change',function(e){
+  useDefault=e.target.checked;
+  // Unticking must stop any capture already running underneath the dimmed
+  // rows, and reveals whatever controls this game had stored all along.
+  cancelListening();
+  renderInherit();
+});
 document.getElementById('platform').addEventListener('change',function(e){
   setPlatform(e.target.value);
 });
@@ -816,6 +933,8 @@ document.addEventListener('mousedown',function(){
 document.getElementById('btn-modal-cancel').onclick=function(){resolveModal('cancel');};
 document.getElementById('btn-modal-discard').onclick=function(){resolveModal('discard');};
 document.getElementById('btn-modal-save').onclick=function(){resolveModal('save');};
+document.getElementById('btn-modal-delete').onclick=function(){resolveModal('delete');};
+document.getElementById('btn-delete').onclick=confirmRemove;
 
 // Title bar drag: mousedown on titlebar (but not on buttons) tells C++ to start a window move.
 document.getElementById('titlebar').addEventListener('mousedown',function(e){
@@ -1054,11 +1173,42 @@ RemapWindow::~RemapWindow() {
     s_instance = nullptr;
 }
 
+void RemapWindow::AppendOrphanProfiles() {
+    m_installedCount = m_games.size();
+
+    // An enumeration that found nothing at all looks exactly like every game
+    // having been uninstalled, and is by far the likelier of the two — a COM
+    // failure reading shell:AppsFolder, or a Start Menu walk that came back
+    // empty. Flagging every profile as missing on that evidence would invite
+    // the user to delete the lot, so say nothing rather than guess.
+    if (m_games.empty()) return;
+
+    for (const auto& [id, profile] : m_gameProfiles) {
+        bool installed = false;
+        for (size_t i = 0; i < m_installedCount; ++i) {
+            if (_wcsicmp(m_games[i].id.c_str(), id.c_str()) == 0) {
+                installed = true;
+                break;
+            }
+        }
+        if (installed) continue;
+
+        WinInstalledGame orphan;
+        orphan.id = id;
+        // What displayName was stored for: naming a profile at a moment the
+        // installed list cannot. Profiles written before it existed fall back
+        // to the raw id — poor prose, but it still identifies the game.
+        orphan.name = profile.displayName.empty() ? id : Utf8ToWide(profile.displayName);
+        m_games.push_back(std::move(orphan));
+    }
+}
+
 void RemapWindow::Open(HINSTANCE hInst, ControllerManager* mgr,
                        const ControllerProfile& cfg,
                        std::vector<WinInstalledGame> games,
                        std::map<std::wstring, ControllerProfile> gameProfiles,
-                       std::function<void(const std::wstring&, const ControllerProfile&)> applyCallback)
+                       std::function<void(const std::wstring&, const ControllerProfile&)> applyCallback,
+                       std::function<void(const std::wstring&)> deleteCallback)
 {
     // If already open, just bring it to front.
     if (m_hwnd) {
@@ -1068,6 +1218,8 @@ void RemapWindow::Open(HINSTANCE hInst, ControllerManager* mgr,
         m_games         = std::move(games);
         m_gameProfiles  = std::move(gameProfiles);
         m_applyCallback = std::move(applyCallback);
+        m_deleteCallback = std::move(deleteCallback);
+        AppendOrphanProfiles();
         ShowWindow(m_hwnd, SW_SHOW);
         BringToFront();
         SendInitState();
@@ -1091,6 +1243,8 @@ void RemapWindow::Open(HINSTANCE hInst, ControllerManager* mgr,
     m_games        = std::move(games);
     m_gameProfiles = std::move(gameProfiles);
     m_applyCallback = std::move(applyCallback);
+    m_deleteCallback = std::move(deleteCallback);
+    AppendOrphanProfiles();
     s_instance     = this;
 
     // --- Register window class (once) ---
@@ -1273,6 +1427,26 @@ static std::string JsonStr(const std::string& json, const std::string& key) {
     return end != std::string::npos ? json.substr(pos, end - pos) : std::string{};
 }
 
+// The page names a game by its index into m_games (ASCII decimal), never by
+// the raw game id — that can hold non-ASCII this hand-rolled channel would
+// mangle, and backslashes this parser does not unescape. Shared by "apply"
+// and "delete" so there is one place that decides what a valid index is.
+//
+// False for an absent index, which "apply" reads as the default profile, and
+// equally for a malformed or out-of-range one, which is a message we did not
+// send and neither handler acts on.
+static bool GameIndexFrom(const std::string& value, size_t count, size_t& out) {
+    if (value.empty()) return false;
+    size_t idx = 0;
+    for (char c : value) {
+        if (c < '0' || c > '9') return false;
+        idx = idx * 10 + static_cast<size_t>(c - '0');
+    }
+    if (idx >= count) return false;
+    out = idx;
+    return true;
+}
+
 void RemapWindow::OnWebMessage(const std::wstring& raw) {
     // All message content is ASCII; narrow explicitly to suppress C4244.
     std::string msg;
@@ -1340,6 +1514,9 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
         // The page sends one flat object: a binding per row id, plus a mode
         // per pad.
         ControllerProfile cfg;
+        // The page sends "0" for the default profile, which cannot follow
+        // anything — so this needs no special case for it here.
+        cfg.useDefaultMappings = JsonStr(msg, "useDefault") == "1";
         cfg.platform = JsonStr(msg, "platform") == "ps" ? ControllerPlatform::PlayStation
                                                         : ControllerPlatform::Xbox;
         cfg.back.l4 = BackButtonBinding::FromId(JsonStr(msg, "L4"));
@@ -1353,29 +1530,33 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
         cfg.leftPad.scrollDir  = ScrollDirectionFromId(JsonStr(msg, "LPADdir"));
         cfg.rightPad.scrollDir = ScrollDirectionFromId(JsonStr(msg, "RPADdir"));
 
-        // "game" is an index into m_games (ASCII decimal), never the raw
-        // game id — that can contain non-ASCII characters this hand-rolled
-        // channel would mangle, and backslashes this parser does not unescape.
-        const std::string gameIdx = JsonStr(msg, "game");
-        if (gameIdx.empty()) {
-            m_config = cfg;
-            if (m_applyCallback) m_applyCallback(L"", cfg);
+        size_t idx = 0;
+        if (!GameIndexFrom(JsonStr(msg, "game"), m_games.size(), idx)) {
+            // No index at all is the default profile; a bad one is a message
+            // we did not send and will not act on.
+            if (JsonStr(msg, "game").empty()) {
+                m_config = cfg;
+                if (m_applyCallback) m_applyCallback(L"", cfg);
+            }
         } else {
-            size_t idx = 0;
-            bool valid = true;
-            for (char c : gameIdx) {
-                if (c < '0' || c > '9') { valid = false; break; }
-                idx = idx * 10 + static_cast<size_t>(c - '0');
-            }
-            if (valid && idx < m_games.size()) {
-                const std::wstring& gameId = m_games[idx].id;
-                // Captured here because this is the only place both halves
-                // are in hand: the picker knows the friendly name, and
-                // nothing downstream re-enumerates the installed list.
-                cfg.displayName = WideToUtf8(m_games[idx].name);
-                m_gameProfiles[gameId] = cfg;
-                if (m_applyCallback) m_applyCallback(gameId, cfg);
-            }
+            const std::wstring& gameId = m_games[idx].id;
+            // Captured here because this is the only place both halves
+            // are in hand: the picker knows the friendly name, and
+            // nothing downstream re-enumerates the installed list.
+            cfg.displayName = WideToUtf8(m_games[idx].name);
+            m_gameProfiles[gameId] = cfg;
+            if (m_applyCallback) m_applyCallback(gameId, cfg);
+        }
+
+    } else if (type == "delete") {
+        // Never carries an empty index: the page does not offer removal for
+        // the default profile, which has to exist for anything else to fall
+        // back to.
+        size_t idx = 0;
+        if (GameIndexFrom(JsonStr(msg, "game"), m_games.size(), idx)) {
+            const std::wstring& gameId = m_games[idx].id;
+            m_gameProfiles.erase(gameId);
+            if (m_deleteCallback) m_deleteCallback(gameId);
         }
     }
 }
@@ -1407,7 +1588,10 @@ void RemapWindow::SendInitState() {
     // One flat object per profile — the page reads it back the same way, and
     // the narrow JSON reader on this side cannot descend into nesting.
     auto profileJson = [&](const ControllerProfile& p) {
-        return L"{\"platform\":\""
+        return L"{\"useDefault\":\""
+               + std::wstring(p.useDefaultMappings ? L"1" : L"0")
+               + L"\","
+               L"\"platform\":\""
                + std::wstring(p.platform == ControllerPlatform::PlayStation ? L"ps" : L"xbox")
                + L"\","
                L"\"L4\":\"" + wid(p.back.l4) + L"\","
@@ -1453,7 +1637,9 @@ void RemapWindow::SendInitState() {
     for (size_t i = 0; i < m_games.size(); ++i) {
         if (!gamesJson.empty()) gamesJson += L",";
         gamesJson += L"{\"id\":\"" + std::to_wstring(i) + L"\",\"name\":\""
-                   + JsonEscape(m_games[i].name) + L"\"}";
+                   + JsonEscape(m_games[i].name) + L"\""
+                   + (i >= m_installedCount ? L",\"missing\":\"1\"" : L"")
+                   + L"}";
     }
 
     // Profiles: the default plus every game that already has a saved

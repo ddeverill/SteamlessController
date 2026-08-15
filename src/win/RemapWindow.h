@@ -26,10 +26,14 @@ public:
     // overrides already exist for entries in it. applyCallback fires on the
     // UI thread when the user clicks Apply — the game id identifies whichever
     // game was selected, or is empty for the default profile.
+    // deleteCallback fires when the user removes a game's profile; its id is
+    // one that was in gameProfiles, and never empty — the default profile
+    // cannot be removed.
     void Open(HINSTANCE hInst, ControllerManager* mgr, const ControllerProfile& profile,
               std::vector<WinInstalledGame> games,
               std::map<std::wstring, ControllerProfile> gameProfiles,
-              std::function<void(const std::wstring&, const ControllerProfile&)> applyCallback);
+              std::function<void(const std::wstring&, const ControllerProfile&)> applyCallback,
+              std::function<void(const std::wstring&)> deleteCallback);
 
     void BringToFront() const;
     // Open in the sense that matters to callers: visible and being edited.
@@ -45,6 +49,13 @@ public:
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+
+    // Add a picker entry for every saved profile whose game is not in the
+    // installed list, so a profile for something no longer on the PC can
+    // still be reached — to look at, or to delete. Sets m_installedCount to
+    // where the real entries stop, which is the only thing separating the two
+    // kinds afterwards.
+    void AppendOrphanProfiles();
 
     void CreateWebViewAsync(HWND hwnd);
     void OnControllerReady(ICoreWebView2Controller* ctrl);
@@ -68,9 +79,17 @@ private:
     HINSTANCE         m_hInst   = nullptr;
     ControllerManager* m_mgr    = nullptr;
     ControllerProfile m_config;
-    std::vector<WinInstalledGame>                 m_games;
+    // Installed games first, then one entry per orphaned profile. The page
+    // names games by index into this, so appending rather than keeping a
+    // second list is what lets an orphan be applied and deleted through the
+    // paths that already existed.
+    std::vector<WinInstalledGame>              m_games;
+    // Where the installed entries stop. Everything at or past it is a profile
+    // whose game we could not find.
+    size_t                                     m_installedCount = 0;
     std::map<std::wstring, ControllerProfile>  m_gameProfiles;
     std::function<void(const std::wstring&, const ControllerProfile&)> m_applyCallback;
+    std::function<void(const std::wstring&)> m_deleteCallback;
     std::function<void()> m_onClose;
 
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_env;
