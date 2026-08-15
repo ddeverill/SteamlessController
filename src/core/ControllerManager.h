@@ -1,6 +1,7 @@
 #pragma once
 #include "BackButtonConfig.h"
 #include "ControllerPlatform.h"
+#include "ModifierTracker.h"
 #include "TrackpadConfig.h"
 #include <atomic>
 #include <functional>
@@ -9,14 +10,17 @@
 #include <string>
 #include <vector>
 
+class IPlatform;
+
 class ControllerManager {
 public:
     using StateChangedFn = std::function<void(bool connected, bool gameModeActive, bool vigemMissing)>;
     // User-facing alert (unexpected disconnect, stall). May fire from a read
-    // thread — the receiver must marshal to its own thread (e.g. PostMessage).
-    using AlertFn = std::function<void(const std::wstring& title, const std::wstring& text)>;
+    // thread — the receiver must marshal to its own thread (e.g. via
+    // IScheduler::Post).
+    using AlertFn = std::function<void(const std::string& title, const std::string& text)>;
 
-    explicit ControllerManager(StateChangedFn onStateChanged);
+    ControllerManager(IPlatform& platform, StateChangedFn onStateChanged);
     ~ControllerManager();
     ControllerManager(const ControllerManager&) = delete;
     ControllerManager& operator=(const ControllerManager&) = delete;
@@ -48,13 +52,14 @@ public:
     // (e.g. Steam) can claim the controller. Safe to call when already disabled.
     void ReleaseDevices();
 
-    // Best-effort lizard restore for crash paths — called from the unhandled-
-    // exception filter installed by the constructor. Takes no locks and joins
-    // no threads. The firmware's own revert timeout remains the final
-    // fallback if this fails or the process dies harder than a C++ exception.
+    // Best-effort lizard restore for crash paths — called from the crash
+    // handler installed by the constructor (IPlatform::InstallCrashHandler).
+    // Takes no locks and joins no threads. The firmware's own revert timeout
+    // remains the final fallback if this fails or the process dies harder
+    // than this handler can react to.
     void EmergencyRestoreAll() noexcept;
 
-    // Whether steam.exe is currently running. Decides if game mode may settle
+    // Whether Steam is currently running. Decides if game mode may settle
     // for a shared handle: a write handle held while Steam is absent belongs to
     // some benign system component, but one held while Steam is running is
     // probably Steam itself, and driving the controller alongside it is worse
@@ -71,16 +76,16 @@ public:
     bool IsGameModeActive()         const;
     const ControllerProfile& GetProfile() const { return m_profile; }
 
-    // Set when a virtual pad could not be created, so the tray can say which
-    // of the two very different problems it was: no bus driver at all (go
-    // install one) or a bus that is present and did not work (a rebranded fork
-    // is the usual reason, and telling the user to install ViGEmBus again
-    // would be wrong). Both are only meaningful after a failed enable.
-    bool                LastPadDriverMissing() const { return m_lastPadDriverMissing; }
-    const std::wstring& LastBusReport()        const { return m_lastBusReport; }
+    // Set when a virtual pad could not be created, so callers can say which
+    // of the two very different problems it was: no bus/driver at all (go
+    // install/enable one) or a bus that is present and did not work. Both are
+    // only meaningful after a failed enable.
+    bool               LastPadDriverMissing() const { return m_lastPadDriverMissing; }
+    const std::string& LastBusReport()        const { return m_lastBusReport; }
 
-    // Called by RemapWindow when a row enters/exits listening state.
-    // Callback fires on the read thread — use PostMessage to marshal to the UI thread.
+    // Called by the remap UI/CLI when a row enters/exits listening state.
+    // Callback fires on the read thread — marshal to the owning thread
+    // (e.g. via IScheduler::Post) before touching UI state from it.
     void StartButtonCapture(std::function<void(const BackButtonBinding&)> callback);
     void StopButtonCapture();
 
@@ -88,7 +93,7 @@ private:
     struct Slot;
 
     void SyncDevices();
-    void OpenSlot(const std::wstring& path);
+    void OpenSlot(const struct HidDeviceInfo& info);
     GameModeOutcome EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
                                        uint32_t stateWaitMs);
     void DisableGameModeSlot(Slot& slot);
@@ -98,16 +103,23 @@ private:
     void ReadLoop(Slot* slot);
     void NotifyStateChanged(bool padUnavailable = false);
 
+    // Sends the key/mouse/touch-keyboard event a binding stands for. Gamepad
+    // actions reach the virtual pad instead and are ignored here. Returns
+    // whether anything was sent.
+    bool SendPaddleInput(const BackButtonBinding& binding, bool down);
+
     // Pushes the current profile's pad settings into one slot's trackpads and
     // its virtual controller. Shared by SetProfile and slot creation.
     void ApplyPadSettings(Slot& slot);
 
+    IPlatform&                         m_platform;
+    ModifierTracker                    m_modifiers;
     StateChangedFn                     m_onStateChanged;
     AlertFn                            m_alertFn;
     std::vector<std::unique_ptr<Slot>> m_slots;
     bool                               m_steamPresent         = false;
     bool                               m_lastPadDriverMissing = false;
-    std::wstring                       m_lastBusReport;
+    std::string                        m_lastBusReport;
     ControllerProfile                  m_profile;
 
     std::atomic<bool>                            m_capturing{false};

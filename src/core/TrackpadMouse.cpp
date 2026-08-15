@@ -1,7 +1,6 @@
 #include "TrackpadMouse.h"
-#include "InputInjection.h"
-#include "steam/SteamController.h"
-#include <Windows.h>
+#include "core/iface/IInputInjector.h"
+#include "SteamController.h"
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
@@ -29,8 +28,8 @@ void TrackpadMouse::Reset() {
 void TrackpadMouse::NoteMovementSent(long px, bool haveCursor,
                                      long cursorX, long cursorY) {
     if (!haveCursor) {
-        // No cursor position to compare against — GetCursorPos itself fails
-        // off the input desktop, and InputInjection reports that separately.
+        // No cursor position to compare against — the injector's own
+        // diagnostics (IInputInjector::LogEnvironment) cover why.
         m_haveRef    = false;
         m_travelSent = 0;
         return;
@@ -45,8 +44,7 @@ void TrackpadMouse::NoteMovementSent(long px, bool haveCursor,
 
     m_travelSent += px;
     if (m_travelSent >= STUCK_TRAVEL_PX) {
-        POINT at{ m_refCursorX, m_refCursorY };
-        InputInjection::LogCursorNotMoving(m_travelSent, at);
+        m_injector.LogCursorNotMoving(m_travelSent, m_refCursorX, m_refCursorY);
         m_travelSent = 0;  // re-arm; the log call rate-limits itself
     }
 }
@@ -57,30 +55,24 @@ void TrackpadMouse::UpdatePointer(int dx, int dy) {
     // would discard slow movement entirely.
     const float fx = static_cast<float>(dx) * SENSITIVITY + m_remX;
     const float fy = static_cast<float>(dy) * SENSITIVITY + m_remY;
-    const LONG  ix = static_cast<LONG>(fx);
-    const LONG  iy = static_cast<LONG>(fy);
+    const long  ix = static_cast<long>(fx);
+    const long  iy = static_cast<long>(fy);
     m_remX = fx - static_cast<float>(ix);
     m_remY = fy - static_cast<float>(iy);
     if (ix == 0 && iy == 0) return;
 
-    INPUT input{};
-    input.type       = INPUT_MOUSE;
-    input.mi.dwFlags = MOUSEEVENTF_MOVE;
-    input.mi.dx      = ix;
-    input.mi.dy      = iy;
-    // Read the cursor before sending: SendInput queues the event rather than
-    // applying it, so a position read straight after would still be the old one.
-    POINT      before{};
-    const bool haveBefore = GetCursorPos(&before) != FALSE;
-    if (InputInjection::Send(input, "trackpad-move")) {
+    // Read the cursor before sending: the move is queued rather than applied
+    // immediately, so a position read straight after would still be the old one.
+    const CursorProbe before = m_injector.ProbeCursor();
+    if (m_injector.MoveMouse(static_cast<int>(ix), static_cast<int>(iy))) {
         NoteMovementSent(std::labs(ix) + std::labs(iy),
-                         haveBefore, before.x, before.y);
+                         before.available, before.x, before.y);
     }
 }
 
-// Wheel events are quantised to WHEEL_DELTA notches, which is much coarser
-// than a pad frame's movement — so the same remainder-carry the pointer path
-// uses is what makes slow scrolling work at all here.
+// Wheel events are quantised to 120-unit notches, which is much coarser than
+// a pad frame's movement — so the same remainder-carry the pointer path uses
+// is what makes slow scrolling work at all here.
 //
 // Takes raw pad deltas (Y growing upward). Natural scrolling means the
 // content follows the finger, which is the opposite sense to the wheel's own
@@ -91,25 +83,13 @@ void TrackpadMouse::UpdateScroll(int dx, int dy) {
 
     const float fy = static_cast<float>(dy) * SCROLL_SENSITIVITY + m_scrollRemY;
     const float fx = static_cast<float>(dx) * SCROLL_SENSITIVITY + m_scrollRemX;
-    const LONG  iy = static_cast<LONG>(fy);
-    const LONG  ix = static_cast<LONG>(fx);
+    const long  iy = static_cast<long>(fy);
+    const long  ix = static_cast<long>(fx);
     m_scrollRemY = fy - static_cast<float>(iy);
     m_scrollRemX = fx - static_cast<float>(ix);
 
-    if (iy != 0) {
-        INPUT input{};
-        input.type         = INPUT_MOUSE;
-        input.mi.dwFlags   = MOUSEEVENTF_WHEEL;
-        input.mi.mouseData = static_cast<DWORD>(iy);
-        InputInjection::Send(input, "trackpad-scroll");
-    }
-    if (ix != 0) {
-        INPUT input{};
-        input.type         = INPUT_MOUSE;
-        input.mi.dwFlags   = MOUSEEVENTF_HWHEEL;
-        input.mi.mouseData = static_cast<DWORD>(ix);
-        InputInjection::Send(input, "trackpad-hscroll");
-    }
+    if (iy != 0 || ix != 0)
+        m_injector.Scroll(static_cast<int>(iy), static_cast<int>(ix));
 }
 
 void TrackpadMouse::Update(const uint8_t* buf, size_t n) {

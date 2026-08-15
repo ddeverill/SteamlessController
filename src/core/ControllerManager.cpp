@@ -1,17 +1,17 @@
 #include "ControllerManager.h"
 #include "EventLog.h"
-#include "InputInjection.h"
-#include "ViGEmBusInfo.h"
-#include "VirtualController.h"
+#include "SteamController.h"
 #include "TrackpadMouse.h"
-#include "KeyInput.h"
-#include "TouchKeyboard.h"
-#include "steam/SteamController.h"
-#include <Windows.h>
+#include "iface/IHidDevice.h"
+#include "iface/IInputInjector.h"
+#include "iface/IOnScreenKeyboard.h"
+#include "iface/IPlatform.h"
+#include "iface/IVirtualGamepad.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <memory>
@@ -23,10 +23,14 @@
 // ---------------------------------------------------------------------------
 
 struct ControllerManager::Slot {
-    std::wstring                       path;
+    explicit Slot(IInputInjector& injector) : leftPad(injector), rightPad(injector) {}
+    Slot(const Slot&) = delete;
+    Slot& operator=(const Slot&) = delete;
+
+    std::string                        path;
     SteamController::Transport         transport = SteamController::Transport::Unknown;
     std::unique_ptr<SteamController>   sc;
-    std::unique_ptr<VirtualController> vc;
+    std::unique_ptr<IVirtualGamepad>   vc;
     // One per physical pad — they are configured independently.
     TrackpadMouse                      leftPad;
     TrackpadMouse                      rightPad;
@@ -37,8 +41,8 @@ struct ControllerManager::Slot {
 
     // When this slot was last found silent. Probing for a state report costs
     // the full timeout on an empty puck slot, and the acquire path retries in
-    // a rapid burst — without this, three empty slots would block the UI
-    // thread for that timeout on every one of those attempts.
+    // a rapid burst — without this, three empty slots would block the caller
+    // for that timeout on every one of those attempts.
     std::chrono::steady_clock::time_point lastSilentAt{};
 
     // What each bindable button is currently holding down, so leaving game
@@ -118,10 +122,6 @@ struct ControllerManager::Slot {
     static constexpr int kPostReleaseGraceFrames = 45;  // ~180ms at 250Hz
     int hapticRightReleaseGrace = 0;
     int hapticLeftReleaseGrace  = 0;
-
-    Slot() = default;
-    Slot(const Slot&) = delete;
-    Slot& operator=(const Slot&) = delete;
 };
 
 // ---------------------------------------------------------------------------
@@ -174,48 +174,23 @@ static bool DetectCapture(const uint8_t* cur, const uint8_t* prev,
 }
 
 // ---------------------------------------------------------------------------
-// Crash-path lizard restore
-//
-// If the process dies with the controller in game mode, the user is left
-// without input until the firmware's own lizard revert timeout kicks in
-// (several seconds). The unhandled-exception filter shortens that window by
-// best-effort sending the lizard restore reports on the way down. It must not
-// take locks or join threads — another thread may be wedged holding them.
-// ---------------------------------------------------------------------------
-
-static ControllerManager* g_crashRestoreInstance = nullptr;
-
-static LONG WINAPI CrashRestoreFilter(EXCEPTION_POINTERS*) {
-    if (g_crashRestoreInstance)
-        g_crashRestoreInstance->EmergencyRestoreAll();
-    // Let Windows Error Reporting / debuggers see the crash as usual.
-    return EXCEPTION_CONTINUE_SEARCH;
-}
-
-void ControllerManager::EmergencyRestoreAll() noexcept {
-    for (auto& slot : m_slots) {
-        if (!slot || !slot->sc) continue;
-        // Stop the read loop cooperatively (no join) so its keepalive can't
-        // re-clear the mappings we are about to restore.
-        slot->readRunning = false;
-        slot->sc->EmergencyLizardRestore();
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-ControllerManager::ControllerManager(StateChangedFn onStateChanged)
-    : m_onStateChanged(std::move(onStateChanged))
+ControllerManager::ControllerManager(IPlatform& platform, StateChangedFn onStateChanged)
+    : m_platform(platform)
+    , m_modifiers(platform.Input())
+    , m_onStateChanged(std::move(onStateChanged))
 {
-    g_crashRestoreInstance = this;
-    SetUnhandledExceptionFilter(CrashRestoreFilter);
+    // If the process dies with the controller in game mode, the user is left
+    // without input until the firmware's own lizard revert timeout kicks in
+    // (several seconds). The crash handler shortens that window by best-effort
+    // sending the lizard restore reports on the way down.
+    m_platform.InstallCrashHandler([this] { EmergencyRestoreAll(); });
     SyncDevices();
 }
 
 ControllerManager::~ControllerManager() {
-    g_crashRestoreInstance = nullptr;
     for (auto& slot : m_slots) {
         // Stop the read loop and virtual controller first (same as DisableGameModeSlot
         // but without the gameModeActive guard — we always want to restore lizard mode).
@@ -245,13 +220,14 @@ void ControllerManager::OnDeviceChange() {
 }
 
 ControllerManager::GameModeOutcome ControllerManager::EnableGameMode(uint32_t stateWaitMs) {
-    // Once the absence of a bus driver is established, re-establish it the
+    // Once the absence of a bus/driver is established, re-establish it the
     // cheap way. Finding out by attempting an enable costs the user's
     // controller: each attempt claims the device exclusively and toggles
     // lizard mode off and back on, and the retry that waits for a driver to
     // be installed would otherwise do that every 30 seconds for as long as
-    // the machine goes without one. Enumerating touches no device at all.
-    if (m_lastPadDriverMissing && ViGEmBusInfo::Enumerate().empty()) {
+    // the machine goes without one. Checking BusAvailable() touches no
+    // controller device at all.
+    if (m_lastPadDriverMissing && !m_platform.Gamepads().BusAvailable()) {
         NotifyStateChanged(true);
         return GameModeOutcome::VirtualPadUnavailable;
     }
@@ -275,7 +251,7 @@ ControllerManager::GameModeOutcome ControllerManager::EnableGameMode(uint32_t st
     //
     // Blocked outranks a missing pad: contention is the one of the two a
     // device cycle can still resolve, so if any slot is contested the caller
-    // should hear about that rather than settle into the slow ViGEm retry.
+    // should hear about that rather than settle into the slow retry.
     if (anyBlocked)        return GameModeOutcome::Blocked;
     if (anyPadUnavailable) return GameModeOutcome::VirtualPadUnavailable;
     return GameModeOutcome::NoActiveController;
@@ -290,8 +266,8 @@ void ControllerManager::DisableGameMode() {
 void ControllerManager::ReleaseDevices() {
     if (!m_slots.empty())
         EventLog::Write("RELEASE: closing all device handles (intentional handoff)");
-    // Disable game mode first — enables lizard mode and tears down ViGEm while
-    // we still hold write access to the device.
+    // Disable game mode first — enables lizard mode and tears down the
+    // virtual pad while we still hold write access to the device.
     DisableGameMode();
     // Close all device handles. Slot destructors call SteamController::Close()
     // which closes the HID handle, allowing another process to open it.
@@ -333,15 +309,8 @@ void ControllerManager::SetProfile(const ControllerProfile& profile) {
         ApplyPadSettings(*slot);
 }
 
-// Sends the key or mouse event a binding stands for. Gamepad actions reach the
-// virtual pad instead and are ignored here. Returns whether anything was sent.
-static bool SendPaddleInput(const BackButtonBinding& binding, bool down) {
-    auto sendMouse = [](DWORD flags) {
-        INPUT inp{};
-        inp.type       = INPUT_MOUSE;
-        inp.mi.dwFlags = flags;
-        InputInjection::Send(inp, "paddle-mouse");
-    };
+bool ControllerManager::SendPaddleInput(const BackButtonBinding& binding, bool down) {
+    IInputInjector& input = m_platform.Input();
 
     switch (binding.kind) {
     case BackButtonBinding::Kind::Key:
@@ -349,44 +318,37 @@ static bool SendPaddleInput(const BackButtonBinding& binding, bool down) {
         // already held when the key arrives, up after it so the shortcut is
         // never briefly the unmodified key on the way out.
         if (down) {
-            SendModifiers(binding.mods, true);
-            SendKeyInput(binding.code, true);
+            m_modifiers.Apply(binding.mods, true);
+            input.Key(binding.code, true);
         } else {
-            SendKeyInput(binding.code, false);
-            SendModifiers(binding.mods, false);
+            input.Key(binding.code, false);
+            m_modifiers.Apply(binding.mods, false);
         }
         return true;
 
     case BackButtonBinding::Kind::MouseButton: {
-        INPUT inp{};
-        inp.type = INPUT_MOUSE;
         switch (static_cast<BackButtonBinding::MouseButtonCode>(binding.code)) {
         case BackButtonBinding::MouseButtonCode::Middle:
-            inp.mi.dwFlags = down ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
-            break;
-        // The thumb buttons share one event pair and are told apart by mouseData.
+            input.Button(MouseButtonId::Middle, down);
+            return true;
         case BackButtonBinding::MouseButtonCode::X1:
-            inp.mi.dwFlags   = down ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
-            inp.mi.mouseData = XBUTTON1;
-            break;
+            input.Button(MouseButtonId::X1, down);
+            return true;
         case BackButtonBinding::MouseButtonCode::X2:
-            inp.mi.dwFlags   = down ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
-            inp.mi.mouseData = XBUTTON2;
-            break;
+            input.Button(MouseButtonId::X2, down);
+            return true;
         default:
             return false;
         }
-        InputInjection::Send(inp, "paddle-mouse");
-        return true;
     }
 
     case BackButtonBinding::Kind::Action:
         if (binding.IsAction(BackButtonAction::LeftMouseButton)) {
-            sendMouse(down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP);
+            input.Button(MouseButtonId::Left, down);
             return true;
         }
         if (binding.IsAction(BackButtonAction::RightMouseButton)) {
-            sendMouse(down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP);
+            input.Button(MouseButtonId::Right, down);
             return true;
         }
         if (binding.IsAction(BackButtonAction::TouchKeyboard)) {
@@ -397,7 +359,7 @@ static bool SendPaddleInput(const BackButtonBinding& binding, bool down) {
             // both land back here and do nothing. Auto-repeat cannot reach it
             // either, being restricted to Kind::Key, so leaning on the paddle
             // will not flap the keyboard.
-            if (down) TouchKeyboard::Toggle();
+            if (down) m_platform.Osk().Toggle();
             return true;
         }
         return false;
@@ -429,14 +391,14 @@ void ControllerManager::StopButtonCapture() {
 // ---------------------------------------------------------------------------
 
 void ControllerManager::SyncDevices() {
-    auto livePaths = SteamController::EnumerateAll();
+    auto liveDevices = SteamController::EnumerateAll(m_platform.Hid());
 
     auto it = m_slots.begin();
     while (it != m_slots.end()) {
-        bool alive = std::any_of(livePaths.begin(), livePaths.end(),
-            [&](const auto& p) { return p == (*it)->path; });
+        bool alive = std::any_of(liveDevices.begin(), liveDevices.end(),
+            [&](const auto& info) { return info.path == (*it)->path; });
         if (!alive) {
-            EventLog::Write("DISCONNECT: OS removed device (transport=%s, gameMode=%d, lastBattery=%d%%) %ls",
+            EventLog::Write("DISCONNECT: OS removed device (transport=%s, gameMode=%d, lastBattery=%d%%) %s",
                             SteamController::TransportName((*it)->transport),
                             (*it)->gameModeActive ? 1 : 0,
                             (*it)->lastBatteryPercent, (*it)->path.c_str());
@@ -445,15 +407,15 @@ void ControllerManager::SyncDevices() {
             // slots before cycling) stay quiet.
             if ((*it)->gameModeActive && m_alertFn) {
                 if ((*it)->transport == SteamController::Transport::Bluetooth)
-                    m_alertFn(L"Controller disconnected",
-                              L"The Bluetooth connection dropped — the controller "
-                              L"powered off, went to sleep, or is out of range. "
-                              L"Press the Steam button to reconnect.");
+                    m_alertFn("Controller disconnected",
+                              "The Bluetooth connection dropped — the controller "
+                              "powered off, went to sleep, or is out of range. "
+                              "Press the Steam button to reconnect.");
                 else
-                    m_alertFn(L"Controller disconnected",
-                              L"The USB device was removed. Check the cable or dongle — "
-                              L"if this happens randomly, Windows USB power saving may be "
-                              L"suspending the port.");
+                    m_alertFn("Controller disconnected",
+                              "The USB device was removed. Check the cable or dongle — "
+                              "if this happens randomly, USB power saving may be "
+                              "suspending the port.");
             }
             DisableGameModeSlot(**it);
             it = m_slots.erase(it);
@@ -462,25 +424,25 @@ void ControllerManager::SyncDevices() {
         }
     }
 
-    for (auto const& path : livePaths) {
+    for (auto const& info : liveDevices) {
         bool already = std::any_of(m_slots.begin(), m_slots.end(),
-            [&](const auto& s) { return s->path == path; });
+            [&](const auto& s) { return s->path == info.path; });
         if (!already)
-            OpenSlot(path);
+            OpenSlot(info);
     }
 
     NotifyStateChanged();
 }
 
-void ControllerManager::OpenSlot(const std::wstring& path) {
-    auto slot = std::make_unique<Slot>();
-    slot->path      = path;
-    slot->transport = SteamController::TransportFromPath(path);
-    slot->sc        = std::make_unique<SteamController>();
-    if (!slot->sc->Open(path)) return;
+void ControllerManager::OpenSlot(const HidDeviceInfo& info) {
+    auto slot = std::make_unique<Slot>(m_platform.Input());
+    slot->path      = info.path;
+    slot->transport = SteamController::TransportFrom(info);
+    slot->sc        = std::make_unique<SteamController>(m_platform.Hid());
+    if (!slot->sc->Open(info.path)) return;
 
-    EventLog::Write("CONNECT: transport=%s %ls",
-                    SteamController::TransportName(slot->transport), path.c_str());
+    EventLog::Write("CONNECT: transport=%s %s",
+                    SteamController::TransportName(slot->transport), info.path.c_str());
 
     m_slots.push_back(std::move(slot));
 
@@ -512,14 +474,14 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
 
     if (!slot.sc->WaitForStateReport(stateWaitMs)) {
         slot.lastSilentAt = std::chrono::steady_clock::now();
-        EventLog::Write("GAMEMODE: no state reports from slot (transport=%s), skipping %ls",
+        EventLog::Write("GAMEMODE: no state reports from slot (transport=%s), skipping %s",
                         SteamController::TransportName(slot.transport), slot.path.c_str());
         return GameModeOutcome::NoActiveController;
     }
 
     const auto claim = slot.sc->ClaimGameModeAccess();
     if (claim == SteamController::AccessClaim::Failed) {
-        EventLog::Write("GAMEMODE: device reopen failed %ls", slot.path.c_str());
+        EventLog::Write("GAMEMODE: device reopen failed %s", slot.path.c_str());
         return GameModeOutcome::Blocked;
     }
     if (claim == SteamController::AccessClaim::Shared) {
@@ -529,29 +491,30 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
         // would put two processes on the same controller, both driving lizard
         // mode; refusing is what escalates to a device cycle that takes the
         // handle back. Only settle for shared when Steam is absent and the
-        // holder is some benign system component.
+        // holder is some benign system component. (On Linux this branch is
+        // the only one that ever runs — see IHidDevice::Reopen.)
         if (m_steamPresent) {
             EventLog::Write("GAMEMODE: exclusive claim blocked — another process holds a "
-                            "write handle (Steam running) %ls",
+                            "write handle (Steam running) %s",
                             slot.path.c_str());
             return GameModeOutcome::Blocked;
         }
-        EventLog::Write("GAMEMODE: exclusive claim unavailable; using shared access %ls",
+        EventLog::Write("GAMEMODE: exclusive claim unavailable; using shared access %s",
                         slot.path.c_str());
     }
     if (!slot.sc->DisableLizardMode()) {
-        EventLog::Write("GAMEMODE: DisableLizardMode failed %ls", slot.path.c_str());
+        EventLog::Write("GAMEMODE: DisableLizardMode failed %s", slot.path.c_str());
         slot.sc->ReleaseToShared();
         return GameModeOutcome::Blocked;
     }
 
-    slot.vc = std::make_unique<VirtualController>(
+    slot.vc = m_platform.Gamepads().Create(
         m_profile.platform,
         [sc = slot.sc.get()](uint8_t largeMotor, uint8_t smallMotor) {
             if (sc->IsOpen()) sc->SetRumble(largeMotor, smallMotor);
         });
     if (!slot.vc->IsValid()) {
-        EventLog::Write("GAMEMODE: ViGEm virtual controller failed (stage=%s, err=0x%08X, driverMissing=%d)",
+        EventLog::Write("GAMEMODE: virtual controller failed (stage=%s, err=0x%08X, driverMissing=%d)",
                         slot.vc->FailStage(), slot.vc->LastError(),
                         slot.vc->IsDriverMissing() ? 1 : 0);
         // The line above says a call failed; this one says what the machine
@@ -559,7 +522,7 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
         // otherwise inexplicable connect failure and the hardest thing to
         // guess at from the outside, so it goes in the log every time.
         if (!slot.vc->BusReport().empty()) {
-            EventLog::Write("GAMEMODE: %ls", slot.vc->BusReport().c_str());
+            EventLog::Write("GAMEMODE: %s", slot.vc->BusReport().c_str());
             m_lastBusReport = slot.vc->BusReport();
         }
         m_lastPadDriverMissing = slot.vc->IsDriverMissing();
@@ -582,12 +545,12 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
     if (m_profile.platform == ControllerPlatform::PlayStation)
         slot.sc->SetImuEnabled(true);
 
-    EventLog::Write("GAMEMODE: enabled %ls", slot.path.c_str());
+    EventLog::Write("GAMEMODE: enabled %s", slot.path.c_str());
     // Takeover is the moment users report the trackpad arriving dead, and what
     // decides whether injection can land is whatever window happens to be in
     // front right then — so record it here rather than reconstructing it later.
     if (m_profile.leftPad.ClaimedForDesktop() || m_profile.rightPad.ClaimedForDesktop())
-        InputInjection::LogEnvironment("game mode taken");
+        m_platform.Input().LogEnvironment("game mode taken");
     slot.gameModeActive = true;
     slot.leftPad.Reset();
     slot.rightPad.Reset();
@@ -599,7 +562,7 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
 
 void ControllerManager::DisableGameModeSlot(Slot& slot) {
     if (!slot.gameModeActive) return;
-    EventLog::Write("GAMEMODE: disabled %ls", slot.path.c_str());
+    EventLog::Write("GAMEMODE: disabled %s", slot.path.c_str());
     StopReadLoop(slot);
     if (slot.sc->IsOpen())
         slot.sc->SetRumble(0, 0);
@@ -611,6 +574,20 @@ void ControllerManager::DisableGameModeSlot(Slot& slot) {
     // Reopen shared so Steam can obtain write access — game mode is no longer active.
     slot.sc->ReleaseToShared();
     slot.gameModeActive = false;
+}
+
+// ---------------------------------------------------------------------------
+// Crash-path lizard restore
+// ---------------------------------------------------------------------------
+
+void ControllerManager::EmergencyRestoreAll() noexcept {
+    for (auto& slot : m_slots) {
+        if (!slot || !slot->sc) continue;
+        // Stop the read loop cooperatively (no join) so its keepalive can't
+        // re-clear the mappings we are about to restore.
+        slot->readRunning = false;
+        slot->sc->EmergencyLizardRestore();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -666,22 +643,22 @@ void ControllerManager::ReadLoop(Slot* slot) {
             if (!stalled
                     && std::chrono::steady_clock::now() - lastReport > kStallThreshold) {
                 stalled = true;
-                EventLog::Write("STALL: no reports for 4s (lastBattery=%d%%) %ls",
+                EventLog::Write("STALL: no reports for 4s (lastBattery=%d%%) %s",
                                 slot->lastBatteryPercent, slot->path.c_str());
                 if (m_alertFn) {
-                    wchar_t text[256];
+                    char text[256];
                     if (slot->lastBatteryPercent >= 0)
-                        swprintf_s(text,
-                                   L"No input received for several seconds — the battery may "
-                                   L"be dead, the controller may have gone to sleep, or the "
-                                   L"wireless signal dropped. Last battery report: %d%%.",
+                        std::snprintf(text, sizeof(text),
+                                   "No input received for several seconds — the battery may "
+                                   "be dead, the controller may have gone to sleep, or the "
+                                   "wireless signal dropped. Last battery report: %d%%.",
                                    slot->lastBatteryPercent);
                     else
-                        swprintf_s(text,
-                                   L"No input received for several seconds — the battery may "
-                                   L"be dead, the controller may have gone to sleep, or the "
-                                   L"wireless signal dropped.");
-                    m_alertFn(L"Controller not responding", text);
+                        std::snprintf(text, sizeof(text),
+                                   "No input received for several seconds — the battery may "
+                                   "be dead, the controller may have gone to sleep, or the "
+                                   "wireless signal dropped.");
+                    m_alertFn("Controller not responding", text);
                 }
             }
             continue;
@@ -716,7 +693,7 @@ void ControllerManager::ReadLoop(Slot* slot) {
         // Report shape, once per read loop. The trackpad mouse needs a longer
         // report than the haptics do, so a transport that reports short loses
         // cursor movement while every buzz still fires — the same thing a
-        // blocked SendInput looks like from the user's side, and only this
+        // blocked injection looks like from the user's side, and only this
         // line tells them apart.
         if (!loggedShape) {
             loggedShape = true;
@@ -726,7 +703,7 @@ void ControllerManager::ReadLoop(Slot* slot) {
             if (n < 30)
                 EventLog::Write("REPORT: %zu bytes is under the 30 the trackpad "
                                 "mouse requires — trackpad movement is being "
-                                "dropped before it reaches SendInput", n);
+                                "dropped before it reaches the input injector", n);
         }
 
         if (slot->vc) slot->vc->Update(buf, n, m_profile);
@@ -930,7 +907,7 @@ void ControllerManager::ReadLoop(Slot* slot) {
         }
 
         // Deliver back paddles and pad clicks bound to a key or a mouse button.
-        // These go out through SendInput rather than the virtual pad.
+        // These go out through the input injector rather than the virtual pad.
         // Edge-detected so each press sends exactly one down and each release
         // exactly one up.
         //
@@ -963,9 +940,9 @@ void ControllerManager::ReadLoop(Slot* slot) {
                 if (e.cur) {
                     if (SendPaddleInput(e.binding, true)) {
                         slot->paddleHeld[i]     = e.binding;
-                        slot->paddleRepeatGap[i] = KeyRepeatInterval();
+                        slot->paddleRepeatGap[i] = m_platform.Input().KeyRepeatInterval();
                         slot->paddleRepeatAt[i]  =
-                            std::chrono::steady_clock::now() + KeyRepeatDelay();
+                            std::chrono::steady_clock::now() + m_platform.Input().KeyRepeatDelay();
                     }
                 } else {
                     // Release what the press sent, not what the binding says
@@ -977,7 +954,7 @@ void ControllerManager::ReadLoop(Slot* slot) {
         }
 
         // Auto-repeat held keys. A physical keyboard repeats because its own
-        // firmware keeps sending the key, not because Windows tracks the key as
+        // firmware keeps sending the key, not because the OS tracks the key as
         // down, so injected input has to reproduce that itself. Keys only —
         // mice do not repeat when held, and gamepad bindings are held state in
         // the pad report, where a repeat would be meaningless.
@@ -991,11 +968,11 @@ void ControllerManager::ReadLoop(Slot* slot) {
             // The base key only. Modifiers stay held across the repeat, which
             // is exactly what a real keyboard does — holding Ctrl+K repeats
             // the K, it does not re-press Ctrl.
-            SendKeyInput(held.code, true);
+            m_platform.Input().Key(held.code, true);
             slot->paddleRepeatAt[i] = now + slot->paddleRepeatGap[i];
         }
 
-        // Button capture for the remap window (press-to-bind).
+        // Button capture for the remap UI/CLI (press-to-bind).
         // Only fires on a rising edge to avoid repeat-triggering on hold.
         if (m_capturing.load() && hasPrev) {
             BackButtonAction captured;

@@ -3,6 +3,8 @@
 #include <cstddef>
 #include "TrackpadConfig.h"
 
+class IInputInjector;
+
 // Desktop input driven by ONE physical trackpad. One instance per pad, so the
 // two pads can be configured independently — this used to be a single instance
 // switched between pads by a bool, which structurally could not represent
@@ -13,6 +15,8 @@
 // same whatever this pad's movement mode is.
 class TrackpadMouse {
 public:
+    explicit TrackpadMouse(IInputInjector& injector) : m_injector(injector) {}
+
     // Which physical pad to read. Set once when the slot is created.
     void SetPad(bool isLeftPad) { m_isLeftPad = isLeftPad; }
     void SetMode(TrackpadMode mode);
@@ -26,6 +30,8 @@ private:
     void UpdateScroll(int dx, int dy);
     void NoteMovementSent(long px, bool haveCursor, long cursorX, long cursorY);
 
+    IInputInjector& m_injector;
+
     bool            m_isLeftPad = false;
     TrackpadMode    m_mode      = TrackpadMode::None;
     ScrollDirection m_scrollDir = ScrollDirection::Natural;
@@ -38,13 +44,15 @@ private:
     float    m_scrollRemX = 0.0f;  // sub-detent scroll carry
     float    m_scrollRemY = 0.0f;
 
-    // Movement Windows accepted, checked against the cursor actually moving.
-    // A refused SendInput reports itself; motion that is accepted and then
-    // discarded — by a cursor clip a game left behind, or a low-level hook
-    // filtering injected input — looks identical to the user and otherwise
-    // leaves no trace at all. Records where the cursor was and how much travel
-    // has been sent since; when the travel adds up and the position has not
-    // changed, that is worth a log line.
+    // Movement the injector accepted, checked against the cursor actually
+    // moving. A refused injection reports itself; motion that is accepted and
+    // then discarded — by a cursor clip a game left behind, or a low-level
+    // hook filtering injected input — looks identical to the user and
+    // otherwise leaves no trace at all. Records where the cursor was and how
+    // much travel has been sent since; when the travel adds up and the
+    // position has not changed, that is worth a log line. Wayland can't
+    // answer where the cursor is at all (ProbeCursor().available is always
+    // false there), so this diagnostic is simply inert on that backend.
     long     m_refCursorX  = 0;
     long     m_refCursorY  = 0;
     bool     m_haveRef     = false;

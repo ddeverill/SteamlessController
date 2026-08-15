@@ -115,7 +115,7 @@ struct ControllerProfile {
     //
     // Deliberately absent from operator== below: it labels the profile, it is
     // not one of the settings the profile applies.
-    std::wstring displayName;
+    std::string displayName;
 
     // Which kind of virtual pad the game sees. Unlike everything else here
     // this cannot be changed in place — the ViGEm target is created as one

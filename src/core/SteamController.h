@@ -1,9 +1,11 @@
 #pragma once
-#include "hid/HidDevice.h"
+#include "core/iface/IHidDevice.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 
 class SteamController {
@@ -14,10 +16,14 @@ public:
     static constexpr uint16_t SC2026_DONGLE_PID = 0x1304; // wireless dongle ("Steam Controller Puck")
     static constexpr uint16_t SC2026_NEREID_PID = 0x1305; // Nereid receiver
 
-    // How the controller is linked to the PC. Bluetooth is detected from the
-    // device interface path (HOGP service GUID / bthenum), the other two by PID.
+    // How the controller is linked to the PC.
     enum class Transport { Unknown, Wired, Dongle, Bluetooth };
-    static Transport   TransportFromPath(const std::wstring& path);
+    // Bluetooth is identified from the backend-reported bus type
+    // (HidDeviceInfo::bus), the other two by PID — see WinHidBackend, which
+    // derives bus from the device-path substrings the original
+    // TransportFromPath used to sniff directly, and LinuxHidBackend, which
+    // reads it straight from HIDIOCGRAWINFO's bustype field.
+    static Transport   TransportFrom(const HidDeviceInfo& info);
     static const char* TransportName(Transport t);
 
     // HID Usage Page for the vendor collection that carries all game input.
@@ -143,20 +149,20 @@ public:
 
     // ---------------------------------------------------------------------------
 
-    SteamController() = default;
+    explicit SteamController(IHidBackend& backend);
     ~SteamController() { Close(); }
     SteamController(const SteamController&) = delete;
     SteamController& operator=(const SteamController&) = delete;
 
-    // Returns paths for all live Steam Controller interfaces (probes each one).
-    static std::vector<std::wstring> EnumerateAll();
+    // Returns info for all live Steam Controller interfaces (probes each one).
+    static std::vector<HidDeviceInfo> EnumerateAll(IHidBackend& backend);
 
     // Find and open the first live vendor HID interface.
     bool Open();
     // Open a specific path returned by EnumerateAll (no probe needed).
-    bool Open(const std::wstring& path);
+    bool Open(const std::string& path);
     void Close();
-    bool IsOpen() const { return m_device.IsOpen(); }
+    bool IsOpen() const { return m_device && m_device->IsOpen(); }
 
     // Returns true for any report ID that carries controller state.
     static bool IsStateReportId(uint8_t id) {
@@ -177,6 +183,7 @@ public:
 
     // Prefer a write-exclusive handle, falling back to shared access when a
     // compatible system handle is already open. Call before DisableLizardMode().
+    // On Linux this always returns Exclusive — see IHidDevice::Reopen.
     AccessClaim ClaimGameModeAccess();
 
     // Reopen the device handle with full share flags, allowing other processes
@@ -235,7 +242,8 @@ private:
                                   uint16_t repeatCount, int16_t gainDb);
     bool SendTrackpadCommandOutput(uint8_t side, uint8_t command, int8_t gainDb);
 
-    HidDevice         m_device;
+    IHidBackend&                 m_backend;
+    std::unique_ptr<IHidDevice>  m_device;
     std::thread       m_rumbleThread;
     std::atomic<bool> m_running{false};
 

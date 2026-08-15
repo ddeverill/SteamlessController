@@ -19,22 +19,37 @@
 // moment; all of them are equally "that game".
 class SteamAppLocator {
 public:
-    // Re-reads Steam's manifests. Cheap — a handful of small text files — but
-    // it is disk I/O, so callers drive it at meaningful moments rather than
-    // on every lookup. Safe to call when Steam is not installed at all.
+    // caseInsensitivePaths: true on Windows (its filesystems fold case),
+    // false on Linux (case-sensitive filesystems — folding there produced
+    // false matches, a real bug the original Windows-only version carried
+    // over unnoticed since it never ran anywhere case-sensitive).
+    explicit SteamAppLocator(bool caseInsensitivePaths) : m_caseInsensitive(caseInsensitivePaths) {}
+
+    // Candidate Steam install roots, in probe order (IPlatformPaths::SteamRoots()).
+    void SetRoots(std::vector<std::string> roots) { m_roots = std::move(roots); }
+
+    // Re-reads Steam's manifests across every configured root. Cheap — a
+    // handful of small text files — but it is disk I/O, so callers drive it
+    // at meaningful moments rather than on every lookup. Safe to call when
+    // Steam is not installed at all, or when SetRoots() has not been called.
     void Refresh();
 
     // The app id whose install directory contains this executable, or empty.
     // Longest match wins, so a library that happens to live inside another
     // game's folder still resolves to the more specific one.
-    std::wstring AppIdForPath(const std::wstring& exePath) const;
+    std::string AppIdForPath(const std::string& exePath) const;
 
     bool   Empty() const { return m_installDirs.empty(); }
     size_t Count() const { return m_installDirs.size(); }
 
 private:
-    // appid -> absolute install directory, lowercased with a trailing
+    std::string NormalizeDir(std::string dir) const;
+    std::string FoldKey(std::string s) const;
+
+    bool                               m_caseInsensitive;
+    std::vector<std::string>          m_roots;
+    // appid -> absolute install directory, normalized with a trailing
     // separator so a prefix test cannot match a sibling folder whose name
     // merely starts the same way ("Portal" against "Portal 2").
-    std::map<std::wstring, std::wstring> m_installDirs;
+    std::map<std::string, std::string> m_installDirs;
 };

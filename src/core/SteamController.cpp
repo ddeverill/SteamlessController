@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <cwctype>
 
 // ---------------------------------------------------------------------------
 // Internal helper: build a 64-byte feature report command buffer.
@@ -52,31 +51,23 @@ static constexpr uint8_t HAPTIC_COMMAND_CLICK = 2;
 // Open / Close
 // ---------------------------------------------------------------------------
 
-std::vector<std::wstring> SteamController::EnumerateAll() {
-    std::vector<std::wstring> result;
+std::vector<HidDeviceInfo> SteamController::EnumerateAll(IHidBackend& backend) {
+    std::vector<HidDeviceInfo> result;
     for (uint16_t pid : { SC2026_PID, SC2026_BT_PID, SC2026_DONGLE_PID, SC2026_NEREID_PID })
-        for (auto const& path : HidDevice::Enumerate(
-                 VALVE_VID, pid, VENDOR_USAGE_PAGE, CONTROLLER_USAGE))
-            result.push_back(path);
+        for (auto& info : backend.Enumerate(VALVE_VID, pid, VENDOR_USAGE_PAGE, CONTROLLER_USAGE))
+            result.push_back(std::move(info));
     return result;
 }
 
-SteamController::Transport SteamController::TransportFromPath(const std::wstring& path) {
-    std::wstring p = path;
-    for (auto& c : p) c = static_cast<wchar_t>(towlower(c));
-
-    // BLE (HID over GATT) paths carry the HOGP service GUID; classic
-    // Bluetooth HID enumerates under bthenum. Check these before PID — the
-    // BT path also embeds a PID token, and transport must win.
-    if (p.find(L"{00001812-0000-1000-8000-00805f9b34fb}") != std::wstring::npos ||
-        p.find(L"bthledevice") != std::wstring::npos ||
-        p.find(L"bthenum") != std::wstring::npos)
+SteamController::Transport SteamController::TransportFrom(const HidDeviceInfo& info) {
+    // Bluetooth transport is identified from the backend's own bus-type
+    // report, not from the PID — a BLE path also embeds a PID token, and
+    // transport must win. Wired/dongle/Nereid are then told apart by PID.
+    if (info.bus == HidBus::Bluetooth)
         return Transport::Bluetooth;
-    if (p.find(L"pid_1304") != std::wstring::npos ||
-        p.find(L"pid_1305") != std::wstring::npos)
+    if (info.pid == SC2026_DONGLE_PID || info.pid == SC2026_NEREID_PID)
         return Transport::Dongle;
-    if (p.find(L"pid_1302") != std::wstring::npos ||
-        p.find(L"pid_1303") != std::wstring::npos)
+    if (info.pid == SC2026_PID || info.pid == SC2026_BT_PID)
         return Transport::Wired;
     return Transport::Unknown;
 }
@@ -90,16 +81,18 @@ const char* SteamController::TransportName(Transport t) {
     }
 }
 
+SteamController::SteamController(IHidBackend& backend) : m_backend(backend) {}
+
 bool SteamController::Open() {
-    auto paths = EnumerateAll();
-    if (paths.empty()) {
+    auto infos = EnumerateAll(m_backend);
+    if (infos.empty()) {
         printf("No Steam Controller found (wired PID=%04X or dongle PID=%04X).\n",
                SC2026_PID, SC2026_DONGLE_PID);
         return false;
     }
 
-    for (auto const& path : paths) {
-        if (!Open(path)) continue;
+    for (auto const& info : infos) {
+        if (!Open(info.path)) continue;
 
         uint8_t report[64]{};
         const size_t n = ReadReport(report, sizeof(report), 500);
@@ -113,9 +106,11 @@ bool SteamController::Open() {
     return false;
 }
 
-bool SteamController::Open(const std::wstring& path) {
-    if (!m_device.Open(path)) return false;
-    printf("[SC] Opened controller at path %ls\n", path.c_str());
+bool SteamController::Open(const std::string& path) {
+    auto device = m_backend.Create();
+    if (!device->Open(path)) return false;
+    m_device = std::move(device);
+    printf("[SC] Opened controller at path %s\n", path.c_str());
     return true;
 }
 
@@ -124,7 +119,7 @@ void SteamController::Close() {
         m_rumbleThread.join();
     ClearTrackpadHaptics();
     SetRumble(0, 0);
-    m_device.Close();
+    if (m_device) m_device->Close();
 }
 
 bool SteamController::WaitForStateReport(uint32_t timeoutMs) {
@@ -157,14 +152,16 @@ bool SteamController::WaitForStateReport(uint32_t timeoutMs) {
 SteamController::AccessClaim SteamController::ClaimGameModeAccess() {
     // The read thread must already be stopped before calling Reopen — the
     // caller (EnableGameModeSlot) calls this before starting the read loop.
-    if (m_device.Reopen(FILE_SHARE_READ))
+    if (m_device->Reopen(HidShare::ExclusiveWrite))
         return AccessClaim::Exclusive;
 
     // Windows components and controller utilities may keep a compatible write
     // handle open even when Steam is not running. Shared access is sufficient
     // for feature reports and raw input, so retain the working pre-v1.8 behavior
     // instead of rejecting game mode solely because exclusivity is unavailable.
-    if (m_device.Reopen(FILE_SHARE_READ | FILE_SHARE_WRITE))
+    // On Linux this is the only branch that ever runs — hidraw devices always
+    // report Shared, since the platform has no exclusivity concept at all.
+    if (m_device->Reopen(HidShare::Shared))
         return AccessClaim::Shared;
 
     return AccessClaim::Failed;
@@ -173,7 +170,7 @@ SteamController::AccessClaim SteamController::ClaimGameModeAccess() {
 void SteamController::ReleaseToShared() {
     // The read thread must already be stopped before calling Reopen — the
     // caller (DisableGameModeSlot) stops the read loop before calling this.
-    m_device.Reopen(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    m_device->Reopen(HidShare::Shared);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +183,7 @@ bool SteamController::DisableLizardMode() {
     BuildCmd(buf, CMD_CLEAR_DIGITAL_MAPPINGS);
     {
         std::lock_guard<std::mutex> lock(m_writeMutex);
-        if (!m_device.SendFeatureReport(buf, sizeof(buf))) {
+        if (!m_device->SendFeatureReport(buf, sizeof(buf))) {
             printf("Failed to send CLEAR_DIGITAL_MAPPINGS.\n");
             return false;
         }
@@ -197,7 +194,7 @@ bool SteamController::DisableLizardMode() {
     BuildCmd(buf, CMD_SET_SETTINGS, imuOff, sizeof(imuOff));
     {
         std::lock_guard<std::mutex> lock(m_writeMutex);
-        if (!m_device.SendFeatureReport(buf, sizeof(buf))) {
+        if (!m_device->SendFeatureReport(buf, sizeof(buf))) {
             printf("Failed to disable IMU mode.\n");
             return false;
         }
@@ -210,7 +207,7 @@ bool SteamController::DisableLizardMode() {
     BuildCmd(buf, CMD_SET_SETTINGS, settingsPayload, sizeof(settingsPayload));
     {
         std::lock_guard<std::mutex> lock(m_writeMutex);
-        if (!m_device.SendFeatureReport(buf, sizeof(buf))) {
+        if (!m_device->SendFeatureReport(buf, sizeof(buf))) {
             printf("Failed to send SET_SETTINGS_VALUES.\n");
             return false;
         }
@@ -226,7 +223,7 @@ bool SteamController::SendKeepalive() {
     uint8_t buf[64];
     BuildCmd(buf, CMD_CLEAR_DIGITAL_MAPPINGS);
     std::lock_guard<std::mutex> lock(m_writeMutex);
-    if (!m_device.SendFeatureReport(buf, sizeof(buf)))
+    if (!m_device->SendFeatureReport(buf, sizeof(buf)))
         return false;
 
     const uint8_t settingsPayload[] = {
@@ -234,16 +231,16 @@ bool SteamController::SendKeepalive() {
         SETTING_RIGHT_TRACKPAD_MODE, 0x00, 0x00,
     };
     BuildCmd(buf, CMD_SET_SETTINGS, settingsPayload, sizeof(settingsPayload));
-    return m_device.SendFeatureReport(buf, sizeof(buf));
+    return m_device->SendFeatureReport(buf, sizeof(buf));
 }
 
 void SteamController::EmergencyLizardRestore() noexcept {
-    if (!m_device.IsOpen()) return;
+    if (!m_device || !m_device->IsOpen()) return;
     uint8_t buf[64];
     BuildCmd(buf, CMD_SET_DEFAULT_MAPPINGS);
-    m_device.SendFeatureReport(buf, sizeof(buf));
+    m_device->SendFeatureReport(buf, sizeof(buf));
     BuildCmd(buf, CMD_LOAD_DEFAULT_SETTINGS);
-    m_device.SendFeatureReport(buf, sizeof(buf));
+    m_device->SendFeatureReport(buf, sizeof(buf));
 }
 
 bool SteamController::EnableLizardMode() {
@@ -263,11 +260,11 @@ bool SteamController::EnableLizardMode() {
     std::lock_guard<std::mutex> lock(m_writeMutex);
 
     BuildCmd(buf, CMD_SET_DEFAULT_MAPPINGS);
-    if (!m_device.SendFeatureReport(buf, sizeof(buf)))
+    if (!m_device->SendFeatureReport(buf, sizeof(buf)))
         return false;
 
     BuildCmd(buf, CMD_LOAD_DEFAULT_SETTINGS);
-    return m_device.SendFeatureReport(buf, sizeof(buf));
+    return m_device->SendFeatureReport(buf, sizeof(buf));
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +272,7 @@ bool SteamController::EnableLizardMode() {
 // ---------------------------------------------------------------------------
 
 size_t SteamController::ReadReport(uint8_t* buffer, size_t size, uint32_t timeoutMs) {
-    return m_device.ReadInputReport(buffer, size, timeoutMs);
+    return m_device ? m_device->ReadInputReport(buffer, size, timeoutMs) : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +289,7 @@ bool SteamController::SetImuEnabled(bool enabled) {
     uint8_t buf[64];
     BuildCmd(buf, CMD_SET_SETTINGS, payload, sizeof(payload));
     std::lock_guard<std::mutex> lock(m_writeMutex);
-    if (!m_device.SendFeatureReport(buf, sizeof(buf))) {
+    if (!m_device->SendFeatureReport(buf, sizeof(buf))) {
         printf("Failed to %s IMU mode.\n", enabled ? "enable" : "disable");
         return false;
     }
@@ -416,7 +413,7 @@ void SteamController::ClearTrackpadHaptics() {
 // ---------------------------------------------------------------------------
 
 bool SteamController::SendRumbleOutput(uint16_t leftSpeed, uint16_t rightSpeed) {
-    if (!m_device.IsOpen()) return false;
+    if (!m_device || !m_device->IsOpen()) return false;
 
     uint8_t buf[10] = {};
     buf[0] = OUT_HAPTIC_RUMBLE;
@@ -428,12 +425,12 @@ bool SteamController::SendRumbleOutput(uint16_t leftSpeed, uint16_t rightSpeed) 
     buf[9] = 0x00;                 // right gain
 
     std::lock_guard<std::mutex> lock(m_writeMutex);
-    return m_device.WriteOutputReport(buf, sizeof(buf));
+    return m_device->WriteOutputReport(buf, sizeof(buf));
 }
 
 bool SteamController::SendTrackpadPulseOutput(uint8_t side, uint16_t onUs, uint16_t offUs,
                                                uint16_t repeatCount, int16_t gainDb) {
-    if (!m_device.IsOpen()) return false;
+    if (!m_device || !m_device->IsOpen()) return false;
 
     uint8_t buf[10] = {};
     buf[0] = OUT_HAPTIC_PULSE;
@@ -444,11 +441,11 @@ bool SteamController::SendTrackpadPulseOutput(uint8_t side, uint16_t onUs, uint1
     WriteU16LE(buf + 8, static_cast<uint16_t>(gainDb));
 
     std::lock_guard<std::mutex> lock(m_writeMutex);
-    return m_device.WriteOutputReport(buf, sizeof(buf));
+    return m_device->WriteOutputReport(buf, sizeof(buf));
 }
 
 bool SteamController::SendTrackpadCommandOutput(uint8_t side, uint8_t command, int8_t gainDb) {
-    if (!m_device.IsOpen()) return false;
+    if (!m_device || !m_device->IsOpen()) return false;
 
     uint8_t buf[4] = {};
     buf[0] = OUT_HAPTIC_COMMAND;
@@ -457,7 +454,7 @@ bool SteamController::SendTrackpadCommandOutput(uint8_t side, uint8_t command, i
     buf[3] = static_cast<uint8_t>(gainDb);
 
     std::lock_guard<std::mutex> lock(m_writeMutex);
-    return m_device.WriteOutputReport(buf, sizeof(buf));
+    return m_device->WriteOutputReport(buf, sizeof(buf));
 }
 
 // ---------------------------------------------------------------------------
