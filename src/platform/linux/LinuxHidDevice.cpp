@@ -68,12 +68,24 @@ bool LinuxHidDevice::SendFeatureReport(const uint8_t* data, size_t size) {
     struct Buf { uint8_t data[64]; } buf{};
     if (size > sizeof(buf.data)) size = sizeof(buf.data);
     memcpy(buf.data, data, size);
-    if (ioctl(m_fd, HIDIOCSFEATURE(size), &buf) < 0) {
-        fprintf(stderr, "SendFeatureReport(reportId=0x%02X cmd=0x%02X) failed: %s\n",
-                buf.data[0], size > 1 ? buf.data[1] : 0, strerror(errno));
-        return false;
+
+    // The controller's firmware occasionally still be processing the
+    // previous feature report when this one's SET_REPORT lands on the
+    // control endpoint, which it answers with a STALL (surfaced here as
+    // EPIPE) rather than queuing it — observed in practice as one command in
+    // a back-to-back sequence (e.g. disable-lizard-mode's second or third
+    // call) failing while its neighbors succeed. Harmless and transient,
+    // unlike every other failure this function can hit, so it alone is
+    // worth a few milliseconds of retry rather than failing the whole
+    // sequence over firmware that was simply still catching up.
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (ioctl(m_fd, HIDIOCSFEATURE(size), &buf) >= 0) return true;
+        if (errno != EPIPE) break;
+        usleep(4000 << attempt);  // 4ms, 8ms, 16ms
     }
-    return true;
+    fprintf(stderr, "SendFeatureReport(reportId=0x%02X cmd=0x%02X) failed: %s\n",
+            buf.data[0], size > 1 ? buf.data[1] : 0, strerror(errno));
+    return false;
 }
 
 size_t LinuxHidDevice::ReadInputReport(uint8_t* buffer, size_t size, uint32_t timeoutMs) {
