@@ -2,6 +2,7 @@
 #include "EventLog.h"
 #include "SteamController.h"
 #include "TrackpadMouse.h"
+#include "iface/IDeviceReclaimer.h"
 #include "iface/IHidDevice.h"
 #include "iface/IInputInjector.h"
 #include "iface/IOnScreenKeyboard.h"
@@ -489,20 +490,36 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
     if (claim == SteamController::AccessClaim::Shared) {
         // Someone else holds a write handle. While Steam is running it is
         // most likely Steam's — but nothing here can tell one holder from
-        // another, so the message says only what is actually known. Proceeding
-        // would put two processes on the same controller, both driving lizard
-        // mode; refusing is what escalates to a device cycle that takes the
-        // handle back. Only settle for shared when Steam is absent and the
-        // holder is some benign system component. (On Linux this branch is
-        // the only one that ever runs — see IHidDevice::Reopen.)
-        if (m_steamPresent) {
+        // another, so the message says only what is actually known. Refusing
+        // only makes sense where it leads somewhere: on a platform with a
+        // working reclaimer, it is what escalates to a device cycle that
+        // takes the handle back. Without one, refusing whenever Steam is
+        // merely running would just permanently lock out every auto mode
+        // built to hold the controller during a Steam game — the one thing
+        // a reclaimer can't fix here, since hidraw's shared access was never
+        // a lock to break in the first place. (On Linux this branch is the
+        // only one that ever runs, and its reclaimer is never Available() —
+        // see IHidDevice::Reopen and NullDeviceReclaimer.)
+        if (m_steamPresent && m_platform.Reclaimer().Available()) {
             EventLog::Write("GAMEMODE: exclusive claim blocked — another process holds a "
                             "write handle (Steam running) %s",
                             slot.path.c_str());
             return GameModeOutcome::Blocked;
         }
-        EventLog::Write("GAMEMODE: exclusive claim unavailable; using shared access %s",
-                        slot.path.c_str());
+        if (m_steamPresent) {
+            // Proceeding deliberately: Steam is running and may still be
+            // driving this same node via its own Steam Input if the user
+            // hasn't disabled that for this controller — the write conflict
+            // that risks is on them to avoid, not something refusing here
+            // could have prevented anyway.
+            EventLog::Write("GAMEMODE: Steam is running with no way to reclaim the device here; "
+                            "proceeding on shared access — disable Steam Input for this "
+                            "controller if it starts fighting Steam for it %s",
+                            slot.path.c_str());
+        } else {
+            EventLog::Write("GAMEMODE: exclusive claim unavailable; using shared access %s",
+                            slot.path.c_str());
+        }
     }
     if (!slot.sc->DisableLizardMode()) {
         EventLog::Write("GAMEMODE: DisableLizardMode failed %s", slot.path.c_str());
