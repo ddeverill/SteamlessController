@@ -2,7 +2,7 @@
 // that values written before modifiers existed still decode to exactly what
 // they used to mean. Those old values live in real users' registries, so
 // "it compiles" is not evidence that their paddles still work.
-#include "app/BackButtonConfig.h"
+#include "core/BackButtonConfig.h"
 #include <cstdio>
 
 namespace {

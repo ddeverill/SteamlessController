@@ -17,7 +17,7 @@
 // still stamped 1.21.442.0. Enumerating the interface is the only check that
 // answers the question the app actually asks at runtime.
 
-#include "app/ViGEmBusInfo.h"
+#include "platform/win/ViGEmBusInfo.h"
 
 #include <cstdio>
 

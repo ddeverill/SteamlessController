@@ -3,18 +3,54 @@
   "configurePresets": [
     {
       "name": "release",
-      "displayName": "Release",
+      "displayName": "Release (Windows)",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
       }
     },
     {
       "name": "debug",
-      "displayName": "Debug",
+      "displayName": "Debug (Windows)",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Release (Linux)",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "displayName": "Debug (Linux)",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
       }
     }
   ],
@@ -30,6 +66,18 @@
       "configurePreset": "debug",
       "configuration": "Debug",
       "targets": ["SteamlessController"]
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release",
+      "configuration": "Release",
+      "targets": ["steamlesscontrollerd", "steamlessctl"]
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "configuration": "Debug",
+      "targets": ["steamlesscontrollerd", "steamlessctl"]
     }
   ]
 }
