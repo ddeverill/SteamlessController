@@ -118,8 +118,8 @@ static int CycleDevices() {
     // handles were broken and this was not a do-nothing cycle.
     DeviceRestart::CycleResult summary;
 
-    for (const auto& info : infos) {
-        const std::wstring path = Utf8ToWide(info.path);
+    for (const auto& device : infos) {
+        const std::wstring path = Utf8ToWide(device.path);
         DeviceRestart::CycleResult r;
         const bool ok = DeviceRestart::RestartInterfaceDevice(path, r);
 
@@ -211,13 +211,13 @@ static int CycleDevices() {
                 && r.vetoType != PNP_VetoTypeUnknown) {
             CycleLog("%s (transport=%s err=%lu veto=%s '%ls') %ls",
                      DeviceRestart::CycleKindName(r.kind),
-                     SteamController::TransportName(SteamController::TransportFrom(info)),
+                     SteamController::TransportName(SteamController::TransportFrom(device)),
                      r.error, DeviceRestart::VetoTypeName(r.vetoType),
                      r.vetoName.c_str(), path.c_str());
         } else {
             CycleLog("%s (transport=%s err=%lu) %ls",
                      DeviceRestart::CycleKindName(r.kind),
-                     SteamController::TransportName(SteamController::TransportFrom(info)),
+                     SteamController::TransportName(SteamController::TransportFrom(device)),
                      r.error, path.c_str());
         }
 
