@@ -26,10 +26,14 @@ public:
     // overrides already exist for entries in it. applyCallback fires on the
     // UI thread when the user clicks Apply — the game id identifies whichever
     // game was selected, or is empty for the default profile.
+    // deleteCallback fires when the user removes a game's profile; its id is
+    // one that was in gameProfiles, and never empty — the default profile
+    // cannot be removed.
     void Open(HINSTANCE hInst, ControllerManager* mgr, const ControllerProfile& profile,
               std::vector<InstalledGame> games,
               std::map<std::wstring, ControllerProfile> gameProfiles,
-              std::function<void(const std::wstring&, const ControllerProfile&)> applyCallback);
+              std::function<void(const std::wstring&, const ControllerProfile&)> applyCallback,
+              std::function<void(const std::wstring&)> deleteCallback);
 
     void BringToFront() const;
     // Open in the sense that matters to callers: visible and being edited.
@@ -71,6 +75,7 @@ private:
     std::vector<InstalledGame>                 m_games;
     std::map<std::wstring, ControllerProfile>  m_gameProfiles;
     std::function<void(const std::wstring&, const ControllerProfile&)> m_applyCallback;
+    std::function<void(const std::wstring&)> m_deleteCallback;
     std::function<void()> m_onClose;
 
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_env;

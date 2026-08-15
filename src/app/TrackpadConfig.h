@@ -117,6 +117,22 @@ struct ControllerProfile {
     // not one of the settings the profile applies.
     std::wstring displayName;
 
+    // This profile carries no controls of its own and follows the default
+    // profile instead. Meaningful only on a per-game profile — the default has
+    // nothing above it to follow, and never sets this.
+    //
+    // Exists because the "off unless a game profile is running" mode made
+    // profiles routine rather than rare: most now exist only to turn the
+    // controller on for a game, and forking a whole copy of the default's
+    // bindings to say that stranded them the moment the default improved.
+    // Everything below is still stored while this is set, so unticking it in
+    // the UI gives the game back the controls it had.
+    //
+    // False by default: every profile written before this existed had controls
+    // of its own, and reading those back as followers would silently discard
+    // them.
+    bool useDefaultMappings = false;
+
     // Which kind of virtual pad the game sees. Unlike everything else here
     // this cannot be changed in place — the ViGEm target is created as one
     // type or the other — so applying a profile that changes it tears the
@@ -136,7 +152,8 @@ struct ControllerProfile {
     };
 
     bool operator==(const ControllerProfile& o) const {
-        return platform == o.platform
+        return useDefaultMappings == o.useDefaultMappings
+            && platform == o.platform
             && back.l4 == o.back.l4 && back.l5 == o.back.l5
             && back.r4 == o.back.r4 && back.r5 == o.back.r5
             && leftPad == o.leftPad && rightPad == o.rightPad;

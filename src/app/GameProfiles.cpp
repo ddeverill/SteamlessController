@@ -61,6 +61,9 @@ std::map<std::wstring, ControllerProfile> Load() {
         if (!id.empty()) {
             ControllerProfile p;
             p.displayName = ReadSz(child, L"Name");
+            // Absent on every profile written before followers existed, and 0
+            // is "has its own controls" precisely so those keep theirs.
+            p.useDefaultMappings = ReadDw(child, L"UseDefaultMappings", 0) != 0;
             p.platform = ReadDw(child, L"Platform", 0) != 0 ? ControllerPlatform::PlayStation
                                                             : ControllerPlatform::Xbox;
             p.back.l4 = BackButtonBinding::Unpack(ReadDw(child, L"L4", unbound));
@@ -101,6 +104,9 @@ void Save(const std::map<std::wstring, ControllerProfile>& profiles) {
                             KEY_WRITE, nullptr, &child, nullptr) == ERROR_SUCCESS) {
             WriteSz(child, L"Id", id);
             WriteSz(child, L"Name", p.displayName);
+            // The controls below are written either way, so a profile that
+            // stops following the default still has whatever it had before.
+            WriteDw(child, L"UseDefaultMappings", p.useDefaultMappings ? 1 : 0);
             WriteDw(child, L"Platform",
                     p.platform == ControllerPlatform::PlayStation ? 1 : 0);
             WriteDw(child, L"L4", p.back.l4.Pack());
