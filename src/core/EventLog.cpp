@@ -19,6 +19,19 @@ std::string g_dir;
 std::string LogPath()    { return g_dir + "/events.log"; }
 std::string OldLogPath() { return g_dir + "/events.old.log"; }
 
+// MSVC deprecates plain fopen in favor of fopen_s (unused on Linux, where
+// fopen has no such warning) — same per-platform split as localtime_s/_r
+// below.
+FILE* OpenAppend(const std::string& path) {
+#if defined(_WIN32)
+    FILE* f = nullptr;
+    fopen_s(&f, path.c_str(), "a");
+    return f;
+#else
+    return fopen(path.c_str(), "a");
+#endif
+}
+
 // Called with g_mutex held.
 void RotateLocked() {
     if (g_file) {
@@ -37,7 +50,7 @@ bool OpenLocked() {
     fs::create_directories(g_dir, ec);
     // Append mode: another reader (a text editor, support copying the file)
     // can open it concurrently without disturbing our writes.
-    g_file = fopen(LogPath().c_str(), "a");
+    g_file = OpenAppend(LogPath());
     return g_file != nullptr;
 }
 
