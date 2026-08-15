@@ -174,6 +174,18 @@ bool TrayApp::Init(HINSTANCE hInstance) {
         EventLog::Write("PROFILE: foreground watcher could not start — "
                         "per-game profiles will not switch by themselves");
 
+    // Resolve what is in front right now. The watcher above only reports
+    // changes, so without this a user who launches us while already sitting
+    // in a game would be judged against the default profile until they next
+    // switched windows — and with a default that hands the controller back,
+    // that means no controller.
+    //
+    // Selection only, no control decision: the first Steam state is still in
+    // flight on the watcher thread, and deciding against the NoSteam it has
+    // not confirmed yet would be guessing.
+    SelectProfile(MatchProfile(ForegroundWatcher::Current()));
+    PushActiveProfile();
+
     return true;
 }
 
@@ -251,6 +263,22 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 EnsureCycleTaskRegistered();
             SetAutoMode(AutoMode::OffOnlyInGame);
             break;
+        case IDM_MODE_PROFILE:
+            // Same reason as the mode above: this one can be asked to take the
+            // controller while Steam is running it, and that needs the helper.
+            if (!IsProcessElevated())
+                EnsureCycleTaskRegistered();
+            SetAutoMode(AutoMode::OffUnlessProfile);
+            // With nothing to match, this mode holds the controller for
+            // nothing at all. Said once, on the click, because a controller
+            // that has gone quiet and stays quiet is otherwise indisting-
+            // uishable from the app having broken.
+            if (m_gameProfiles.empty() && m_notificationsEnabled)
+                ShowAlertBalloon(L"No game profiles yet",
+                                 L"The controller stays in its own keyboard/mouse mode "
+                                 L"until you add a profile for a game in Customize Controls.",
+                                 BalloonAction::None, NIIF_INFO);
+            break;
         case IDM_STARTUP:
             m_startupEnabled = !m_startupEnabled;
             UpdateStartupRegistration();
@@ -308,6 +336,12 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // Cheap probe — we are only asking whether anything woke up.
             if (m_wantControl)
                 TryAcquireController(WAKE_PROBE_MS);
+        } else if (wp == IDT_RELEASE_GRACE) {
+            KillTimer(m_hwnd, IDT_RELEASE_GRACE);
+            // Re-asked rather than assumed: the grace period exists precisely
+            // so the answer can change while it runs, and coming back to the
+            // game is the case it is here for.
+            if (!WantControlNow()) ReleaseControl();
         } else if (wp == IDT_HEARTBEAT) {
             // Periodic, so not killed — its absence is the signal.
             WriteHeartbeat();
@@ -346,7 +380,8 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 void TrayApp::SetAutoMode(AutoMode mode) {
-    EventLog::Write("MODE: control mode set to %d (0=manual 1=offWhileSteam 2=offOnlyInGame)",
+    EventLog::Write("MODE: control mode set to %d "
+                    "(0=manual 1=offWhileSteam 2=offOnlyInGame 3=offUnlessProfile)",
                     static_cast<int>(mode));
     m_autoMode = mode;
     m_acquireRetries = 0;
@@ -358,7 +393,7 @@ void TrayApp::SetAutoMode(AutoMode mode) {
         // user's back just because they changed mode.
         m_wantControl = m_controller->IsGameModeActive();
     else
-        ApplySteamState(m_steamWatcher.GetState());
+        EvaluateControl();
 }
 
 // ---------------------------------------------------------------------------
@@ -404,68 +439,89 @@ void TrayApp::RefreshSteamApps() {
                     m_steamApps.Count());
 }
 
-void TrayApp::ActivateProfile(const std::wstring& gameId) {
-    if (gameId == m_activeGameId) return;
-
-    const ControllerProfile* profile = &m_defaultProfile;
-    if (!gameId.empty()) {
-        auto it = m_gameProfiles.find(gameId);
-        // A profile deleted between resolving and applying leaves nothing to
-        // switch to; the default is the right answer, not a stale pointer.
-        if (it == m_gameProfiles.end()) return ActivateProfile({});
-        profile = &it->second;
+const ControllerProfile& TrayApp::ActiveProfile() const {
+    if (!m_activeGameId.empty()) {
+        auto it = m_gameProfiles.find(m_activeGameId);
+        if (it != m_gameProfiles.end()) return it->second;
     }
+    return m_defaultProfile;
+}
+
+bool TrayApp::SelectProfile(const std::wstring& gameId) {
+    if (gameId == m_activeGameId) return false;
+
+    // A profile deleted between resolving and selecting leaves nothing to
+    // switch to; the default is the right answer, not a stale id.
+    if (!gameId.empty() && m_gameProfiles.find(gameId) == m_gameProfiles.end())
+        return SelectProfile({});
 
     m_activeGameId = gameId;
     EventLog::Write("PROFILE: switched to %ls",
                     gameId.empty() ? L"the default profile" : gameId.c_str());
-    m_controller->SetProfile(*profile);
+    return true;
+}
 
-    if (gameId.empty()) return;  // returning to the default is not news
+void TrayApp::PushActiveProfile() {
+    const ControllerProfile& profile = ActiveProfile();
+    m_controller->SetProfile(profile);
+
+    if (m_activeGameId.empty()) return;  // returning to the default is not news
+
+    // Announced only when the profile is actually going to run. Pushing
+    // happens before the control decision, so without this the balloon would
+    // promise a game's custom controls at the same moment we hand the
+    // controller back and provide none.
+    if (!WantControlNow()) return;
 
     // Told once per game rather than on every activation. Alt-tabbing out of
     // a game and back in reloads its profile, and a balloon on each round
     // trip would be noise — the point is to confirm the profile was found at
     // all, which the first one does.
-    if (gameId == m_toastedGameId) return;
-    m_toastedGameId = gameId;
+    if (m_activeGameId == m_toastedGameId) return;
+    m_toastedGameId = m_activeGameId;
 
     if (!m_notificationsEnabled) return;
     // Falls back to the id when the profile predates display names being
     // stored; an exe path is poor prose but it still identifies the game.
-    const std::wstring& name = profile->displayName.empty() ? gameId
-                                                            : profile->displayName;
+    const std::wstring& name = profile.displayName.empty() ? m_activeGameId
+                                                           : profile.displayName;
     ShowAlertBalloon(L"Custom controls loaded",
                      L"Custom controller profile for " + name + L" loaded.",
                      BalloonAction::None, NIIF_INFO);
 }
 
 void TrayApp::OnForegroundChanged(const ForegroundIdentity& id) {
-    // Auto Mode owns whether the controller is ours at all. When it has been
-    // yielded there is no input to rebind — Steam is driving the pad — so
-    // there is nothing here to decide.
-    if (!m_controller->IsGameModeActive()) return;
-
+    // Deliberately not gated on the controller already being ours. With a
+    // default profile that can hand the controller back, this is the path
+    // that decides whether we hold the device at all, so it has to keep
+    // running precisely when we do not — otherwise nothing would ever notice
+    // the game that is supposed to take it back.
+    //
     // The customization window edits one profile while another could be
     // running underneath it. Switching out from under the user mid-edit
     // would apply their changes to the wrong game.
     if (m_remapWindow.IsOpen()) return;
 
-    ActivateProfile(MatchProfile(id));
+    if (!SelectProfile(MatchProfile(id))) return;
+    // Only push a profile we are actually going to run. Applying one changes
+    // the pad in place, but a profile whose platform differs rebuilds the
+    // virtual controller outright — so pushing the default on the way out of
+    // a game replugged the pad under the still-running game within a frame,
+    // five seconds before the grace period below had any say in it. Leaving
+    // whatever is live alone until the release really happens is what makes
+    // alt-tabbing back genuinely free.
+    if (WantControlNow()) PushActiveProfile();
+    EvaluateControl();
 }
 
 void TrayApp::RefreshActiveProfile() {
-    if (!m_controller->IsGameModeActive()) {
-        // Nothing of ours is running; drop back so re-acquiring starts from a
-        // known state rather than from whatever was live when control went.
-        ActivateProfile({});
-        return;
-    }
     if (m_remapWindow.IsOpen()) return;
-    ActivateProfile(MatchProfile(ForegroundWatcher::Current()));
+    SelectProfile(MatchProfile(ForegroundWatcher::Current()));
+    if (WantControlNow()) PushActiveProfile();  // see OnForegroundChanged
+    EvaluateControl();
 }
 
-bool TrayApp::WantControl(SteamState state) const {
+bool TrayApp::SteamAllowsControl(SteamState state) const {
     switch (m_autoMode) {
     case AutoMode::OffWhileSteam: return state == SteamState::NoSteam;
     case AutoMode::OffOnlyInGame: return state != SteamState::InGame;
@@ -473,19 +529,84 @@ bool TrayApp::WantControl(SteamState state) const {
     }
 }
 
-void TrayApp::ApplySteamState(SteamState state) {
-    if (m_autoMode == AutoMode::Manual) return;
+// One question per mode, rather than one answer assembled from several
+// settings that override each other — which is what makes the outcome
+// predictable from the mode name alone.
+bool TrayApp::WantControlNow() const {
+    switch (m_autoMode) {
+    case AutoMode::Manual:
+        // The tray toggle is the only authority here, and nothing else may
+        // turn the controller on behind the user's back.
+        return m_wantControl;
 
-    EventLog::Write("AUTO: steam state %d (0=none 1=idle 2=inGame) -> %s",
-                    static_cast<int>(state),
-                    WantControl(state) ? "take control" : "yield");
-    if (WantControl(state)) {
+    case AutoMode::OffUnlessProfile:
+        // A matched profile is the entire test. Deliberately asked without
+        // consulting Steam: the user made a profile for this game, which is
+        // them saying they want us driving it rather than Steam Input, and
+        // the acquire path already knows how to take the device from a live
+        // Steam. With nothing matched we want nothing, so this mode never
+        // contends with Steam except over games it was told to.
+        return !m_activeGameId.empty();
+
+    default:
+        // The Steam-yielding modes, unchanged: Steam's state is the whole
+        // answer, exactly as it has always been.
+        return SteamAllowsControl(m_steamWatcher.GetState());
+    }
+}
+
+void TrayApp::EvaluateControl() {
+    const bool want = WantControlNow();
+    EventLog::Write("CONTROL: want=%d (mode=%d steam=%d profile=%ls)",
+                    want ? 1 : 0, static_cast<int>(m_autoMode),
+                    static_cast<int>(m_steamWatcher.GetState()),
+                    m_activeGameId.empty() ? L"none" : m_activeGameId.c_str());
+
+    if (want) {
+        // Alt-tabbed back before the grace period ran out — the release that
+        // was pending is simply cancelled, and the pad never went anywhere.
+        KillTimer(m_hwnd, IDT_RELEASE_GRACE);
+        // Already ours, or an acquisition is still in flight. Setting
+        // m_wantControl before TryAcquireController below is also what stops
+        // the RefreshActiveProfile call on its success path re-entering here.
+        if (m_wantControl) return;
         m_wantControl    = true;
         m_acquireRetries = 0;
         TryAcquireController();
-    } else {
-        ReleaseControl();
+        return;
     }
+
+    if (!m_wantControl) return;
+
+    // Steam turning up is the one release that cannot wait: the whole point
+    // of yielding is that Steam is about to open the device, and sitting on
+    // it for another few seconds is what it must not do.
+    //
+    // Only the Steam-yielding modes can be releasing for that reason.
+    // OffUnlessProfile releases because the game stopped being in front,
+    // which is precisely the case the grace period exists for — testing
+    // SteamAllowsControl there would find the `false` it returns for every
+    // mode it does not describe and make every release immediate.
+    const bool yieldingToSteam = (m_autoMode == AutoMode::OffWhileSteam
+                               || m_autoMode == AutoMode::OffOnlyInGame)
+                              && !SteamAllowsControl(m_steamWatcher.GetState());
+    if (yieldingToSteam) {
+        ReleaseControl();
+        return;
+    }
+    SetTimer(m_hwnd, IDT_RELEASE_GRACE, RELEASE_GRACE_MS, nullptr);
+}
+
+void TrayApp::ApplySteamState(SteamState state) {
+    if (m_autoMode == AutoMode::Manual) return;
+
+    // The state only. What to do about it is EvaluateControl's to decide and
+    // to log, on the very next line — announcing a verdict here as well is
+    // how this line came to report a yield in a mode that never consults
+    // Steam and had in fact just taken the controller.
+    EventLog::Write("AUTO: steam state %d (0=none 1=idle 2=inGame)",
+                    static_cast<int>(state));
+    EvaluateControl();
 }
 
 // Hand the controller back. Shared by the auto modes yielding to Steam and by
@@ -495,6 +616,7 @@ void TrayApp::ReleaseControl() {
     KillTimer(m_hwnd, IDT_ACQUIRE);
     KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
     KillTimer(m_hwnd, IDT_WAKE_POLL);
+    KillTimer(m_hwnd, IDT_RELEASE_GRACE);
     m_wantControl    = false;
     m_acquireRetries = 0;
     m_lastCycleTick  = 0;
@@ -502,10 +624,13 @@ void TrayApp::ReleaseControl() {
     // One driver notice per attempt, and letting go ends the attempt. Turning
     // Steamless Mode back on is a fresh ask and deserves a fresh answer.
     m_vigemBalloonShown = false;
-    // Whatever game profile was live belongs to a controller we no longer
-    // have. Dropping it now means re-acquiring starts from the default and
-    // re-resolves, rather than resuming a profile for a game long since quit.
-    ActivateProfile({});
+    // Deliberately leaves the selected profile alone. It used to be dropped
+    // here, on the grounds that a profile belongs to a controller we no
+    // longer have — but the selection is now what decides whether we take the
+    // controller in the first place, so clearing it here would erase the
+    // reason we are releasing and call straight back into this function. The
+    // foreground watcher keeps it current whether or not the device is ours,
+    // which is what that reset was standing in for.
     const bool hadControl = m_controller->IsGameModeActive();
     // Good citizen: restore lizard mode and close our HID handles so
     // Steam can claim the controller without contention.
@@ -1046,6 +1171,14 @@ void TrayApp::ShowAlertBalloon(const std::wstring& title, const std::wstring& te
                               BalloonAction action, DWORD infoFlags) {
     m_balloonAction = action;
 
+    // Every balloon the app raises, recorded where it is raised. Notifications
+    // are the one thing this app does that leaves no other trace, so a report
+    // of seeing one twice was otherwise unanswerable — the log could show a
+    // profile loading once and say nothing about how many times Windows drew
+    // the toast. Two lines here means we asked twice; one means Windows drew
+    // it twice, and those want completely different fixes.
+    EventLog::Write("BALLOON: %ls — %ls", title.c_str(), text.c_str());
+
     NOTIFYICONDATAW nid{};
     nid.cbSize      = sizeof(nid);
     nid.hWnd        = m_hwnd;
@@ -1274,9 +1407,12 @@ void TrayApp::LoadSettings() {
         return def;
     };
 
-    // 0 = Manual, 1 = OffWhileSteam, 2 = OffOnlyInGame (old builds stored 0/1).
+    // 0 = Manual, 1 = OffWhileSteam, 2 = OffOnlyInGame, 3 = OffUnlessProfile
+    // (old builds stored 0/1). Anything unrecognised falls back to Manual,
+    // which is the mode that touches nothing on its own.
     const DWORD mode = readDw(L"AutoSteamMode", 0);
-    m_autoMode = mode == 2 ? AutoMode::OffOnlyInGame
+    m_autoMode = mode == 3 ? AutoMode::OffUnlessProfile
+               : mode == 2 ? AutoMode::OffOnlyInGame
                : mode == 1 ? AutoMode::OffWhileSteam
                            : AutoMode::Manual;
     const bool isPlayStation = readDw(L"ControllerPlatform", 0) != 0;
@@ -1468,6 +1604,8 @@ void TrayApp::ShowContextMenu() {
                 IDM_MODE_STEAM, L"Auto - Off while Steam running");
     AppendMenuW(modeMenu, MF_STRING | (m_autoMode == AutoMode::OffOnlyInGame ? MF_CHECKED : MF_UNCHECKED),
                 IDM_MODE_GAME, L"Auto - Off ONLY while in Steam game");
+    AppendMenuW(modeMenu, MF_STRING | (m_autoMode == AutoMode::OffUnlessProfile ? MF_CHECKED : MF_UNCHECKED),
+                IDM_MODE_PROFILE, L"Auto - Off unless a game profile is running");
     AppendMenuW(menu, MF_STRING | MF_POPUP,
                 reinterpret_cast<UINT_PTR>(modeMenu), L"Control Mode");
 
