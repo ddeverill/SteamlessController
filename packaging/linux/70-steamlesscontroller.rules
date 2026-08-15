@@ -1,0 +1,35 @@
+# udev rules for SteamlessController — grants the active graphical session
+# user access to the Steam Controller's hidraw nodes and /dev/uinput,
+# without needing root or a "input" group membership + relogin.
+#
+# TAG+="uaccess" asks systemd-logind to grant a POSIX ACL to whoever is at
+# the active seat0 session, revoked automatically on logout/session switch.
+# It takes effect immediately on the next device event — no reboot, no
+# logout/login required, unlike a GROUP="input" rule.
+#
+# Install to /usr/lib/udev/rules.d/ (packaged) or /etc/udev/rules.d/
+# (manual), then:
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --subsystem-match=hidraw --subsystem-match=misc
+
+# Steam Controller 2026 — hidraw over USB (wired 0x1302, dongle 0x1304,
+# Nereid receiver 0x1305). Vendor id must be lowercase hex.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", TAG+="uaccess"
+
+# Steam Controller 2026 — hidraw over Bluetooth LE (0x1303). A BLE device
+# has no USB ancestor, so idVendor never matches above; match the HID
+# device's own id/vendor attribute instead.
+SUBSYSTEM=="hidraw", ATTRS{id/vendor}=="28de", TAG+="uaccess"
+
+# Virtual device creation (the daemon's uinput gamepad/mouse/keyboard).
+# static_node is required: /dev/uinput does not exist until the uinput
+# module loads, and this tells udev to stamp the node it creates with the
+# same permissions once it appears.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+
+# --- Non-systemd fallback (Void/runit, Artix, OpenRC without logind ACLs) ---
+# Uncomment and add yourself to the "input" group, then log out and back in
+# — group membership only takes effect on next login, unlike uaccess above.
+# KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", MODE="0660", GROUP="input"
+# SUBSYSTEM=="hidraw", ATTRS{id/vendor}=="28de", MODE="0660", GROUP="input"
+# KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
