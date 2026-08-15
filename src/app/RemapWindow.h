@@ -50,6 +50,13 @@ private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
+    // Add a picker entry for every saved profile whose game is not in the
+    // installed list, so a profile for something no longer on the PC can
+    // still be reached — to look at, or to delete. Sets m_installedCount to
+    // where the real entries stop, which is the only thing separating the two
+    // kinds afterwards.
+    void AppendOrphanProfiles();
+
     void CreateWebViewAsync(HWND hwnd);
     void OnControllerReady(ICoreWebView2Controller* ctrl);
     void OnWebMessage(const std::wstring& raw);
@@ -72,7 +79,14 @@ private:
     HINSTANCE         m_hInst   = nullptr;
     ControllerManager* m_mgr    = nullptr;
     ControllerProfile m_config;
+    // Installed games first, then one entry per orphaned profile. The page
+    // names games by index into this, so appending rather than keeping a
+    // second list is what lets an orphan be applied and deleted through the
+    // paths that already existed.
     std::vector<InstalledGame>                 m_games;
+    // Where the installed entries stop. Everything at or past it is a profile
+    // whose game we could not find.
+    size_t                                     m_installedCount = 0;
     std::map<std::wstring, ControllerProfile>  m_gameProfiles;
     std::function<void(const std::wstring&, const ControllerProfile&)> m_applyCallback;
     std::function<void(const std::wstring&)> m_deleteCallback;

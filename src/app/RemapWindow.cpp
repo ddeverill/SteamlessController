@@ -63,6 +63,8 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 .inherit-row input{width:16px;height:16px;accent-color:#4a9eff;cursor:pointer;flex:none;margin:0;}
 .inherit-row label{font-size:13.5px;color:#aeb9c2;font-weight:500;cursor:pointer;}
 .inherit-note{font-size:12px;color:#7d8b96;padding:8px 0 14px 26px;line-height:1.45;}
+.combo-badge{margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.6px;color:#c9a86a;border:1px solid rgba(201,168,106,.35);border-radius:3px;padding:1px 5px;}
+.missing-note{margin-top:11px;font-size:12px;color:#c9a86a;line-height:1.45;}
 /* Following the default leaves nothing below worth reading as editable. */
 #settings.inherited{opacity:.38;pointer-events:none;}
 .connector{flex:1;height:1.5px;border-top:1.5px dashed rgba(255,255,255,.1);}
@@ -167,6 +169,7 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
         <div id="combo-results"></div>
       </div>
     </div>
+    <div class="missing-note" id="missing-note" style="display:none;">This game wasn't found on this PC. Its profile is kept, and will start working again if the game comes back. Delete this if the game won't be coming back.</div>
   </div>
   <div class="group" id="inherit-group" style="display:none;">
     <div class="group-label">MAPPINGS</div>
@@ -626,6 +629,11 @@ function removeCurrent(){
   var gone=currentGame;
   var p={}; for(var k in PROFILES) if(k!==gone) p[k]=PROFILES[k];
   PROFILES=p;
+  // An entry that existed only because a profile pointed at it goes with the
+  // profile. Left behind it stops being pinned, and the only section it could
+  // then appear in is the one labelled INSTALLED GAMES, which it never was.
+  if(gameMissing(gone))
+    GAMES=GAMES.filter(function(g){return g.id!==gone;});
   postMsg({type:'delete',game:gone});
   selectGame('');
   renderCombo();  // it stops being a pinned entry
@@ -670,7 +678,7 @@ function renderCombo(){
     html+='<div class="combo-section-label">PROFILES</div><div class="combo-list">';
     if(showDefault)
       html+=itemHTML('','Default (all other games)');
-    pinned.forEach(function(g){html+=itemHTML(g.id,g.name);});
+    pinned.forEach(function(g){html+=itemHTML(g.id,g.name,g.missing==='1');});
     html+='</div>';
   }
 
@@ -682,7 +690,7 @@ function renderCombo(){
     }).slice(0,50);  // a two-letter query can match hundreds; cap the DOM work
     if(matches.length){
       html+='<div class="combo-section-label">INSTALLED GAMES</div><div class="combo-list">';
-      matches.forEach(function(g){html+=itemHTML(g.id,g.name);});
+      matches.forEach(function(g){html+=itemHTML(g.id,g.name,g.missing==='1');});
       html+='</div>';
     } else if(!pinned.length&&!showDefault){
       html+='<div class="combo-empty">No games match "'+escapeHTML(comboQuery)+'"</div>';
@@ -691,9 +699,15 @@ function renderCombo(){
 
   results.innerHTML=html;
 }
-function itemHTML(id,name){
+function itemHTML(id,name,missing){
   var cls='combo-item'+(id===currentGame?' active':'');
-  return '<div class="'+cls+'" onclick="pickGame(\''+id+'\')">'+escapeHTML(name)+'</div>';
+  var badge=missing?'<span class="combo-badge">NOT INSTALLED</span>':'';
+  return '<div class="'+cls+'" onclick="pickGame(\''+id+'\')">'+escapeHTML(name)+badge+'</div>';
+}
+// True for a picker entry that exists only because a profile refers to it.
+function gameMissing(gameId){
+  for(var i=0;i<GAMES.length;i++) if(GAMES[i].id===gameId) return GAMES[i].missing==='1';
+  return false;
 }
 function escapeHTML(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
@@ -767,6 +781,10 @@ function renderInherit(){
   var del=document.getElementById('btn-delete');
   if(del) del.style.display=
     (currentGame!==''&&PROFILES.hasOwnProperty(currentGame))?'':'none';
+  // Says why this game is reachable at all when it is not on the PC, and that
+  // its profile is being kept rather than quietly ignored.
+  var miss=document.getElementById('missing-note');
+  if(miss) miss.style.display=(currentGame!==''&&gameMissing(currentGame))?'':'none';
 }
 function renderModeSelects(){
   renderInherit();
@@ -1154,6 +1172,36 @@ RemapWindow::~RemapWindow() {
     s_instance = nullptr;
 }
 
+void RemapWindow::AppendOrphanProfiles() {
+    m_installedCount = m_games.size();
+
+    // An enumeration that found nothing at all looks exactly like every game
+    // having been uninstalled, and is by far the likelier of the two — a COM
+    // failure reading shell:AppsFolder, or a Start Menu walk that came back
+    // empty. Flagging every profile as missing on that evidence would invite
+    // the user to delete the lot, so say nothing rather than guess.
+    if (m_games.empty()) return;
+
+    for (const auto& [id, profile] : m_gameProfiles) {
+        bool installed = false;
+        for (size_t i = 0; i < m_installedCount; ++i) {
+            if (_wcsicmp(m_games[i].id.c_str(), id.c_str()) == 0) {
+                installed = true;
+                break;
+            }
+        }
+        if (installed) continue;
+
+        InstalledGame orphan;
+        orphan.id = id;
+        // What displayName was stored for: naming a profile at a moment the
+        // installed list cannot. Profiles written before it existed fall back
+        // to the raw id — poor prose, but it still identifies the game.
+        orphan.name = profile.displayName.empty() ? id : profile.displayName;
+        m_games.push_back(std::move(orphan));
+    }
+}
+
 void RemapWindow::Open(HINSTANCE hInst, ControllerManager* mgr,
                        const ControllerProfile& cfg,
                        std::vector<InstalledGame> games,
@@ -1170,6 +1218,7 @@ void RemapWindow::Open(HINSTANCE hInst, ControllerManager* mgr,
         m_gameProfiles  = std::move(gameProfiles);
         m_applyCallback = std::move(applyCallback);
         m_deleteCallback = std::move(deleteCallback);
+        AppendOrphanProfiles();
         ShowWindow(m_hwnd, SW_SHOW);
         BringToFront();
         SendInitState();
@@ -1194,6 +1243,7 @@ void RemapWindow::Open(HINSTANCE hInst, ControllerManager* mgr,
     m_gameProfiles = std::move(gameProfiles);
     m_applyCallback = std::move(applyCallback);
     m_deleteCallback = std::move(deleteCallback);
+    AppendOrphanProfiles();
     s_instance     = this;
 
     // --- Register window class (once) ---
@@ -1586,7 +1636,9 @@ void RemapWindow::SendInitState() {
     for (size_t i = 0; i < m_games.size(); ++i) {
         if (!gamesJson.empty()) gamesJson += L",";
         gamesJson += L"{\"id\":\"" + std::to_wstring(i) + L"\",\"name\":\""
-                   + JsonEscape(m_games[i].name) + L"\"}";
+                   + JsonEscape(m_games[i].name) + L"\""
+                   + (i >= m_installedCount ? L",\"missing\":\"1\"" : L"")
+                   + L"}";
     }
 
     // Profiles: the default plus every game that already has a saved
