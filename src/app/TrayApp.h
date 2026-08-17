@@ -50,7 +50,8 @@ private:
 
     void AddTrayIcon();
     void RemoveTrayIcon();
-    void UpdateTrayIcon(bool connected, bool gameModeActive, bool padUnavailable = false);
+    void UpdateTrayIcon(bool connected, bool gameModeActive, bool sharedHandle,
+                        bool padUnavailable = false);
     void ShowViGEmBalloon();
 
     // What clicking the balloon should do. Balloons are transient and the click
@@ -149,6 +150,7 @@ private:
     UINT                               m_wmTaskbar  = 0;
     HICON                              m_iconOff    = nullptr;
     HICON                              m_iconOn     = nullptr;
+    HICON                              m_iconShared = nullptr;
     AutoMode                           m_autoMode   = AutoMode::Manual;
     // Do we want the controller right now? Acquiring is asynchronous — a
     // blocked claim escalates to a device cycle that lands seconds later as a
