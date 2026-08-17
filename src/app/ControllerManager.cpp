@@ -33,6 +33,10 @@ struct ControllerManager::Slot {
     std::thread                        readThread;
     std::atomic<bool>                  readRunning{false};
     bool                               gameModeActive = false;
+    // Game mode came up on a shared handle: another process (in practice Steam)
+    // holds a write handle too, so both of us are driving this controller. Only
+    // meaningful while gameModeActive — it is what the tray reports.
+    bool                               sharedHandle = false;
     int                                lastBatteryPercent = -1;  // -1 = never reported
 
     // When this slot was last found silent. Probing for a state report costs
@@ -240,11 +244,17 @@ bool ControllerManager::IsGameModeActive() const {
         [](const auto& s) { return s->gameModeActive; });
 }
 
+bool ControllerManager::IsGameModeShared() const {
+    return std::any_of(m_slots.begin(), m_slots.end(),
+        [](const auto& s) { return s->gameModeActive && s->sharedHandle; });
+}
+
 void ControllerManager::OnDeviceChange() {
     SyncDevices();
 }
 
-ControllerManager::GameModeOutcome ControllerManager::EnableGameMode(uint32_t stateWaitMs) {
+ControllerManager::GameModeOutcome ControllerManager::EnableGameMode(uint32_t stateWaitMs,
+                                                                     bool allowShared) {
     // Once the absence of a bus driver is established, re-establish it the
     // cheap way. Finding out by attempting an enable costs the user's
     // controller: each attempt claims the device exclusively and toggles
@@ -259,14 +269,38 @@ ControllerManager::GameModeOutcome ControllerManager::EnableGameMode(uint32_t st
     bool anyPadUnavailable = false;
     bool anyBlocked        = false;
     bool anyEnabled        = false;
-    for (auto& slot : m_slots) {
-        switch (EnableGameModeSlot(*slot, anyPadUnavailable, stateWaitMs)) {
-        case GameModeOutcome::Enabled:               anyEnabled = true; break;
-        case GameModeOutcome::Blocked:               anyBlocked = true; break;
-        case GameModeOutcome::VirtualPadUnavailable: break;  // tracked by the out-param
-        case GameModeOutcome::NoActiveController:    break;
+
+    auto pass = [&](uint32_t waitMs, bool recordSilent) {
+        for (auto& slot : m_slots) {
+            switch (EnableGameModeSlot(*slot, anyPadUnavailable, allowShared, waitMs,
+                                       recordSilent)) {
+            case GameModeOutcome::Enabled:               anyEnabled = true; break;
+            case GameModeOutcome::Blocked:               anyBlocked = true; break;
+            case GameModeOutcome::VirtualPadUnavailable: break;  // tracked by the out-param
+            case GameModeOutcome::NoActiveController:    break;
+            }
         }
-    }
+    };
+
+    // Two passes, because reaching the claim quickly is what wins the controller
+    // back after a device cycle. A receiver publishes an interface per slot and
+    // only one has a controller in it; a live slot streams continuously and
+    // answers a state probe within a few reports, while an empty one costs the
+    // whole timeout. Probing every slot at the full timeout therefore spends up
+    // to 750ms on dead slots before it even tries to claim the live one —
+    // measured — and Steam reclaims the device about 180ms after it re-arrives.
+    // The quick pass gets the claim inside that window; the full pass is the
+    // fallback for a controller that is slow to resume streaming.
+    //
+    // The quick pass deliberately does not record slots as silent: a slot that
+    // simply had not started streaming yet must not be skipped by the full pass
+    // that follows, nor logged as absent when it is merely early.
+    static constexpr uint32_t kQuickProbeMs = 25;
+    const uint32_t quickMs = (std::min)(kQuickProbeMs, stateWaitMs);
+    pass(quickMs, /*recordSilent=*/quickMs == stateWaitMs);
+    if (!anyEnabled && quickMs < stateWaitMs)
+        pass(stateWaitMs, /*recordSilent=*/true);
+
     NotifyStateChanged(anyPadUnavailable);
     if (anyEnabled) return GameModeOutcome::Enabled;
     // Only report Blocked when something actually stood in the way. Slots that
@@ -321,8 +355,13 @@ void ControllerManager::SetProfile(const ControllerProfile& profile) {
     // disconnect and reconnect the pad under the running game each time
     // somebody edited a paddle binding.
     if (platformChanged && IsGameModeActive()) {
+        const bool wasShared = IsGameModeShared();
         DisableGameMode();
-        EnableGameMode();  // re-applies pad settings to each slot as it comes up
+        // Rebuilding a game mode that was already running: the caller changed a
+        // setting, not the acquire policy. Let it come back on a shared handle
+        // if that is what it had (or all that is left) rather than dropping the
+        // user's controller entirely over a platform toggle.
+        EnableGameMode(250, /*allowShared=*/wasShared);  // re-applies pad settings per slot
         return;
     }
 
@@ -486,7 +525,12 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 
     if (IsGameModeActive()) {
         bool dummy = false;
-        EnableGameModeSlot(*m_slots.back(), dummy, 250);
+        // Game mode is already running, so the exclusive-versus-shared question
+        // was settled when it came up. A slot arriving late should join on
+        // whatever it can get rather than re-open that argument — refusing it
+        // would silently drop a controller the user just switched on.
+        EnableGameModeSlot(*m_slots.back(), dummy, /*allowShared=*/true, 250,
+                           /*recordSilent=*/true);
     } else {
         // Restore lizard mode in case a previous session crashed without cleaning up.
         m_slots.back()->sc->EnableLizardMode();
@@ -498,8 +542,8 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
 // ---------------------------------------------------------------------------
 
 ControllerManager::GameModeOutcome
-ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
-                                      uint32_t stateWaitMs) {
+ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut, bool allowShared,
+                                      uint32_t stateWaitMs, bool recordSilent) {
     if (slot.gameModeActive) return GameModeOutcome::Enabled;
     // The puck publishes a controller interface per slot and current firmware
     // rejects the lizard-mode command on an empty one, so only act on a slot
@@ -511,9 +555,14 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
         return GameModeOutcome::NoActiveController;
 
     if (!slot.sc->WaitForStateReport(stateWaitMs)) {
-        slot.lastSilentAt = std::chrono::steady_clock::now();
-        EventLog::Write("GAMEMODE: no state reports from slot (transport=%s), skipping %ls",
-                        SteamController::TransportName(slot.transport), slot.path.c_str());
+        // Only a full-timeout probe is evidence that a slot is genuinely empty.
+        // A quick probe that came up short says nothing, so it must not latch
+        // the slot out of the pass that follows.
+        if (recordSilent) {
+            slot.lastSilentAt = std::chrono::steady_clock::now();
+            EventLog::Write("GAMEMODE: no state reports from slot (transport=%s), skipping %ls",
+                            SteamController::TransportName(slot.transport), slot.path.c_str());
+        }
         return GameModeOutcome::NoActiveController;
     }
 
@@ -522,18 +571,26 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut,
         EventLog::Write("GAMEMODE: device reopen failed %ls", slot.path.c_str());
         return GameModeOutcome::Blocked;
     }
+    slot.sharedHandle = (claim == SteamController::AccessClaim::Shared);
     if (claim == SteamController::AccessClaim::Shared) {
-        // Someone else holds a write handle. While Steam is running it is
-        // most likely Steam's — but nothing here can tell one holder from
-        // another, so the message says only what is actually known. Proceeding
-        // would put two processes on the same controller, both driving lizard
-        // mode; refusing is what escalates to a device cycle that takes the
-        // handle back. Only settle for shared when Steam is absent and the
-        // holder is some benign system component.
-        if (m_steamPresent) {
+        // Someone else holds a write handle — with Steam running that is Steam,
+        // which claims the vendor collection when it registers the controller
+        // and never lets go. No exclusive claim is obtainable against a live
+        // write handle however polite: FILE_SHARE_READ asks the kernel to deny
+        // write to everyone else, and it must refuse while one exists.
+        //
+        // Sharing works — the commands game mode needs are feature reports, and
+        // the read loop re-asserts lizard-off every 2s — but it leaves the other
+        // process driving the same controller, which doubles up any input it
+        // also binds. So refuse first: reporting Blocked is what escalates to a
+        // device cycle, and invalidating the other handle is the only way to
+        // actually win exclusivity. Only settle once the caller has spent its
+        // cycle budget and told us sharing beats having no controller at all.
+        if (!allowShared) {
             EventLog::Write("GAMEMODE: exclusive claim blocked — another process holds a "
-                            "write handle (Steam running) %ls",
+                            "write handle %ls",
                             slot.path.c_str());
+            slot.sharedHandle = false;
             return GameModeOutcome::Blocked;
         }
         EventLog::Write("GAMEMODE: exclusive claim unavailable; using shared access %ls",
@@ -611,6 +668,7 @@ void ControllerManager::DisableGameModeSlot(Slot& slot) {
     // Reopen shared so Steam can obtain write access — game mode is no longer active.
     slot.sc->ReleaseToShared();
     slot.gameModeActive = false;
+    slot.sharedHandle   = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,5 +1071,5 @@ void ControllerManager::ReadLoop(Slot* slot) {
 }
 
 void ControllerManager::NotifyStateChanged(bool padUnavailable) {
-    m_onStateChanged(!m_slots.empty(), IsGameModeActive(), padUnavailable);
+    m_onStateChanged(!m_slots.empty(), IsGameModeActive(), IsGameModeShared(), padUnavailable);
 }

@@ -67,8 +67,9 @@ TrayApp::~TrayApp() {
 
 bool TrayApp::Init(HINSTANCE hInstance) {
     m_hInstance = hInstance;
-    m_iconOff   = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_ICON_OFF));
-    m_iconOn    = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_ICON_ON));
+    m_iconOff    = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_ICON_OFF));
+    m_iconOn     = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_ICON_ON));
+    m_iconShared = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_ICON_SHARED));
     m_wmTaskbar = RegisterWindowMessageW(L"TaskbarCreated");
 
     WNDCLASSEXW wc{};
@@ -97,8 +98,8 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     QueryUnbiasedInterruptTime(&m_lastHeartbeatUnbiased);
 
     m_controller = std::make_unique<ControllerManager>(
-        [this](bool connected, bool gameModeActive, bool vigemMissing) {
-            UpdateTrayIcon(connected, gameModeActive, vigemMissing);
+        [this](bool connected, bool gameModeActive, bool sharedHandle, bool vigemMissing) {
+            UpdateTrayIcon(connected, gameModeActive, sharedHandle, vigemMissing);
         });
     auto raiseAlert = [this](const std::wstring& title, const std::wstring& text) {
         {
@@ -120,7 +121,8 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     // highest-privileges logon task (and back when the mode changes).
     UpdateStartupRegistration();
     AddTrayIcon();
-    UpdateTrayIcon(m_controller->IsConnected(), m_controller->IsGameModeActive(), false);
+    UpdateTrayIcon(m_controller->IsConnected(), m_controller->IsGameModeActive(),
+                   m_controller->IsGameModeShared(), false);
 
     // The in-game mode needs the elevated cycle helper to take the controller
     // back from a running Steam. Settle that here rather than on first use:
@@ -305,9 +307,6 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_STEAMSTATE: {
         const auto steamState = static_cast<SteamState>(wp);
-        // Outside ApplySteamState, which returns early in Manual mode — the
-        // shared-handle decision needs to know about Steam in every mode.
-        m_controller->SetSteamPresent(steamState != SteamState::NoSteam);
         ApplySteamState(steamState);
         return 0;
     }
@@ -350,6 +349,21 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // The last cycle's re-arrival had a grace period to land. If it
             // did, the controller is ours and there is nothing to report.
             if (m_controller->IsGameModeActive()) return 0;
+            // Cycling is over — either the budget is spent or a cycle proved it
+            // frees nothing. Exclusivity is not coming. Before calling it a
+            // failure, take the controller on a shared handle: on machines where
+            // the cycle never wins the reopen race that is the difference
+            // between a working controller and none at all (#79). The tray shows
+            // the shared icon so it is visible that Steam is still driving too.
+            if (m_wantControl &&
+                m_controller->EnableGameMode(250, /*allowShared=*/true)
+                    == ControllerManager::GameModeOutcome::Enabled) {
+                EventLog::Write("ACQUIRE: exclusivity unavailable after %d cycle(s) — "
+                                "taking the controller on a shared handle",
+                                m_acquireRetries);
+                RefreshActiveProfile();
+                return 0;
+            }
             ReportAcquireFailure();
         }
         return 0;
@@ -1160,7 +1174,8 @@ void TrayApp::RemoveTrayIcon() {
     Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
-void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool padUnavailable) {
+void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool sharedHandle,
+                             bool padUnavailable) {
     if (padUnavailable) ShowViGEmBalloon();
     // Cleared only by a pad that actually came up, not by any notification
     // that happens to carry false. The acquire path notifies repeatedly within
@@ -1169,9 +1184,15 @@ void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool padUnavai
     // ReleaseControl clears it too, so a deliberate re-enable says it again.
     else if (gameModeActive) m_vigemBalloonShown = false;
 
+    // Sharing is a distinct running state, not a degraded one: game mode works,
+    // but another process is on the same controller and can fight us for it.
+    // Worth its own icon so a user chasing odd input knows to look at Steam.
+    const bool shared = gameModeActive && sharedHandle;
+
     // Fall through rather than returning early — the icon and tooltip still need
     // to track the controller while the driver is unavailable.
-    const wchar_t* tip = gameModeActive  ? L"Steamless Controller — Steamless Mode ON"
+    const wchar_t* tip = shared          ? L"Steamless Controller — Steamless Mode ON (sharing with Steam)"
+                       : gameModeActive  ? L"Steamless Controller — Steamless Mode ON"
                        : padUnavailable  ? L"Steamless Controller — no virtual gamepad bus"
                        : connected       ? L"Steamless Controller — Connected (Steamless Mode OFF)"
                                          : L"Steamless Controller — No controller found";
@@ -1181,7 +1202,9 @@ void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool padUnavai
     nid.hWnd   = m_hwnd;
     nid.uID    = TRAY_UID;
     nid.uFlags = NIF_TIP | NIF_ICON;
-    nid.hIcon  = gameModeActive ? m_iconOn : m_iconOff;
+    nid.hIcon  = shared         ? m_iconShared
+               : gameModeActive ? m_iconOn
+                                : m_iconOff;
     wcscpy_s(nid.szTip, tip);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
