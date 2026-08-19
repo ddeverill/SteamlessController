@@ -3,6 +3,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 #include "DeviceRestart.h"
 #include "ForegroundWatcher.h"
 #include "GameProfiles.h"
@@ -140,6 +141,14 @@ private:
     // User-initiated repair of a devnode this app did not disable.
     void EnableDisabledControllerDevice();
     bool RestartControllerDevices();
+    // Follow a cycle we asked for using enumeration alone, so that watching it
+    // cannot veto it. Called in place of ControllerManager::OnDeviceChange for
+    // as long as m_cycleInFlight is up.
+    void TrackCycleProgress();
+    // The one way out of the in-flight state: lowers the flag, cancels the
+    // watchdog and resyncs the slots that were held off. Safe to call when no
+    // cycle is running.
+    void EndCycle(const char* why, bool resync = true);
     bool RefreshCycleStatus();
     bool LastCycleBrokeNothing();
     void ReportAcquireFailure();
@@ -187,6 +196,17 @@ private:
     // backstop when no arrival comes.
     bool                               m_cycleInFlight = false;
     bool                               m_inFlightLogged = false;  // one line per cycle
+    // The interfaces the running cycle has to bring back before it counts as
+    // finished, and whether any of them has been seen to go yet. Presence alone
+    // proves nothing: a receiver publishes four interfaces and a narrowed cycle
+    // takes down one, so the other three enumerate for the whole cycle. Only
+    // gone-and-back is honest — see TrackCycleProgress.
+    std::vector<std::wstring>          m_cyclePaths;
+    bool                               m_cycleSawRemoval = false;
+    // Narrowing request for the next cycle, consumed by RestartControllerDevices.
+    // Empty means cycle everything, which is what a caller that never sets it
+    // gets — so one path's narrowing cannot leak into another path's cycle.
+    std::wstring                       m_cycleRequestPath;
     // Devnode found disabled when the menu was last built, so the command
     // handler and the menu agree on what "re-enable" refers to.
     std::wstring                       m_disabledDeviceNode;
@@ -253,6 +273,7 @@ private:
     static constexpr UINT_PTR IDT_HEARTBEAT       = 4;
     static constexpr UINT_PTR IDT_RELEASE_GRACE   = 5;
     static constexpr UINT_PTR IDT_STEAM_RECONCILE = 6;
+    static constexpr UINT_PTR IDT_CYCLE_WATCHDOG  = 7;
     // Long enough that idling for a month costs a fraction of the log's 512 KB,
     // short enough to bound when the app stopped responding to within a
     // quarter hour. Resolution only has to beat "somewhere in the last 33
@@ -297,4 +318,10 @@ private:
     // without this the arrivals it generates re-enter the acquire path and
     // fire another one on top of it.
     static constexpr ULONGLONG CYCLE_MIN_GAP_MS = 4000;
+    // Ceiling on a single cycle. Nothing else lowers the in-flight flag if the
+    // helper dies, the device never comes back, or the arrival lands while
+    // nothing is pumping — and a flag left raised means the controller is never
+    // opened again. Generous, because an unnarrowed cycle of a four-interface
+    // receiver legitimately runs several seconds.
+    static constexpr UINT CYCLE_MAX_MS = 20000;
 };
