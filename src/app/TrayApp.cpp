@@ -92,7 +92,7 @@ bool TrayApp::Init(HINSTANCE hInstance) {
                               {0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30}};
     RegisterDeviceNotificationW(m_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
 
-    EventLog::Write("=== SteamlessController started ===");
+    EventLog::Write("=== SteamlessController %s started ===", APP_VERSION_STR);
 
     m_startTick = GetTickCount64();
     QueryUnbiasedInterruptTime(&m_lastHeartbeatUnbiased);
