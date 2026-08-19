@@ -746,6 +746,10 @@ void TrayApp::ReleaseControl() {
     // foreground watcher keeps it current whether or not the device is ours,
     // which is what that reset was standing in for.
     const bool hadControl = m_controller->IsGameModeActive();
+    // Read while the slots are still up, as the acquire path does. The value
+    // outlives them either way — it is only ever assigned — but taking it here
+    // keeps the two paths asking the same question at the same point.
+    const std::wstring livePath = m_controller->LastLivePath();
     // Good citizen: restore lizard mode and close our HID handles so
     // Steam can claim the controller without contention.
     m_controller->ReleaseDevices();
@@ -757,6 +761,19 @@ void TrayApp::ReleaseControl() {
         // announces itself; this one used to not, which made a device left
         // disabled by an interrupted release look like it came from nowhere.
         EventLog::Write("RELEASE: cycling device so Steam sees an arrival");
+        // Narrowed to the interface that actually had the controller, for the
+        // same reason the acquire path narrows: a receiver publishes one per
+        // slot and only one is ever occupied, so cycling all four multiplies
+        // the downtime and hands Steam an arrival per interface to react to.
+        // What Steam has to see is an arrival on the interface it will read
+        // the controller from, and that is this one.
+        //
+        // Unconditional here, unlike the acquire path, which narrows only its
+        // first attempt so a wrong guess cannot keep costing it. A release has
+        // no second attempt to protect, and an empty path already falls back
+        // to cycling everything.
+        m_cycleRequestPath = livePath;
+        RequestNarrowCycle(m_cycleRequestPath);
         RestartControllerDevices();
     }
 }
