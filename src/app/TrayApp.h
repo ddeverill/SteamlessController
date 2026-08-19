@@ -195,6 +195,15 @@ private:
     std::wstring                       m_alertText;    // consumed on WM_ALERT
     std::unique_ptr<ControllerManager> m_controller;
     SteamWatcher                       m_steamWatcher;
+    // The Steam state we have actually acted on. The watcher announces changes
+    // through a single PostMessage and only ever announces an edge, so a
+    // message that is lost, dropped or arrives while nothing is pumping is
+    // never repeated: the app then sits on a stale view of Steam until the
+    // next change, which is a user watching a game launch and the controller
+    // never being handed back. A timer compares this against the watcher and
+    // applies the difference, so any single lost edge costs seconds, not the
+    // rest of the session.
+    SteamState                         m_lastAppliedSteamState = SteamState::NoSteam;
     ForegroundWatcher                  m_foregroundWatcher;
     // Bridges a Steam profile's app id to the running executable. Refreshed
     // at the few moments the answer can have changed — see RefreshSteamApps.
@@ -243,11 +252,15 @@ private:
     static constexpr UINT_PTR IDT_WAKE_POLL       = 3;
     static constexpr UINT_PTR IDT_HEARTBEAT       = 4;
     static constexpr UINT_PTR IDT_RELEASE_GRACE   = 5;
+    static constexpr UINT_PTR IDT_STEAM_RECONCILE = 6;
     // Long enough that idling for a month costs a fraction of the log's 512 KB,
     // short enough to bound when the app stopped responding to within a
     // quarter hour. Resolution only has to beat "somewhere in the last 33
     // hours", which is what the log offered the last time this mattered.
     static constexpr UINT HEARTBEAT_MS = 15 * 60 * 1000;
+    // How often to check that we actually acted on Steam's current state.
+    // See m_lastAppliedSteamState for why that needs checking at all.
+    static constexpr UINT STEAM_RECONCILE_MS = 5000;
     // Slack before a late beat is called a stall. Window timers are low
     // priority and coalesced, so a beat is routinely a little late; a full
     // minute of drift is not.

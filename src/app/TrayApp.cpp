@@ -190,6 +190,7 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     // it, which is the point: it exists so that the log can tell "idle" from
     // "stopped" without anyone having to reproduce the fault.
     SetTimer(m_hwnd, IDT_HEARTBEAT, HEARTBEAT_MS, nullptr);
+    SetTimer(m_hwnd, IDT_STEAM_RECONCILE, STEAM_RECONCILE_MS, nullptr);
 
     // Start watching for Steam regardless of auto mode — the state is applied
     // only when auto mode is on, and having it warm makes toggling auto mode
@@ -382,6 +383,23 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // so the answer can change while it runs, and coming back to the
             // game is the case it is here for.
             if (!WantControlNow()) ReleaseControl();
+        } else if (wp == IDT_STEAM_RECONCILE) {
+            // The watcher announces an edge exactly once, through one
+            // PostMessage. If that message is lost the app keeps a stale view
+            // of Steam for the rest of the session — a game launches and the
+            // controller is never handed back. Compare and apply.
+            //
+            // Logged loudly on purpose: this should never fire, and if it does
+            // in the field the log says so rather than the user having to
+            // notice the controller behaving oddly.
+            const SteamState now = m_steamWatcher.GetState();
+            if (now != m_lastAppliedSteamState && m_autoMode != AutoMode::Manual) {
+                EventLog::Write("AUTO: steam state %d was never applied (last acted on %d) "
+                                "— the change notification went missing; reconciling",
+                                static_cast<int>(now),
+                                static_cast<int>(m_lastAppliedSteamState));
+                ApplySteamState(now);
+            }
         } else if (wp == IDT_HEARTBEAT) {
             // Periodic, so not killed — its absence is the signal.
             WriteHeartbeat();
@@ -675,6 +693,9 @@ void TrayApp::EvaluateControl() {
 }
 
 void TrayApp::ApplySteamState(SteamState state) {
+    // Recorded before the Manual check, so leaving Manual mode does not find a
+    // stale value and report a change that never actually went missing.
+    m_lastAppliedSteamState = state;
     if (m_autoMode == AutoMode::Manual) return;
 
     // The state only. What to do about it is EvaluateControl's to decide and
