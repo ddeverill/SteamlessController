@@ -58,12 +58,19 @@ private:
     // What clicking the balloon should do. Balloons are transient and the click
     // arrives long after the call that raised one, so the action travels with
     // it rather than being inferred at click time.
-    enum class BalloonAction { ViGEmDownload, EnableDisabledDevice, None };
+    enum class BalloonAction { None, ViGEmDownload, EnableDisabledDevice };
+    // Doing nothing is the default on purpose. It used to be ViGEmDownload,
+    // which meant every caller that did not think about the question sent the
+    // user to a driver download page — a dropped Bluetooth connection, Steam
+    // refusing to hand the controller over, a devnode needing Device Manager.
+    // None of those are ViGEmBus problems and none of them are fixed by
+    // installing it. Opening something has to be asked for.
+    //
     // infoFlags picks the icon Windows draws: a warning by default, because
     // most of these report something the user has to act on. Purely
-    // informational notices pass NIIF_INFO and BalloonAction::None.
+    // informational notices pass NIIF_INFO.
     void ShowAlertBalloon(const std::wstring& title, const std::wstring& text,
-                          BalloonAction action = BalloonAction::ViGEmDownload,
+                          BalloonAction action = BalloonAction::None,
                           DWORD infoFlags = NIIF_WARNING);
     void OpenEventLog();
     void ShowContextMenu();
@@ -184,7 +191,7 @@ private:
     // it started out covering — a per-game profile loading is announced
     // through it too.
     bool                               m_notificationsEnabled = true;
-    BalloonAction                      m_balloonAction = BalloonAction::ViGEmDownload;
+    BalloonAction                      m_balloonAction = BalloonAction::None;
     // Unbiased interrupt time at the last heartbeat, and the tick this instance
     // started. Unbiased so that time the machine spent asleep does not read as
     // the app having been blocked.
