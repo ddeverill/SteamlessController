@@ -35,9 +35,18 @@ struct ScanReport {
     std::vector<Holder> holders;
     std::wstring        targetName;      // NT name we matched against
     unsigned            typeIndex = 0;   // File object type index
-    unsigned            examined  = 0;   // handles of that type considered
-    unsigned            queried   = 0;   // names actually resolved
-    bool                completed = false;  // false means the deadline won
+    unsigned            candidates = 0;  // handles of that type in the snapshot
+    unsigned            examined  = 0;   // candidates a worker got to
+    // Names actually resolved. Far smaller than examined and not a coverage
+    // figure: a candidate is skipped before this when its process already has a
+    // known holder, when OpenProcess is refused (protected or higher
+    // integrity), when DuplicateHandle fails, or when the object turns out not
+    // to be device-like. Reading it as "percent scanned" is wrong.
+    unsigned            queried   = 0;
+    // False means the deadline arrived before every worker reported back. That
+    // usually means a worker is wedged inside NtQueryObject, NOT that the scan
+    // missed candidates - compare examined against candidates for that.
+    bool                completed = false;
     DWORD               elapsedMs = 0;
 };
 

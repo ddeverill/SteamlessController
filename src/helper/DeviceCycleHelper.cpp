@@ -28,6 +28,9 @@
 #include "app/HandleFinder.h"
 #include "steam/SteamController.h"
 
+// Defined below; used by the cycle path that appears before it.
+static std::vector<std::wstring> TakeRequestedPaths();
+
 // The helper runs windowless from Task Scheduler, so a failed cycle is
 // otherwise completely silent. It cannot share the tray app's events.log —
 // that is held open with _SH_DENYWR — so it keeps its own next to it.
@@ -107,8 +110,11 @@ static int CycleDevices() {
     ReconcilePending();
 
     bool any = false;
-    const auto paths = SteamController::EnumerateAll();
-    CycleLog("START: %zu interface(s) to cycle", paths.size());
+    auto paths = TakeRequestedPaths();
+    const bool narrowed = !paths.empty();
+    if (!narrowed) paths = SteamController::EnumerateAll();
+    CycleLog("START: %zu interface(s) to cycle%s", paths.size(),
+             narrowed ? " (as requested by the app)" : "");
 
     // Summarised for the tray app, which has to explain any failure to the
     // user. Best outcome wins: if even one interface genuinely went down,
@@ -317,14 +323,42 @@ static int UnregisterTask() {
 // The scan is the one piece here that cannot be reasoned about from its output
 // alone — an empty list has several causes — so it needs to be runnable on
 // demand rather than only in the failure it is meant to explain.
+// The interface the tray app actually wants cycled, if it said. A receiver
+// publishes one interface per slot but only one has a controller in it, so
+// cycling all four costs four times the downtime and produces four arrivals
+// for Steam to react to — measured at roughly five seconds against one and a
+// bit (#79). The request is consumed on read: a stale one must never narrow a
+// later cycle that had no opinion.
+static std::vector<std::wstring> TakeRequestedPaths() {
+    wchar_t local[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH)) return {};
+    const std::wstring file =
+        std::wstring(local) + L"\\SteamlessController\\cycle.request";
+
+    std::vector<std::wstring> paths;
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, file.c_str(), L"r, ccs=UTF-8") == 0 && f) {
+        wchar_t line[512];
+        while (fgetws(line, 512, f)) {
+            std::wstring s(line);
+            while (!s.empty() && (s.back() == L'\n' || s.back() == L'\r')) s.pop_back();
+            if (!s.empty()) paths.push_back(s);
+        }
+        fclose(f);
+    }
+    DeleteFileW(file.c_str());
+    return paths;
+}
+
 static int FindHoldersOnly() {
     CycleLog("FIND: holder scan requested directly");
     for (const auto& path : SteamController::EnumerateAll()) {
         const auto scan = HandleFinder::FindDeviceHolders(path);
-        CycleLog("FIND: %s in %lu ms, target='%ls' typeIndex=%u candidates=%u queried=%u",
-                 scan.completed ? "completed" : "HIT DEADLINE",
-                 scan.elapsedMs, scan.targetName.c_str(),
-                 scan.typeIndex, scan.examined, scan.queried);
+        CycleLog("FIND: examined %u of %u candidates in %lu ms (%u named, %s), target='%ls'",
+                 scan.examined, scan.candidates, scan.elapsedMs, scan.queried,
+                 scan.completed ? "all workers reported"
+                                : "a worker is wedged - coverage is examined/candidates, not this",
+                 scan.targetName.c_str());
         const std::wstring holders = HandleFinder::DescribeHolders(scan.holders);
         CycleLog("FIND: holders=[%ls] %ls",
                  holders.empty() ? L"none" : holders.c_str(), path.c_str());

@@ -23,6 +23,12 @@ public:
     // Open with shared read/write access for idle tracking.
     // Returns false if device is not found.
     bool Open(const std::wstring& path);
+    // Take ownership of a handle somebody else already opened, and finish the
+    // setup Open() would have done. Exists so the pounce thread can win the
+    // reopen race off the UI thread and hand the live handle over: reopening
+    // here would give the device back for exactly as long as it takes to ask
+    // for it again, which is the window we are trying to close.
+    bool Adopt(HANDLE handle, const std::wstring& path);
     // Close and reopen with a different share mode (e.g. to claim or release
     // exclusive write access). Caller must ensure the read thread is stopped first.
     bool Reopen(DWORD shareMode);
@@ -50,6 +56,7 @@ public:
     size_t ReadInputReport(uint8_t* buffer, size_t size, uint32_t timeoutMs = 1000);
 
 private:
+    bool FinishOpen(const std::wstring& path);
     HANDLE       m_handle           = INVALID_HANDLE_VALUE;
     HANDLE       m_event            = INVALID_HANDLE_VALUE;
     ULONG        m_outputReportLen  = 64;

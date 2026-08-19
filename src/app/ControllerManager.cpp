@@ -22,6 +22,13 @@
 // Slot
 // ---------------------------------------------------------------------------
 
+
+// Milliseconds since a steady_clock mark. steady_clock is QPC-backed on
+// Windows, so this resolves well below the millisecond it reports in.
+static double ElapsedMs(std::chrono::steady_clock::time_point since) {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - since).count();
+}
 struct ControllerManager::Slot {
     std::wstring                       path;
     SteamController::Transport         transport = SteamController::Transport::Unknown;
@@ -37,6 +44,13 @@ struct ControllerManager::Slot {
     // holds a write handle too, so both of us are driving this controller. Only
     // meaningful while gameModeActive — it is what the tray reports.
     bool                               sharedHandle = false;
+    // Result of the claim sweep that runs before any slot is probed, so the
+    // per-slot path can use it rather than claiming on its own. Unset when a
+    // slot is enabled outside a sweep — a controller switched on while game
+    // mode is already running — in which case it claims for itself.
+    bool                               hasPendingClaim = false;
+    SteamController::AccessClaim       pendingClaim =
+                                           SteamController::AccessClaim::Failed;
     int                                lastBatteryPercent = -1;  // -1 = never reported
 
     // When this slot was last found silent. Probing for a state report costs
@@ -220,6 +234,7 @@ ControllerManager::ControllerManager(StateChangedFn onStateChanged)
 
 ControllerManager::~ControllerManager() {
     g_crashRestoreInstance = nullptr;
+    StopPounce();
     for (auto& slot : m_slots) {
         // Stop the read loop and virtual controller first (same as DisableGameModeSlot
         // but without the gameModeActive guard — we always want to restore lizard mode).
@@ -265,6 +280,26 @@ ControllerManager::GameModeOutcome ControllerManager::EnableGameMode(uint32_t st
         NotifyStateChanged(true);
         return GameModeOutcome::VirtualPadUnavailable;
     }
+
+    // Claim first, ask which slot is live second. A live slot answers a state
+    // probe within a report or two, but an empty one costs the whole probe
+    // timeout — so walking the list probe-first leaves the live slot unclaimed
+    // until every empty slot ahead of it has timed out. With three empty slots
+    // that is the difference between claiming ~0ms and ~75ms after the device
+    // arrives, and it is the window Steam uses to reopen the device after a
+    // cycle: measured, Steam reclaims at ~180ms here and under 73ms on the
+    // machine in #79, which is why the same code wins the race on one and
+    // never on the other.
+    //
+    // Claiming an empty slot costs nothing and is given straight back below
+    // when it turns out to be silent.
+    const auto claimStart = std::chrono::steady_clock::now();
+    for (auto& slot : m_slots) {
+        if (slot->gameModeActive) continue;
+        slot->pendingClaim    = slot->sc->ClaimGameModeAccess();
+        slot->hasPendingClaim = true;
+    }
+    m_timing.claimMs += ElapsedMs(claimStart);
 
     bool anyPadUnavailable = false;
     bool anyBlocked        = false;
@@ -322,6 +357,8 @@ void ControllerManager::DisableGameMode() {
 }
 
 void ControllerManager::ReleaseDevices() {
+    // Not StopPounce(): a release is exactly what precedes a cycle, and the
+    // pounce is armed to survive it. TrayApp stops it when the acquire ends.
     if (!m_slots.empty())
         EventLog::Write("RELEASE: closing all device handles (intentional handoff)");
     // Disable game mode first — enables lizard mode and tears down ViGEm while
@@ -467,8 +504,129 @@ void ControllerManager::StopButtonCapture() {
 // Device management
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// Pounce — taking the device back the moment the cycle returns it
+// ---------------------------------------------------------------------------
+
+void ControllerManager::BeginPounce() {
+    StopPounce();
+
+    {
+        std::lock_guard<std::mutex> lk(m_pounce.mutex);
+        m_pounce.paths.clear();
+        m_pounce.caught.clear();
+        for (auto& slot : m_slots)
+            m_pounce.paths.push_back(slot->path);
+    }
+    if (m_pounce.paths.empty()) return;
+
+    m_pounce.running = true;
+    m_pounce.thread = std::thread([this] {
+        // A path only counts once we have seen it go away. Grabbing before the
+        // cycle takes the devnode down would hold the very handle that vetoes
+        // it — PnP does not care that the handle is ours.
+        std::vector<std::wstring> paths;
+        {
+            std::lock_guard<std::mutex> lk(m_pounce.mutex);
+            paths = m_pounce.paths;
+        }
+        std::vector<bool> seenGone(paths.size(), false);
+        std::vector<bool> caught(paths.size(), false);
+
+        const auto start = std::chrono::steady_clock::now();
+        static constexpr double kGiveUpMs = 15000.0;
+
+        while (m_pounce.running && ElapsedMs(start) < kGiveUpMs) {
+            bool allCaught = true;
+            for (size_t i = 0; i < paths.size(); ++i) {
+                if (caught[i]) continue;
+                allCaught = false;
+
+                // Exclusive from the very first open: opening shared and
+                // upgrading afterwards hands the device back for as long as it
+                // takes to ask for it again.
+                HANDLE h = CreateFileW(paths[i].c_str(), GENERIC_READ | GENERIC_WRITE,
+                                       FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                       FILE_FLAG_OVERLAPPED, nullptr);
+                if (h == INVALID_HANDLE_VALUE) {
+                    const DWORD err = GetLastError();
+                    if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
+                        seenGone[i] = true;   // the cycle has taken it down
+                    continue;
+                }
+                if (!seenGone[i]) {
+                    // Still the pre-cycle device. Let go immediately.
+                    CloseHandle(h);
+                    continue;
+                }
+                caught[i] = true;
+                const double ms = ElapsedMs(start);
+                {
+                    std::lock_guard<std::mutex> lk(m_pounce.mutex);
+                    m_pounce.caught.emplace_back(paths[i], h);
+                }
+                EventLog::Write("POUNCE: took the device %.1fms after the cycle started %ls",
+                                ms, paths[i].c_str());
+            }
+            if (allCaught) break;
+            SwitchToThread();
+        }
+    });
+}
+
+void ControllerManager::StopPounce() {
+    m_pounce.running = false;
+    if (m_pounce.thread.joinable())
+        m_pounce.thread.join();
+    // Anything caught but never adopted has to go back, or we sit on a device
+    // nobody is driving.
+    std::lock_guard<std::mutex> lk(m_pounce.mutex);
+    for (auto& [path, h] : m_pounce.caught)
+        if (h) CloseHandle(static_cast<HANDLE>(h));
+    m_pounce.caught.clear();
+}
+
+bool ControllerManager::AdoptPounced() {
+    std::vector<std::pair<std::wstring, void*>> caught;
+    {
+        std::lock_guard<std::mutex> lk(m_pounce.mutex);
+        caught.swap(m_pounce.caught);
+    }
+    if (caught.empty()) return false;
+
+    bool any = false;
+    for (auto& [path, h] : caught) {
+        // Already have it? Then the ordinary path got there first; drop ours.
+        if (std::any_of(m_slots.begin(), m_slots.end(),
+                        [&](const auto& s) { return s->path == path; })) {
+            CloseHandle(static_cast<HANDLE>(h));
+            continue;
+        }
+        auto slot = std::make_unique<Slot>();
+        slot->path      = path;
+        slot->transport = SteamController::TransportFromPath(path);
+        slot->sc        = std::make_unique<SteamController>();
+        if (!slot->sc->AdoptHandle(h, path)) {
+            CloseHandle(static_cast<HANDLE>(h));
+            continue;
+        }
+        // The handle is already exclusive, so the claim sweep must not reopen
+        // it — that would give the device back and re-run the race we just won.
+        slot->hasPendingClaim = true;
+        slot->pendingClaim    = SteamController::AccessClaim::Exclusive;
+        EventLog::Write("POUNCE: adopted %ls", path.c_str());
+        m_slots.push_back(std::move(slot));
+        any = true;
+    }
+    if (any) NotifyStateChanged();
+    return any;
+}
 void ControllerManager::SyncDevices() {
+    const auto enumStart = std::chrono::steady_clock::now();
     auto livePaths = SteamController::EnumerateAll();
+    m_timing.enumerateMs += ElapsedMs(enumStart);
+    ++m_timing.enumerates;
 
     auto it = m_slots.begin();
     while (it != m_slots.end()) {
@@ -516,7 +674,10 @@ void ControllerManager::OpenSlot(const std::wstring& path) {
     slot->path      = path;
     slot->transport = SteamController::TransportFromPath(path);
     slot->sc        = std::make_unique<SteamController>();
-    if (!slot->sc->Open(path)) return;
+    const auto openStart = std::chrono::steady_clock::now();
+    const bool opened = slot->sc->Open(path);
+    m_timing.openMs += ElapsedMs(openStart);
+    if (!opened) return;
 
     EventLog::Write("CONNECT: transport=%s %ls",
                     SteamController::TransportName(slot->transport), path.c_str());
@@ -551,10 +712,28 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut, bool 
     // outright — see Slot::lastSilentAt.
     static constexpr auto kSilentSlotRetryGap = std::chrono::milliseconds(1500);
     const auto now = std::chrono::steady_clock::now();
-    if (now - slot.lastSilentAt < kSilentSlotRetryGap)
+    if (now - slot.lastSilentAt < kSilentSlotRetryGap) {
+        // Known silent, so it is not the slot the sweep was for — give its
+        // claim back rather than sitting on a slot we are about to skip.
+        if (slot.hasPendingClaim) {
+            slot.sc->ReleaseToShared();
+            slot.hasPendingClaim = false;
+        }
         return GameModeOutcome::NoActiveController;
+    }
 
-    if (!slot.sc->WaitForStateReport(stateWaitMs)) {
+    const auto probeStart = std::chrono::steady_clock::now();
+    const bool live = slot.sc->WaitForStateReport(stateWaitMs);
+    m_timing.probeMs += ElapsedMs(probeStart);
+    if (live) m_lastLivePath = slot.path;
+    if (!live) {
+        // Nothing here, so give the claim back. The sweep above takes every
+        // slot to get the live one early; holding an empty one exclusively
+        // would lock Steam out of a slot we have no use for.
+        if (slot.hasPendingClaim) {
+            slot.sc->ReleaseToShared();
+            slot.hasPendingClaim = false;
+        }
         // Only a full-timeout probe is evidence that a slot is genuinely empty.
         // A quick probe that came up short says nothing, so it must not latch
         // the slot out of the pass that follows.
@@ -566,7 +745,11 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut, bool 
         return GameModeOutcome::NoActiveController;
     }
 
-    const auto claim = slot.sc->ClaimGameModeAccess();
+    // Use the claim the sweep already took. Only a slot enabled outside a sweep
+    // (a controller switched on while game mode is running) claims here.
+    const auto claim = slot.hasPendingClaim ? slot.pendingClaim
+                                            : slot.sc->ClaimGameModeAccess();
+    slot.hasPendingClaim = false;
     if (claim == SteamController::AccessClaim::Failed) {
         EventLog::Write("GAMEMODE: device reopen failed %ls", slot.path.c_str());
         return GameModeOutcome::Blocked;

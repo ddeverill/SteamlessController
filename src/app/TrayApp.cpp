@@ -23,6 +23,7 @@ static constexpr wchar_t CYCLE_TASK_NAME[]          = L"SteamlessControllerDevic
 static constexpr wchar_t LEGACY_STARTUP_TASK_NAME[] = L"SteamlessController";
 static constexpr wchar_t HELPER_EXE_NAME[]          = L"SteamlessDeviceCycle.exe";
 
+
 // Runs a console tool with no visible window; true when it exits 0.
 static bool RunToolHidden(std::wstring cmdline) {
     STARTUPINFOW si{};
@@ -39,6 +40,46 @@ static bool RunToolHidden(std::wstring cmdline) {
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return code == 0;
+}
+
+// Start a tool and walk away. RunToolHidden waits up to 15s for the exit code,
+// which on the UI thread is a frozen tray menu — and the holder scan is exactly
+// the kind of job that takes that long. Nothing here needs the exit code: the
+// tool writes its findings to its own log.
+
+// Ask the helper to cycle just the interface that has the controller in it.
+// A receiver publishes one per slot and only one is ever occupied, so cycling
+// all of them costs several times the downtime and gives Steam several
+// arrivals to react to instead of one.
+//
+// Only on the first attempt. If narrowing did not get the controller back, the
+// assumption behind it may be wrong — the controller could have moved slots —
+// so later attempts write nothing and the helper falls back to cycling
+// everything.
+static void RequestNarrowCycle(const std::wstring& path) {
+    wchar_t local[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH)) return;
+    const std::wstring file =
+        std::wstring(local) + L"\\SteamlessController\\cycle.request";
+    if (path.empty()) { DeleteFileW(file.c_str()); return; }
+
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, file.c_str(), L"w, ccs=UTF-8") != 0 || !f) return;
+    fwprintf(f, L"%ls\n", path.c_str());
+    fclose(f);
+}
+static bool LaunchToolDetached(std::wstring cmdline) {
+    STARTUPINFOW si{};
+    si.cb          = sizeof(si);
+    si.dwFlags     = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        return false;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
 }
 
 // Path of the helper exe, expected beside our own executable.
@@ -361,6 +402,24 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 EventLog::Write("ACQUIRE: exclusivity unavailable after %d cycle(s) — "
                                 "taking the controller on a shared handle",
                                 m_acquireRetries);
+                // Name whatever is holding the device, in the one case that
+                // most needs explaining: every cycle succeeded, PnP vetoed
+                // nothing, and the controller was still taken back before we
+                // could claim it (#79). The helper's own scan only runs on a
+                // veto, so that path records nothing here.
+                //
+                // Delegated to the helper rather than scanned in-process: the
+                // scanner abandons worker threads that wedge inside
+                // NtQueryObject, which is safe only because the helper exits
+                // moments later. Doing it here would leak them for the life of
+                // the tray session, and would stall the UI thread besides.
+                // Fire and forget — the answer lands in cycle.log.
+                const std::wstring helper = HelperPath();
+                if (!helper.empty()) {
+                    EventLog::Write("ACQUIRE: asking the helper who holds the device "
+                                    "— see cycle.log for the FIND: lines");
+                    LaunchToolDetached(L"\"" + helper + L"\" --find-holders");
+                }
                 RefreshActiveProfile();
                 return 0;
             }
@@ -631,6 +690,7 @@ void TrayApp::ApplySteamState(SteamState state) {
 // the manual toggle being switched off — in both cases the user is done with
 // us and Steam should be able to pick the pad straight back up.
 void TrayApp::ReleaseControl() {
+    m_controller->StopPounce();
     KillTimer(m_hwnd, IDT_ACQUIRE);
     KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
     KillTimer(m_hwnd, IDT_WAKE_POLL);
@@ -666,6 +726,12 @@ void TrayApp::ReleaseControl() {
 }
 
 void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
+    // Before the in-flight guard, not after. A pounced handle is proof the
+    // cycle has already delivered, and it is already open and exclusive, so
+    // there is nothing left to hold off for. Adopting after the guard meant
+    // sitting on a device we had already won for the whole CYCLE_MIN_GAP_MS.
+    if (m_controller->AdoptPounced())
+        m_cycleInFlight = false;
     // Do not open the device while a cycle we asked for is still running. The
     // claim below opens handles, the cycle needs every handle gone to take the
     // devnode down, and PnP does not care that the handle blocking it is ours —
@@ -694,25 +760,46 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
         m_cycleInFlight = false;
     }
 
+    m_controller->ResetTiming();
+    const auto acquireStart = GetTickCount64();
     m_controller->OnDeviceChange();
     auto outcome = m_controller->EnableGameMode(stateWaitMs);
 
-    // A short burst of rapid retries: right after a device cycle we race
-    // Steam's re-enumeration for the exclusive open, and starting the claim
-    // the instant the device arrives is what wins that race.
+    // A short burst of rapid retries, for the cases where the answer can change
+    // within milliseconds: a slot that has not started streaming yet, or a
+    // device still settling after an arrival.
+    //
+    // Not for a blocked claim. A held handle does not free itself, so retrying
+    // it ten times at 50ms intervals only delays the cycle that could actually
+    // free it: measured, 545ms of the 656ms a losing attempt took was this loop
+    // sleeping, against 0.2ms of actual claim work. Winning the device back
+    // after the cycle is the pounce thread's job now, and it does it without
+    // the UI thread being awake at all.
     //
     // A missing virtual pad is not a race with anybody, so the burst is called
     // off the moment that is the answer. Left running it re-attempted eleven
     // times in half a second and re-armed the driver notification on each
     // pass — the toast storm reported in #68.
     for (int i = 0; i < 10
+                 && outcome != ControllerManager::GameModeOutcome::Blocked
                  && outcome != ControllerManager::GameModeOutcome::VirtualPadUnavailable
                  && !m_controller->IsGameModeActive(); ++i) {
         Sleep(50);
         m_controller->OnDeviceChange();
         outcome = m_controller->EnableGameMode(stateWaitMs);
     }
+    {
+        // Where the attempt actually spent its time. Logged for every attempt,
+        // won or lost, because the interesting comparison is between the two.
+        const auto& t = m_controller->LastTiming();
+        EventLog::Write("ACQUIRE TIMING: total=%llums enumerate=%.1fms(x%d) open=%.1fms "
+                        "claim=%.1fms probe=%.1fms -> %s",
+                        GetTickCount64() - acquireStart, t.enumerateMs, t.enumerates,
+                        t.openMs, t.claimMs, t.probeMs,
+                        m_controller->IsGameModeActive() ? "won" : "lost");
+    }
     if (m_controller->IsGameModeActive()) {
+        m_controller->StopPounce();
         KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
         KillTimer(m_hwnd, IDT_WAKE_POLL);
         m_acquireRetries = 0;
@@ -806,8 +893,18 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     ++m_acquireRetries;
     m_lastCycleTick = nowTick;
     EventLog::Write("ACQUIRE: exclusive claim blocked — cycling device (attempt %d)", m_acquireRetries);
+    // First attempt narrows the cycle to the occupied slot; later ones do not,
+    // so a wrong guess cannot keep costing us.
+    RequestNarrowCycle(m_acquireRetries == 1 ? m_controller->LastLivePath()
+                                             : std::wstring());
+    // Armed before the release so the paths are still known, and before the
+    // cycle so the thread is already spinning when the device comes back.
+    m_controller->BeginPounce();
     m_controller->ReleaseDevices();
-    if (!RestartControllerDevices()) return;  // helper unavailable — balloon shown
+    if (!RestartControllerDevices()) {
+        m_controller->StopPounce();
+        return;
+    }  // helper unavailable — balloon shown
     // The cycle runs asynchronously via the helper task; the device-arrival
     // notification drives the claim, with this timer as the fallback. It must
     // outlast a cycle: the helper waits a second between disable and enable,
