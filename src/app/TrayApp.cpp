@@ -242,8 +242,10 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 // Taking the device back from a running Steam needs the
                 // elevated helper. Settle the one-time UAC prompt on this
                 // click instead of letting it ambush the first cycle.
-                if (!IsProcessElevated())
-                    EnsureCycleTaskRegistered();
+                // Registered even when already elevated: every cycle goes
+                // through the helper now, so an elevated run needs the task
+                // just as much.
+                EnsureCycleTaskRegistered();
                 m_wantControl    = true;
                 m_acquireRetries = 0;
                 TryAcquireController();
@@ -260,16 +262,14 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case IDM_MODE_GAME:
             // Make sure the elevated helper task exists (one-time UAC when
-            // the installer didn't register it) before the mode needs it.
-            if (!IsProcessElevated())
-                EnsureCycleTaskRegistered();
+            // the installer did not register it) before the mode needs it.
+            EnsureCycleTaskRegistered();
             SetAutoMode(AutoMode::OffOnlyInGame);
             break;
         case IDM_MODE_PROFILE:
             // Same reason as the mode above: this one can be asked to take the
             // controller while Steam is running it, and that needs the helper.
-            if (!IsProcessElevated())
-                EnsureCycleTaskRegistered();
+            EnsureCycleTaskRegistered();
             SetAutoMode(AutoMode::OffUnlessProfile);
             // With nothing to match, this mode holds the controller for
             // nothing at all. Said once, on the click, because a controller
@@ -1045,34 +1045,21 @@ bool TrayApp::RestartControllerDevices() {
     m_inFlightLogged = false;
     m_lastCycleTick  = GetTickCount64();
 
-    // On the rare elevated run, cycle directly. This works on every transport
-    // including Bluetooth: the devnode being restarted is the HID child, not
-    // the pairing (which lives up at the BTHLEDEVICE layer), and it
-    // re-enumerates as fast as a USB replug.
-    if (IsProcessElevated()) {
-        bool anyRestarted = false;
-        DeviceRestart::CycleResult summary;
-        for (const auto& path : SteamController::EnumerateAll()) {
-            DeviceRestart::CycleResult r;
-            if (DeviceRestart::RestartInterfaceDevice(path, r))
-                anyRestarted = true;
-            const bool better = r.kind > summary.kind
-                || (r.kind == summary.kind
-                    && summary.vetoType == PNP_VetoTypeUnknown
-                    && r.vetoType != PNP_VetoTypeUnknown);
-            if (better) summary = r;
-        }
-        // Same status file the helper writes, so the verdict logic below does
-        // not care which path performed the cycle.
-        summary.ticks = GetTickCount64();
-        DeviceRestart::WriteCycleStatus(summary);
-        // Synchronous: the cycle has already finished and the device is back,
-        // so there is nothing left to hold the claim off for.
-        m_cycleInFlight = false;
-        return anyRestarted;
-    }
-
-    // Normal path: fire the elevated helper via its scheduled task. Starting
+    // Always through the helper, elevated or not. Cycling in this process is
+    // possible when elevated, but it is synchronous: four interfaces at a
+    // second apiece means five seconds with no message pump, so every
+    // WM_DEVICECHANGE the cycle produces sits in the queue until it finishes.
+    // The first interface is back and taken by Steam long before we drain
+    // those messages and claim, which is how an elevated run loses a race the
+    // helper path wins (#79) — and it is the tray menu failing to paint that
+    // users report as the app hanging mid-cycle.
+    //
+    // The helper is a separate process, so the cycle runs while this one keeps
+    // pumping and the arrival drives the claim the moment it lands. Keeping one
+    // path also keeps the two from drifting: the shortcut had diverged into
+    // different timing and different logging (it wrote no cycle.log at all).
+    //
+    // Fire the elevated helper via its scheduled task. Starting
     // a task the user authored needs no elevation, so no UAC prompt here.
     std::wstring run = L"schtasks.exe /Run /TN \"";
     run += CYCLE_TASK_NAME;
