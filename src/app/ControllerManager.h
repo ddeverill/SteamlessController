@@ -7,6 +7,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 class ControllerManager {
@@ -75,6 +77,43 @@ public:
     // collection entirely; a shared one leaves Steam free to keep driving the
     // same controller, which is worth surfacing rather than hiding.
     bool IsGameModeShared()         const;
+    // The interface that last had a controller in it. A receiver publishes one
+    // per slot and only one is ever occupied, so this is what a cycle actually
+    // needs to touch — see the request file the helper reads.
+    const std::wstring& LastLivePath() const { return m_lastLivePath; }
+    // Where the milliseconds go in an acquire, measured rather than inferred.
+    // Every timing figure in #79 so far came from reading log line order, and
+    // that was wrong twice: queued WM_DEVICECHANGE messages made a five-second
+    // stall look like an 80ms one. Reset at the start of each EnableGameMode.
+    struct AcquireTiming {
+        double enumerateMs = 0;  // SteamController::EnumerateAll, all HID devices
+        double openMs      = 0;  // CreateFileW + caps queries for new slots
+        double claimMs     = 0;  // the exclusive/shared claim sweep
+        double probeMs     = 0;  // waiting for slots to prove they are live
+        int    enumerates  = 0;  // how many full enumerations this attempt cost
+    };
+    const AcquireTiming& LastTiming() const { return m_timing; }
+    void ResetTiming() { m_timing = {}; }
+
+    // Win the reopen race by not waiting to be told about it.
+    //
+    // WM_DEVICECHANGE is one of the last events in a device arrival, not the
+    // first: PnP registers the interface, then dispatches notifications to
+    // every listener, and ours lands in a message queue behind whatever else
+    // is pending. The device is openable well before we hear about it, and on
+    // some machines Steam has it by then (#79).
+    //
+    // We are the ones who asked for the cycle, so we know it is coming and
+    // nobody else does. BeginPounce is called just before the device is
+    // released and cycled: it spins CreateFileW on the paths we already know,
+    // off the UI thread, and takes the device exclusively the instant it comes
+    // back. AdoptPounced then hands that live handle to a slot.
+    void BeginPounce();
+    void StopPounce();
+    // Adopt anything the pounce thread caught. Call on the UI thread before
+    // trying to acquire; returns true when at least one slot came from it.
+    bool AdoptPounced();
+
     const ControllerProfile& GetProfile() const { return m_profile; }
 
     // Set when a virtual pad could not be created, so the tray can say which
@@ -114,6 +153,18 @@ private:
     StateChangedFn                     m_onStateChanged;
     AlertFn                            m_alertFn;
     std::vector<std::unique_ptr<Slot>> m_slots;
+    AcquireTiming                      m_timing;
+    std::wstring                       m_lastLivePath;
+    // Pounce state. The thread only ever touches these, never m_slots, so the
+    // slot list stays single-threaded and owned by the UI thread.
+    struct Pounce {
+        std::thread              thread;
+        std::atomic<bool>        running{false};
+        std::mutex               mutex;
+        std::vector<std::wstring> paths;                 // what to watch for
+        std::vector<std::pair<std::wstring, void*>> caught;  // path + HANDLE
+    };
+    Pounce                             m_pounce;
     bool                               m_lastPadDriverMissing = false;
     std::wstring                       m_lastBusReport;
     ControllerProfile                  m_profile;

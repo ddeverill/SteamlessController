@@ -345,6 +345,7 @@ ScanReport FindDeviceHolders(const std::wstring& devicePath, DWORD budgetMs) {
 
     std::lock_guard<std::mutex> lk(state->mutex);
     report.holders   = state->holders;
+    report.candidates = static_cast<unsigned>(total);
     report.examined  = state->examined.load();
     report.queried   = state->queried.load();
     report.completed = finished;

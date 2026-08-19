@@ -121,6 +121,19 @@ bool HidDevice::Open(const std::wstring& path) {
         return false;
     }
 
+    return FinishOpen(path);
+}
+
+bool HidDevice::Adopt(HANDLE handle, const std::wstring& path) {
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    Close();
+    m_handle = handle;
+    return FinishOpen(path);
+}
+
+// Shared tail of Open and Adopt: the event the overlapped reads use, and the
+// report sizes the feature and output writes have to match exactly.
+bool HidDevice::FinishOpen(const std::wstring& path) {
     m_path  = path;
     m_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (m_event == INVALID_HANDLE_VALUE) {

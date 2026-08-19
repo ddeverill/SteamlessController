@@ -119,6 +119,10 @@ bool SteamController::Open(const std::wstring& path) {
     return true;
 }
 
+bool SteamController::AdoptHandle(void* handle, const std::wstring& path) {
+    return m_device.Adopt(static_cast<HANDLE>(handle), path);
+}
+
 void SteamController::Close() {
     if (m_running.exchange(false) && m_rumbleThread.joinable())
         m_rumbleThread.join();
