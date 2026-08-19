@@ -11,6 +11,7 @@
 #include <shellapi.h>
 #include <dbt.h>
 #include <winreg.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -400,6 +401,14 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                 static_cast<int>(m_lastAppliedSteamState));
                 ApplySteamState(now);
             }
+        } else if (wp == IDT_CYCLE_WATCHDOG) {
+            // A cycle that never reported back. Every normal ending is an event
+            // that can go missing, and the flag is what keeps the device closed,
+            // so it must not be able to outlive the cycle that raised it.
+            EventLog::Write("CYCLE: no completion seen within %u ms — "
+                            "assuming the cycle is over and reopening the device",
+                            CYCLE_MAX_MS);
+            EndCycle("watchdog expired");
         } else if (wp == IDT_HEARTBEAT) {
             // Periodic, so not killed — its absence is the signal.
             WriteHeartbeat();
@@ -447,19 +456,25 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_DEVICECHANGE:
         if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
-            m_controller->OnDeviceChange();
+            // OnDeviceChange opens a handle on every interface it finds, and an
+            // open handle vetoes a device removal no matter who owns it. Calling
+            // it unconditionally meant a cycle we had just asked for spent its
+            // life fighting handles we reopened milliseconds after asking: a
+            // release cycle reopened all four interfaces 26ms in, then took
+            // 15.5s instead of about one, with a Kernel-PnP 225 naming this
+            // process as what stopped the removal. While our own cycle runs,
+            // watch it without touching it.
+            if (m_cycleInFlight)
+                TrackCycleProgress();
+            else
+                m_controller->OnDeviceChange();
             // A controller arriving (plugged in, or re-arriving after a device
             // cycle) should be acquired straight away whenever control is
-            // wanted — this is what wins the reopen race against Steam.
-            if (wp == DBT_DEVICEARRIVAL && m_wantControl) {
-                // Our controller specifically, not merely something HID-shaped:
-                // the notification filter covers the whole HID class, so a mouse
-                // being plugged in mid-cycle would otherwise clear the guard and
-                // let us reopen the device we are busy cycling.
-                if (m_controller->IsConnected())
-                    m_cycleInFlight = false;
+            // wanted — this is what wins the reopen race against Steam. Safe to
+            // call mid-cycle: it adopts a pounced handle, which is proof the
+            // cycle already delivered, and otherwise carries its own guard.
+            if (wp == DBT_DEVICEARRIVAL && m_wantControl)
                 TryAcquireController();
-            }
         }
         return TRUE;
 
@@ -718,8 +733,8 @@ void TrayApp::ReleaseControl() {
     KillTimer(m_hwnd, IDT_RELEASE_GRACE);
     m_wantControl    = false;
     m_acquireRetries = 0;
+    EndCycle("control was dropped", /*resync=*/false);  // a release follows
     m_lastCycleTick  = 0;
-    m_cycleInFlight  = false;  // cleared with the tick it is measured against
     // One driver notice per attempt, and letting go ends the attempt. Turning
     // Steamless Mode back on is a fresh ask and deserves a fresh answer.
     m_vigemBalloonShown = false;
@@ -752,7 +767,7 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     // there is nothing left to hold off for. Adopting after the guard meant
     // sitting on a device we had already won for the whole CYCLE_MIN_GAP_MS.
     if (m_controller->AdoptPounced())
-        m_cycleInFlight = false;
+        EndCycle("a pounced handle was adopted");
     // Do not open the device while a cycle we asked for is still running. The
     // claim below opens handles, the cycle needs every handle gone to take the
     // devnode down, and PnP does not care that the handle blocking it is ours —
@@ -778,7 +793,7 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
         }
         EventLog::Write("ACQUIRE: cycle produced no arrival within %llu ms — claiming anyway",
                         CYCLE_MIN_GAP_MS);
-        m_cycleInFlight = false;
+        EndCycle("no arrival came, claiming anyway");
     }
 
     m_controller->ResetTiming();
@@ -916,8 +931,9 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     EventLog::Write("ACQUIRE: exclusive claim blocked — cycling device (attempt %d)", m_acquireRetries);
     // First attempt narrows the cycle to the occupied slot; later ones do not,
     // so a wrong guess cannot keep costing us.
-    RequestNarrowCycle(m_acquireRetries == 1 ? m_controller->LastLivePath()
-                                             : std::wstring());
+    m_cycleRequestPath = m_acquireRetries == 1 ? m_controller->LastLivePath()
+                                               : std::wstring();
+    RequestNarrowCycle(m_cycleRequestPath);
     // Armed before the release so the paths are still known, and before the
     // cycle so the thread is already spinning when the device comes back.
     m_controller->BeginPounce();
@@ -1163,6 +1179,18 @@ bool TrayApp::RestartControllerDevices() {
     m_inFlightLogged = false;
     m_lastCycleTick  = GetTickCount64();
 
+    // What this cycle owes us before it counts as finished. A narrowing request
+    // names the one occupied interface; without one the helper takes down
+    // everything, so everything has to come back. Consumed here, so a caller
+    // that sets nothing gets a full cycle rather than the last caller's guess.
+    m_cyclePaths      = m_cycleRequestPath.empty() ? SteamController::EnumerateAll()
+                                                   : std::vector<std::wstring>{ m_cycleRequestPath };
+    m_cycleRequestPath.clear();
+    m_cycleSawRemoval = false;
+    // Backstop. Everything that ends a cycle normally is an event that might not
+    // arrive, and the flag staying up means the controller is never opened again.
+    SetTimer(m_hwnd, IDT_CYCLE_WATCHDOG, CYCLE_MAX_MS, nullptr);
+
     // Always through the helper, elevated or not. Cycling in this process is
     // possible when elevated, but it is synchronous: four interfaces at a
     // second apiece means five seconds with no message pump, so every
@@ -1190,8 +1218,62 @@ bool TrayApp::RestartControllerDevices() {
         return true;
 
     // No cycle was started, so nothing is running that our handle could veto.
-    m_cycleInFlight = false;
+    EndCycle("the helper could not be started");
     return false;
+}
+
+// Watch a cycle we asked for without opening anything.
+//
+// The old test for "the cycle has delivered" was ControllerManager::IsConnected,
+// which is true whenever any Steam Controller interface enumerates. A receiver
+// publishes four and a narrowed cycle takes down one, so the surviving three
+// held that true for the whole cycle and the guard came down on the first
+// arrival of anything HID-shaped — including the device we were cycling, before
+// it had even gone. What actually ends a cycle is the interfaces it took down
+// coming back, so that is what this waits for.
+//
+// Enumeration is the right instrument for it: HidDevice::Enumerate opens each
+// candidate with a zero access mask and closes it before moving on, so unlike
+// OpenSlot it leaves nothing behind that PnP could trip over.
+void TrayApp::TrackCycleProgress() {
+    if (m_cyclePaths.empty()) {  // nothing recorded to wait on — do not hang on it
+        EndCycle("no interfaces were recorded to wait for");
+        return;
+    }
+    const auto live    = SteamController::EnumerateAll();
+    const bool allBack = std::all_of(m_cyclePaths.begin(), m_cyclePaths.end(),
+        [&](const std::wstring& p) {
+            return std::find(live.begin(), live.end(), p) != live.end();
+        });
+    if (!allBack) {
+        m_cycleSawRemoval = true;  // the helper has started taking them down
+        return;
+    }
+    // Present having never gone is some other device's arrival landing before
+    // ours went down. Present having gone is the cycle completing.
+    if (m_cycleSawRemoval)
+        EndCycle("cycled interfaces are back");
+}
+
+// One way out, so no path can leave the flag raised: that would hold off every
+// reopen from here on and leave the tray reporting no controller until restart.
+//
+// resync is false for the caller that is about to let the device go anyway.
+// Reopening it there would be the very veto this all exists to prevent, only
+// now against a cycle nobody is waiting on.
+void TrayApp::EndCycle(const char* why, bool resync) {
+    KillTimer(m_hwnd, IDT_CYCLE_WATCHDOG);
+    if (!m_cycleInFlight) return;
+    m_cycleInFlight   = false;
+    m_cycleSawRemoval = false;
+    m_cyclePaths.clear();
+    if (m_lastCycleTick != 0)
+        EventLog::Write("CYCLE: done after %llu ms (%s)",
+                        GetTickCount64() - m_lastCycleTick, why);
+    // Pick up whatever the cycle left behind — the slot list has been frozen
+    // since the flag went up, so nothing else has looked at the device since.
+    if (resync)
+        m_controller->OnDeviceChange();
 }
 
 void TrayApp::ShowElevationBalloon() {
