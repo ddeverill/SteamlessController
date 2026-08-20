@@ -4,24 +4,15 @@ A lightweight Windows system tray app that lets you use a **Steam Controller** a
 
 <img width="263" height="154" alt="image" src="https://github.com/user-attachments/assets/7f4a63f6-b700-47dd-aeac-1fa8f78fcd04" />
 
-When **Steamless Mode** is active, the app disables the controller's built-in keyboard/mouse emulation (lizard mode) and exposes it as a virtual Xbox 360 controller via [ViGEmBus](https://github.com/nefarius/ViGEmBus), making it compatible with any game that supports XInput or the Xbox controller.
+When **Steamless Mode** is active, the app disables the controller's built-in keyboard/mouse emulation (lizard mode) and exposes it as a virtual Xbox 360 controller (or PlayStation controller) via [ViGEmBus](https://github.com/nefarius/ViGEmBus), making it compatible with any game that supports the Xbox or PlayStation controller.
 
 ## Features
 
-- **NEW in 1.9** - Bluetooth! Use the controller wired, through the dongle, or paired over Bluetooth LE
-- **NEW in 1.8** - Automatically enable/disable based on if Steam is running, or a Steam game is running!
-- **NEW in 1.8** - Advanced debugging and local logging to help diagnose issues
-- Rumble Support v2.0
-- Support for multiple Steam Controllers! Long live split screen!
-- New shiny UI for remapping L4/L5 R4/L5 back buttons!
-- Support for Xbox OR PlayStation controllers - with PS Touchpad and Gyro plumbing.
-- System tray icon shows connection and mode status
-- **Steamless Mode** — disables lizard mode and exposes controller as Xbox 360 gamepad
-- **Trackpad Mouse** — use the right (or left) trackpad as a mouse cursor
-- **Back Buttons for Clicking** — the upper paddles (L4/R4) left-click by default; rebind any paddle to a gamepad button, right click, or Off
-- **Use Left Trackpad Instead** — mirror all trackpad/back-button functionality to the left side for left-handed users
-- **Start with Windows** — launch automatically at login
-- Settings persist across restarts
+- Supports all connection modes! Puck, wired, and Bluetooth!
+- Runs alongside Steam! No need to close Steam to toggle modes or force you to use your PC in a weird way.
+- Brand new extensive remapping controls for back buttons and trackpads. Save custom mappings and load them per game!
+- Enable/Disable manually, or use new auto modes to turn on / off when it makes sense.
+- Start on launch, suppress notifications, make this utility your own.
 
 <img width="614" height="430" alt="image" src="https://github.com/user-attachments/assets/a8077a20-fd6b-4e1a-a3ea-ccd288a176c6" />
 
