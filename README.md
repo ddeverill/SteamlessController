@@ -14,9 +14,9 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 - Enable/Disable manually, or use new auto modes to turn on / off when it makes sense.
 - Start on launch, suppress notifications, make this utility your own.
 
-<img width="614" height="430" alt="image" src="https://github.com/user-attachments/assets/a8077a20-fd6b-4e1a-a3ea-ccd288a176c6" />
+<img width="478" height="373" alt="image" src="https://github.com/user-attachments/assets/171522c4-71a3-46ff-bfa1-d7c5d4b845c6" />
 
-<img width="757" height="663" alt="image" src="https://github.com/user-attachments/assets/9a53b632-82b6-4485-93b0-1238c2ec6a07" />
+<img width="878" height="753" alt="image" src="https://github.com/user-attachments/assets/72b0e77b-8928-4e51-842f-0b2c854dd298" />
 
 ## Requirements
 
