@@ -121,9 +121,9 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     wc.lpszClassName = WNDCLASS_NAME;
     if (!RegisterClassExW(&wc)) return false;
 
-    // Message-only window — invisible, never shown.
+    // Hidden top-level window so it receives broadcast shell notifications including TaskbarCreated when Explorer restarts.
     m_hwnd = CreateWindowExW(0, WNDCLASS_NAME, L"SteamlessController",
-                             0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, hInstance, nullptr);
+                             0, 0, 0, 0, 0, nullptr, nullptr, hInstance, nullptr);
     if (!m_hwnd) return false;
 
     // Register for HID device arrival/removal notifications.
