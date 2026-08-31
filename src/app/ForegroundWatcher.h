@@ -2,25 +2,7 @@
 #include <Windows.h>
 #include <functional>
 #include <string>
-
-// Who owns the window the user is currently working in.
-//
-// Both fields are filled where they apply: every process has an image path,
-// and only a packaged (MSIX/UWP) one has an AUMID. A foreground window we
-// could not identify at all — a protected process, or one that closed while
-// being asked — reports empty, which callers should read as "unknown", never
-// as "the desktop".
-struct ForegroundIdentity {
-    std::wstring exePath;
-    std::wstring aumid;
-
-    bool Empty() const { return exePath.empty() && aumid.empty(); }
-    bool operator==(const ForegroundIdentity& o) const {
-        return _wcsicmp(exePath.c_str(), o.exePath.c_str()) == 0
-            && _wcsicmp(aumid.c_str(),   o.aumid.c_str())   == 0;
-    }
-    bool operator!=(const ForegroundIdentity& o) const { return !(*this == o); }
-};
+#include "ProcessIdentity.h"
 
 // Reports which application the user has switched to, without polling.
 //

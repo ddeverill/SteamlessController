@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cwctype>
 #include <string>
 
 static TrayApp* g_app = nullptr;
@@ -517,12 +518,27 @@ static bool SamePath(const std::wstring& a, const std::wstring& b) {
 std::wstring TrayApp::MatchProfile(const ForegroundIdentity& id) const {
     static constexpr wchar_t kSteamPrefix[] = L"steam://rungameid/";
     static constexpr size_t  kSteamPrefixLen = ARRAYSIZE(kSteamPrefix) - 1;
+    static constexpr size_t  kDirPrefixLen   = 4;  // "dir:"
 
     // Resolved once rather than per profile: the lookup walks every known
     // Steam install, and the answer cannot differ between profiles.
     const std::wstring steamAppId = m_steamApps.AppIdForPath(id.exePath);
 
+    std::wstring lowerExe = id.exePath;
+    for (wchar_t& c : lowerExe) c = static_cast<wchar_t>(towlower(c));
+
+    // A "dir:" profile claims a whole install folder, so two of them can both
+    // match one process — a game installed inside another game's directory.
+    // The longer match is the more specific answer, which is the same rule
+    // SteamAppLocator::AppIdForPath applies within Steam's own libraries.
+    std::wstring bestDirId;
+    size_t       bestDirLen = 0;
+
     for (const auto& [profileId, profile] : m_gameProfiles) {
+        // An exact identity beats any directory, so these return straight
+        // away rather than competing on length: a profile naming this precise
+        // executable or package was made for this application and nothing
+        // else, while a directory only says the application lives there.
         if (profileId.rfind(L"aumid:", 0) == 0) {
             if (!id.aumid.empty()
                 && _wcsicmp(profileId.c_str() + 6, id.aumid.c_str()) == 0)
@@ -532,11 +548,22 @@ std::wstring TrayApp::MatchProfile(const ForegroundIdentity& id) const {
                                                          std::wstring::npos,
                                                          steamAppId) == 0)
                 return profileId;
+        } else if (profileId.rfind(L"dir:", 0) == 0) {
+            if (lowerExe.empty()) continue;
+            std::wstring dir = profileId.substr(kDirPrefixLen);
+            for (wchar_t& c : dir) c = static_cast<wchar_t>(towlower(c));
+            // The trailing separator is what stops "...\Portal" matching an
+            // executable under "...\Portal 2".
+            if (!dir.empty() && dir.back() != L'\\') dir += L'\\';
+            if (dir.size() <= bestDirLen) continue;  // cannot beat what we have
+            if (lowerExe.compare(0, dir.size(), dir) != 0) continue;
+            bestDirId  = profileId;
+            bestDirLen = dir.size();
         } else if (SamePath(profileId, id.exePath)) {
             return profileId;
         }
     }
-    return {};
+    return bestDirId;
 }
 
 void TrayApp::RefreshSteamApps() {
@@ -1314,18 +1341,22 @@ void TrayApp::OpenRemapWindow() {
     // The moment a user is most likely to have installed something since the
     // app started, and the moment a stale list would matter most — profiles
     // created here are matched against it.
+    //
+    // Left on the UI thread, unlike the picker's own enumeration below. It is
+    // a handful of small text files and measures in tens of milliseconds, and
+    // m_steamApps is read by MatchProfile on this thread every time the
+    // foreground changes — so moving it would trade an unnoticeable delay for
+    // a data race.
     RefreshSteamApps();
 
-    // Synchronous on the UI thread — the Start Menu walk plus the
-    // shell:AppsFolder enumeration together are still fast enough in
-    // practice (local disk and COM calls, no network) to not need a
-    // background thread for an action the user just explicitly asked to
-    // open a window for.
+    // The window fills its own picker, on a background thread: finding every
+    // installed application runs to well over a second on an ordinary machine
+    // — several, on a cold cache — and doing it here meant the window did not
+    // appear at all until it finished.
     m_remapWindow.Open(
         m_hInstance,
         m_controller.get(),
         m_defaultProfile,
-        GameLibrary::EnumerateInstalled(),
         m_gameProfiles,
         [this](const std::wstring& gameId, const ControllerProfile& profile) {
             if (gameId.empty()) {

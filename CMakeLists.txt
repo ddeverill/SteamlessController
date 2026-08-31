@@ -48,13 +48,15 @@ if (MSVC)
     target_compile_options(RawControllerProbe PRIVATE /W4 /utf-8)
 endif()
 
-# Game-library diagnostic probe — dumps what the Start Menu walk finds
+# Game-library diagnostic probe — dumps every source the picker draws on
 add_executable(GameLibraryProbe
     src/probe/GameLibraryProbe.cpp
     src/app/GameLibrary.cpp
+    src/app/LauncherGames.cpp
+    src/app/ProcessIdentity.cpp
 )
 target_include_directories(GameLibraryProbe PRIVATE src)
-target_link_libraries(GameLibraryProbe PRIVATE ole32 shell32 shlwapi windowsapp)
+target_link_libraries(GameLibraryProbe PRIVATE ole32 shell32 shlwapi version windowsapp)
 if (MSVC)
     target_compile_options(GameLibraryProbe PRIVATE /W4 /WX /utf-8)
     set_target_properties(GameLibraryProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
@@ -65,6 +67,7 @@ endif()
 add_executable(ForegroundProbe
     src/probe/ForegroundProbe.cpp
     src/app/ForegroundWatcher.cpp
+    src/app/ProcessIdentity.cpp
 )
 target_include_directories(ForegroundProbe PRIVATE src)
 if (MSVC)
@@ -161,6 +164,8 @@ add_executable(SteamlessController WIN32
     src/app/GameLibrary.cpp
     src/app/GameProfiles.cpp
     src/app/HandleFinder.cpp
+    src/app/LauncherGames.cpp
+    src/app/ProcessIdentity.cpp
     src/app/RemapWindow.cpp
     src/app/SteamAppLocator.cpp
     src/app/ViGEmBusInfo.cpp

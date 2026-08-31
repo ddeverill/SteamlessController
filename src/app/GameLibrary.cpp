@@ -1,5 +1,7 @@
 #define NOMINMAX  // avoid Windows.h's min/max macros colliding with C++/WinRT templates
 #include "GameLibrary.h"
+#include "LauncherGames.h"
+#include "ProcessIdentity.h"
 #include <Windows.h>
 #include <shlobj.h>
 #include <shlwapi.h>
@@ -16,17 +18,33 @@
 
 namespace {
 
-// Targets under the Windows directory are system utilities (Notepad, Control
-// Panel applets, accessories) that Start Menu shortcuts surface right
-// alongside real applications — filtered out so the picker isn't dominated
-// by them.
-bool IsUnderWindowsDir(const std::wstring& path) {
-    wchar_t winDir[MAX_PATH];
-    if (!GetWindowsDirectoryW(winDir, MAX_PATH)) return false;
-    const size_t len = wcslen(winDir);
-    return path.size() > len
-        && _wcsnicmp(path.c_str(), winDir, len) == 0
-        && (path[len] == L'\\' || path[len] == L'\0');
+// The executables a launcher's own shortcuts point at. Every game a launcher
+// installs gets a .lnk targeting one of these with a per-game argument, and
+// IShellLink::GetPath hands back only the executable — so without this the
+// whole Blizzard library resolves to one "Battle.net Launcher.exe" entry and
+// DedupKey collapses it to a single wrongly-named game. Skipping them costs
+// nothing now that LauncherGames reads each launcher's own records, which
+// name the games properly and give a directory to match on.
+//
+// EA is the exception: its catalogue is encrypted with a key derived from the
+// machine's hardware, so there is no enumerator for it and its games are
+// simply absent rather than present-but-wrong. Absent is the better failure,
+// and the manual picker in the remap window covers it.
+bool IsLauncherStub(const std::wstring& exePath) {
+    static const wchar_t* kStubs[] = {
+        L"battle.net launcher.exe", L"battle.net.exe",
+        L"eadesktop.exe", L"eabackgroundservice.exe", L"origin.exe",
+        L"upc.exe", L"ubisoftconnect.exe", L"uplay.exe",
+        L"epicgameslauncher.exe", L"galaxyclient.exe",
+    };
+
+    const size_t slash = exePath.find_last_of(L'\\');
+    std::wstring leaf = slash == std::wstring::npos ? exePath
+                                                    : exePath.substr(slash + 1);
+    for (wchar_t& c : leaf) c = static_cast<wchar_t>(towlower(c));
+    for (const wchar_t* stub : kStubs)
+        if (leaf == stub) return true;
+    return false;
 }
 
 // Shortcut names that are never the game/app itself, just noise that rides
@@ -63,11 +81,13 @@ bool LooksLikeNoise(const std::wstring& name) {
 
 // Case-insensitive identity for dedup. Only a bare filesystem path benefits
 // from PathCanonicalizeW (collapsing "." / ".." segments); running it over a
-// "steam://" URI or an "aumid:" id risks mangling them for no reason, since
-// neither one follows filesystem path rules.
+// "steam://" URI, an "aumid:" id or a "dir:" one risks mangling them for no
+// reason, since none of the three follows filesystem path rules — the "dir:"
+// prefix in particular would be read as a relative first segment.
 std::wstring DedupKey(const std::wstring& id) {
     std::wstring key;
-    if (id.rfind(L"steam://", 0) == 0 || id.rfind(L"aumid:", 0) == 0) {
+    if (id.rfind(L"steam://", 0) == 0 || id.rfind(L"aumid:", 0) == 0
+        || id.rfind(L"dir:", 0) == 0) {
         key = id;
     } else {
         wchar_t buf[MAX_PATH];
@@ -194,7 +214,7 @@ std::vector<InstalledGame> EnumeratePackagedApps() {
                 const std::wstring name(entry.DisplayInfo().DisplayName());
                 const std::wstring aumid(entry.AppUserModelId());
                 if (name.empty() || aumid.empty()) continue;
-                games.push_back({ name, L"aumid:" + aumid });
+                games.push_back({ name, L"aumid:" + aumid, GameSource::Packaged });
             }
         }
     } catch (const winrt::hresult_error&) {
@@ -205,7 +225,223 @@ std::vector<InstalledGame> EnumeratePackagedApps() {
     return games;
 }
 
+// Lowercased, with a trailing separator, so a prefix test cannot match a
+// sibling folder whose name merely starts the same way ("Portal" against
+// "Portal 2") — the same convention SteamAppLocator uses on its own map.
+std::wstring ContainmentPrefix(const std::wstring& dir) {
+    std::wstring key = dir;
+    for (wchar_t& c : key) c = static_cast<wchar_t>(towlower(c));
+    if (!key.empty() && key.back() != L'\\') key += L'\\';
+    return key;
+}
+
+bool IsInsideAny(const std::wstring& exePath, const std::vector<std::wstring>& prefixes) {
+    std::wstring lower = exePath;
+    for (wchar_t& c : lower) c = static_cast<wchar_t>(towlower(c));
+    for (const auto& prefix : prefixes)
+        if (lower.compare(0, prefix.size(), prefix) == 0) return true;
+    return false;
+}
+
 }  // namespace
+
+struct LangCodePage { WORD language; WORD codePage; };
+
+// One string out of a loaded version resource, for a given language block.
+std::wstring VersionString(const std::vector<BYTE>& block, LangCodePage lang,
+                           const wchar_t* field) {
+    wchar_t query[80];
+    swprintf_s(query, L"\\StringFileInfo\\%04x%04x\\%ls",
+               lang.language, lang.codePage, field);
+
+    wchar_t* value = nullptr;
+    UINT     chars = 0;
+    if (!VerQueryValueW(const_cast<BYTE*>(block.data()), query,
+                        reinterpret_cast<LPVOID*>(&value), &chars)
+        || !value)
+        return {};
+
+    std::wstring text(value, chars);
+    // The returned length includes the terminator, and some resources pad.
+    while (!text.empty() && (text.back() == L'\0' || text.back() == L' '))
+        text.pop_back();
+    return text;
+}
+
+// The name an executable calls itself in its version resource — "Among Us"
+// for AmongUs.exe, "Firefox" for firefox.exe. Far better prose than a
+// filename, and the only name a portable game with no installer has anywhere
+// at all.
+static std::wstring FileDescriptionOf(const std::wstring& exePath) {
+    DWORD ignored = 0;
+    const DWORD size = GetFileVersionInfoSizeW(exePath.c_str(), &ignored);
+    if (size == 0) return {};
+
+    std::vector<BYTE> block(size);
+    if (!GetFileVersionInfoW(exePath.c_str(), 0, size, block.data())) return {};
+
+    // An executable is supposed to declare which languages its strings are
+    // in, and the string blocks are keyed by that. Plenty do not — several
+    // Microsoft Store binaries among them — so the two conventional keys are
+    // tried as well: US English and language-neutral, both with the Unicode
+    // codepage. Without that fallback those binaries yield nothing and the
+    // caller ends up naming a profile after a window title.
+    std::vector<LangCodePage> langs;
+    LangCodePage* declared  = nullptr;
+    UINT          langBytes = 0;
+    if (VerQueryValueW(block.data(), L"\\VarFileInfo\\Translation",
+                       reinterpret_cast<LPVOID*>(&declared), &langBytes)
+        && declared)
+        langs.assign(declared, declared + langBytes / sizeof(LangCodePage));
+    langs.push_back({ 0x0409, 0x04b0 });
+    langs.push_back({ 0x0000, 0x04b0 });
+
+    for (const LangCodePage& lang : langs) {
+        // FileDescription is the friendlier of the two and what most binaries
+        // fill in properly. ProductName is the better answer when a build has
+        // put its own filename in FileDescription, which is exactly what
+        // Windows' own Notepad does ("Notepad.exe" against "Notepad").
+        const std::wstring description = VersionString(block, lang, L"FileDescription");
+        const std::wstring product     = VersionString(block, lang, L"ProductName");
+
+        const bool descriptionIsFilename =
+            description.size() > 4
+            && _wcsicmp(description.c_str() + description.size() - 4, L".exe") == 0;
+        if (!description.empty() && !descriptionIsFilename) return description;
+        if (!product.empty()) return product;
+        if (!description.empty()) return description;
+    }
+    return {};
+}
+
+namespace {
+
+// Background helpers that happen to own a visible window. A launcher itself
+// is worth offering — someone may genuinely want a profile that applies while
+// they are browsing their library — but these are pieces of one, doing a job
+// on its behalf, and nobody is playing them. Steam is the offender in
+// practice: its library and store are a Chromium instance, so
+// steamwebhelper.exe owns a real titled window and passes every other test
+// here.
+bool IsHelperProcess(const std::wstring& exePath) {
+    static const wchar_t* kHelpers[] = {
+        L"steamwebhelper.exe",     // the CEF host behind Steam's own UI
+        L"gameoverlayui.exe",      // the in-game overlay, drawn over a game
+        L"steamerrorreporter.exe",
+        L"steamerrorreporter64.exe",
+        L"streaming_client.exe",   // Remote Play
+    };
+
+    const size_t slash = exePath.find_last_of(L'\\');
+    std::wstring leaf = slash == std::wstring::npos ? exePath
+                                                    : exePath.substr(slash + 1);
+    for (wchar_t& c : leaf) c = static_cast<wchar_t>(towlower(c));
+    for (const wchar_t* helper : kHelpers)
+        if (leaf == helper) return true;
+    return false;
+}
+
+BOOL CALLBACK CollectRunningWindow(HWND hwnd, LPARAM param) {
+    auto* found = reinterpret_cast<std::vector<InstalledGame>*>(param);
+
+    // What the user could alt-tab to, which is the same population they are
+    // choosing from in their head. A window with no title, or one owned by
+    // another window, is a tooltip or a palette rather than an application.
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    if (GetWindow(hwnd, GW_OWNER) != nullptr) return TRUE;
+    if (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) return TRUE;
+
+    wchar_t title[256];
+    const int len = GetWindowTextW(hwnd, title, ARRAYSIZE(title));
+    if (len <= 0) return TRUE;
+
+    // ProcessIdentity resolves a packaged app past ApplicationFrameHost, so
+    // Store and Xbox app titles name themselves here rather than all looking
+    // like the same host process.
+    const ForegroundIdentity id = ProcessIdentity::ForWindow(hwnd);
+    if (id.exePath.empty()) return TRUE;  // protected, or closed under us
+
+    // Windows itself keeps several windowed processes alive at all times, and
+    // they are "running" by every test above: the desktop and taskbar
+    // (explorer.exe), the frame packaged apps are hosted in
+    // (ApplicationFrameHost.exe, when its real child could not be reached),
+    // and the touch keyboard (TextInputHost.exe). The same rule that keeps
+    // them out of the installed list keeps them out of this one.
+    if (GameLibrary::IsSystemProgram(id.exePath)) return TRUE;
+    if (IsHelperProcess(id.exePath)) return TRUE;
+
+    // Our own window is in this list too, and a profile for it would be a
+    // joke at the user's expense.
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == GetCurrentProcessId()) return TRUE;
+
+    for (const auto& already : *found)
+        if (_wcsicmp(already.id.c_str(), id.exePath.c_str()) == 0)
+            return TRUE;  // one entry per application, not per window
+
+    InstalledGame app;
+    app.id     = id.exePath;
+    app.source = GameSource::Manual;
+    // The executable's own description first: a window title changes with
+    // what the application is doing ("Untitled - Notepad", a level name), and
+    // would be a poor thing to label a saved profile with. The title is still
+    // the better fallback, since a binary with no version resource at all is
+    // usually the sort of small game that has no installer either.
+    app.name = FileDescriptionOf(id.exePath);
+    if (app.name.empty()) app.name.assign(title, static_cast<size_t>(len));
+    if (app.name.empty()) app.name = GameLibrary::NameForExecutable(id.exePath);
+
+    found->push_back(std::move(app));
+    return TRUE;
+}
+
+}  // namespace
+
+namespace GameLibrary {
+
+std::wstring NameForExecutable(const std::wstring& exePath) {
+    std::wstring name = FileDescriptionOf(exePath);
+    // NameFromShortcutPath does exactly the right thing to a full path too:
+    // take the leaf, drop the extension.
+    if (name.empty()) name = NameFromShortcutPath(exePath);
+    return name;
+}
+
+std::vector<InstalledGame> EnumerateRunning() {
+    std::vector<InstalledGame> found;
+    EnumWindows(CollectRunningWindow, reinterpret_cast<LPARAM>(&found));
+    std::sort(found.begin(), found.end(), [](const InstalledGame& a, const InstalledGame& b) {
+        return _wcsicmp(a.name.c_str(), b.name.c_str()) < 0;
+    });
+    return found;
+}
+
+bool IsSystemProgram(const std::wstring& exePath) {
+    wchar_t winDir[MAX_PATH];
+    if (!GetWindowsDirectoryW(winDir, MAX_PATH)) return false;
+    const size_t len = wcslen(winDir);
+    return exePath.size() > len
+        && _wcsnicmp(exePath.c_str(), winDir, len) == 0
+        && (exePath[len] == L'\\' || exePath[len] == L'\0');
+}
+
+}  // namespace GameLibrary
+
+const wchar_t* GameSourceName(GameSource source) {
+    switch (source) {
+        case GameSource::StartMenu: return L"start-menu";
+        case GameSource::Steam:     return L"steam";
+        case GameSource::Packaged:  return L"packaged";
+        case GameSource::Epic:      return L"epic";
+        case GameSource::Gog:       return L"gog";
+        case GameSource::Ubisoft:   return L"ubisoft";
+        case GameSource::BattleNet: return L"battle.net";
+        case GameSource::Manual:    return L"manual";
+        case GameSource::Missing:   return L"missing";
+    }
+    return L"unknown";
+}
 
 namespace GameLibrary {
 
@@ -217,15 +453,29 @@ std::vector<InstalledGame> EnumerateInstalled() {
     const HRESULT coInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     const bool comOwnedByUs = coInit == S_OK || coInit == S_FALSE;
 
+    // First, because the shortcut walk below is filtered against what this
+    // finds: a launcher's own records name a game better than its shortcut
+    // does, and give an install directory rather than one executable.
+    std::unordered_set<std::wstring> seen;
+    std::vector<std::wstring>        launcherDirs;
+    for (auto& game : LauncherGames::EnumerateAll()) {
+        if (!seen.insert(DedupKey(game.id)).second) continue;
+        launcherDirs.push_back(ContainmentPrefix(game.id.substr(4)));  // past "dir:"
+        games.push_back(std::move(game));
+    }
+
     std::vector<std::wstring> shortcutPaths;
-    for (REFKNOWNFOLDERID folder : { FOLDERID_CommonPrograms, FOLDERID_Programs }) {
+    // Both Desktop folders as well as both Start Menu ones: plenty of
+    // installers — Epic's "create desktop shortcut" among them — offer only a
+    // desktop icon, and a game with no Start Menu entry was invisible here.
+    for (REFKNOWNFOLDERID folder : { FOLDERID_CommonPrograms, FOLDERID_Programs,
+                                     FOLDERID_PublicDesktop, FOLDERID_Desktop }) {
         PWSTR path = nullptr;
         if (SUCCEEDED(SHGetKnownFolderPath(folder, 0, nullptr, &path)) && path)
             WalkDirectory(path, shortcutPaths);
         if (path) CoTaskMemFree(path);
     }
 
-    std::unordered_set<std::wstring> seen;
     for (const auto& shortcutPath : shortcutPaths) {
         std::wstring id;
 
@@ -248,7 +498,11 @@ std::vector<InstalledGame> EnumerateInstalled() {
             if (!HasExtension(id, L".exe")) continue;
             if (GetFileAttributesW(id.c_str()) == INVALID_FILE_ATTRIBUTES)
                 continue;  // shortcut is stale — target no longer exists
-            if (IsUnderWindowsDir(id)) continue;
+            if (IsSystemProgram(id)) continue;
+            if (IsLauncherStub(id)) continue;
+            // The launcher pass already has this game, under a directory id
+            // that matches more of it than this one executable would.
+            if (IsInsideAny(id, launcherDirs)) continue;
         }
 
         // The shortcut's own filename is the friendly name a user or
@@ -266,7 +520,8 @@ std::vector<InstalledGame> EnumerateInstalled() {
         if (!seen.insert(DedupKey(id)).second)
             continue;  // already have this game from another shortcut
 
-        games.push_back({ std::move(name), std::move(id) });
+        games.push_back({ std::move(name), std::move(id),
+                          isSteamLink ? GameSource::Steam : GameSource::StartMenu });
     }
 
     for (auto& game : EnumeratePackagedApps()) {
