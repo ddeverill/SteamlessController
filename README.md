@@ -82,6 +82,7 @@ The filename must match `#define ViGEmSetup` at the top of the script. Inno reso
 | `ViGEmBusProbe` | Reports whether a ViGEm bus is present by enumerating its interface. Used by Setup to verify the driver installed, and shipped as a diagnostic. |
 | `SteamProbe` | Console diagnostic tool — dumps raw HID report bytes as you interact with the controller. Useful for protocol research. |
 | `RawControllerProbe` | Checks whether `Windows.Gaming.Input.RawGameController` can enumerate the Steam Controller (requires WinRT). |
+| `GameLibraryProbe` | Console diagnostic — lists every application the per-game profile picker can find, with the source each came from and a per-source count. Ask for its output when someone reports that a game is missing from the picker. Given a directory, it instead runs only the Epic manifest reader against it. |
 
 ## How it works
 
@@ -90,6 +91,23 @@ The Steam Controller exposes a vendor HID collection (usage page `0xFF00`) that 
 SteamlessController sends HID feature reports to disable lizard mode, then reads the raw input reports and translates them into a virtual Xbox 360 controller via ViGEmBus. A background heartbeat re-sends the disable command every 800 ms to keep lizard mode off.
 
 The full input report layout is documented in [`src/steam/SteamController.h`](src/steam/SteamController.h).
+
+### Per-game profiles
+
+A profile can be attached to one game instead of applying everywhere. The game
+is chosen from a picker that draws on several sources at once: both Start Menu
+and both Desktop shortcut folders, the installed MSIX/Store package list, Steam's
+own manifests, and the records kept by the Epic Games Store, GOG Galaxy, Ubisoft
+Connect and Battle.net. Anything none of those know about — a portable build, an
+emulator, an itch.io download — can be added by hand, either by picking it out of
+the applications currently running or by browsing to its `.exe`.
+
+Whichever profile applies is decided by what is in the *foreground*, not by what
+is running: a launcher that stays resident long after the game exits would
+otherwise keep claiming the controller. See
+[`src/app/ForegroundWatcher.h`](src/app/ForegroundWatcher.h) for why, and
+[`src/app/GameLibrary.h`](src/app/GameLibrary.h) for the four shapes a game's
+saved identity can take.
 
 ## Third-party
 

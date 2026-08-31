@@ -1,13 +1,24 @@
 #include "RemapWindow.h"
 #include "KeyInput.h"
 #include "ControllerManager.h"
+#include "EventLog.h"
+#include "ProcessIdentity.h"
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <windowsx.h>
+#include <wrl/client.h>
+#include <map>
+#include <memory>
 #include <string>
+#include <thread>
 #include <cstring>
 
 RemapWindow* RemapWindow::s_instance = nullptr;
+
+// Defined further down, alongside the rest of the page-message plumbing;
+// declared here because the picker's "add an application" paths sit above it.
+static std::wstring JsonEscape(const std::wstring& s);
 
 // ---------------------------------------------------------------------------
 // Embedded UI — self-contained HTML/CSS/JS matching the design handoff.
@@ -49,8 +60,16 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 #body h2{font-size:21px;font-weight:800;color:#fff;letter-spacing:-.2px;}
 .instr{font-size:13.5px;color:#8f98a0;line-height:1.5;margin-top:4px;}
 .instr b{color:#66c0f4;font-weight:700;}
+/* Everything below the APPLY TO picker lives in #settings so it can be dimmed
+   as one block. That made it a plain div between #body's flex children, so its
+   groups stacked with no gap at all while the groups above it got #body's —
+   which is why each section heading sat jammed against the box above it. Same
+   axis, same gap, so the two halves of the page space identically. */
+#settings{display:flex;flex-direction:column;gap:22px;}
 .group{display:flex;flex-direction:column;gap:11px;}
-.group-label{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:1.5px;color:#5c6b78;font-weight:600;}
+/* An explicit line box: at 11px with this letter-spacing the uppercase
+   headings were riding the top of their line and losing a pixel off the caps. */
+.group-label{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:1.5px;color:#5c6b78;font-weight:600;line-height:1.5;}
 .row{display:flex;flex-direction:column;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:12px 16px;transition:border-color .2s,box-shadow .2s,background .2s;}
 .row.listening{background:rgba(255,255,255,.05);border-color:#66c0f4;box-shadow:0 0 0 1px rgba(102,192,244,.4),0 10px 26px rgba(0,0,0,.32);}
 .row.flash{border-color:#5ba32b;box-shadow:0 0 0 1px rgba(91,163,43,.4);}
@@ -93,6 +112,13 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 .combo-item:hover{background:rgba(102,192,244,.12);color:#fff;}
 .combo-item.active{background:rgba(102,192,244,.18);color:#fff;}
 .combo-empty{padding:10px;font-size:12px;color:#5c6b78;text-align:center;}
+.combo-add{margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;gap:2px;}
+.combo-add-item{padding:8px 10px;border-radius:6px;cursor:pointer;font-size:12.5px;color:#66c0f4;font-weight:600;}
+.combo-add-item:hover{background:rgba(102,192,244,.12);}
+.combo-note{padding:8px 10px 2px;font-size:11.5px;color:#5c6b78;text-align:center;}
+.combo-back{padding:6px 10px 8px;font-size:11.5px;color:#8f98a0;cursor:pointer;}
+.combo-back:hover{color:#66c0f4;}
+.combo-item .exe{display:block;font-size:11px;color:#5c6b78;margin-top:2px;}
 .mode-row{padding-top:14px;padding-bottom:14px;}
 .mode-select{background:#101925;border:1px solid rgba(255,255,255,.12);border-radius:6px;color:#fff;font-size:13px;font-family:'Barlow',system-ui,sans-serif;padding:7px 10px;font-weight:600;cursor:pointer;flex:none;min-width:215px;}
 .mode-select:hover{border-color:#66c0f4;}
@@ -165,8 +191,12 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
         <span class="chev">&#9660;</span>
       </button>
       <div class="combo-panel" id="combo-panel" style="display:none;">
-        <input class="combo-search" id="combo-search" type="text" placeholder="Search for a game..." autocomplete="off">
+        <input class="combo-search" id="combo-search" type="text" placeholder="Search for a game or app..." autocomplete="off">
         <div id="combo-results"></div>
+        <div class="combo-add" id="combo-add">
+          <div class="combo-add-item" onclick="askRunningApps()">&#43;&nbsp; Add an app that&#39;s running now&#8230;</div>
+          <div class="combo-add-item" onclick="askBrowseExe()">&#43;&nbsp; Browse for a program&#8230;</div>
+        </div>
       </div>
     </div>
     <div class="missing-note" id="missing-note" style="display:none;">This game wasn't found on this PC. Its profile is kept, and will start working again if the game comes back. Delete this if the game won't be coming back.</div>
@@ -358,10 +388,18 @@ var keyLabels = {};
 var flash = null;
 var flashTimer = null;
 var applyTimer = null;
-// Per-game picker. Game ids are small indices ("0","1",...) into GAMES, not
-// the raw exe path — keeps the hand-rolled JSON channel back to C++ free of
-// Unicode and backslash escaping. "" is the always-present default profile.
+// Per-game picker. Game ids are opaque decimal tokens issued by C++, not the
+// raw exe path — that keeps the hand-rolled JSON channel free of Unicode and
+// backslash escaping. A token is never reused or renumbered, so one held here
+// stays valid when GAMES is replaced. "" is the always-present default profile.
 var GAMES = [];
+// True between the window opening and the installed list arriving. The list
+// is built on a background thread because it takes a second or more.
+var gamesPending = true;
+// The "add an app that's running now" list, and whether it is showing in
+// place of the normal picker contents. Same token discipline as GAMES.
+var RUNNING = [];
+var runningOpen = false;
 // Each profile is a flat object: one entry per bindable row id, plus
 // "<pad>mode" for each trackpad's movement mode. Flat because the JSON
 // reader on the C++ side matches "key":"value" pairs without nesting.
@@ -440,12 +478,32 @@ if(window.chrome&&window.chrome.webview){
       keyLabels=msg.labels||{};
       GAMES=msg.games||[];
       PROFILES=msg.profiles||PROFILES;
+      // Set by C++, not assumed: when the enumeration beat WebView2's startup
+      // the list is already in this message and no 'games' message follows.
+      gamesPending=(msg.pending==='1');
       currentGame='';
       loadProfileInto(PROFILES['']||{});
       closeCombo();
       renderComboLabel();
       renderModeSelects();
       renderAll();
+    } else if(msg.type==='games'){
+      // Finding every installed app takes a second or more, so it lands after
+      // the window is already up — and possibly after the user has started
+      // editing. Deliberately touches nothing but the list: currentGame and
+      // the bindings in flight are theirs, not ours to reset.
+      GAMES=msg.games||[];
+      PROFILES=msg.profiles||PROFILES;
+      gamesPending=false;
+      renderComboLabel();
+      if(comboOpen) renderCombo();
+    } else if(msg.type==='runningApps'){
+      RUNNING=msg.apps||[];
+      runningOpen=true;
+      renderCombo();
+    } else if(msg.type==='gameAdded'){
+      runningOpen=false;
+      pickGame(msg.id);
     } else if(msg.type==='closeRequested'){
       // C++ asks before hiding the window so an unsaved profile isn't lost.
       guard(function(){postMsg({type:'close'});});
@@ -667,6 +725,13 @@ function renderCombo(){
   var results=document.getElementById('combo-results');
   if(!results) return;
 
+  var add=document.getElementById('combo-add');
+  // The two "add" actions are the way out of the running-app list, not
+  // something to offer inside it.
+  if(add) add.style.display=runningOpen?'none':'';
+
+  if(runningOpen){ results.innerHTML=runningHTML(); return; }
+
   var q=comboQuery.trim().toLowerCase();
   var html='';
 
@@ -689,21 +754,54 @@ function renderCombo(){
       return !pinnedIds[g.id]&&g.name.toLowerCase().indexOf(q)>=0;
     }).slice(0,50);  // a two-letter query can match hundreds; cap the DOM work
     if(matches.length){
-      html+='<div class="combo-section-label">INSTALLED GAMES</div><div class="combo-list">';
+      html+='<div class="combo-section-label">FOUND ON THIS PC</div><div class="combo-list">';
       matches.forEach(function(g){html+=itemHTML(g.id,g.name,g.missing==='1');});
       html+='</div>';
     } else if(!pinned.length&&!showDefault){
-      html+='<div class="combo-empty">No games match "'+escapeHTML(comboQuery)+'"</div>';
+      // The moment the user finds out their game is missing. The two actions
+      // below the results are what answers it, so say so rather than leaving
+      // them at a dead end.
+      html+='<div class="combo-empty">'+(gamesPending
+        ?'Still looking for your games&#8230;'
+        :'Nothing matches "'+escapeHTML(comboQuery)+'".<br>Add it yourself below.')+'</div>';
     }
+  } else if(gamesPending){
+    html+='<div class="combo-note">Looking for your games&#8230;</div>';
   }
 
   results.innerHTML=html;
+}
+// The applications with a window open right now. Offered because the game a
+// user wants a profile for is very often the one they just alt-tabbed out of,
+// and this asks them to know nothing about where it was installed.
+function runningHTML(){
+  var html='<div class="combo-back" onclick="closeRunning()">&#8592; Back</div>'
+          +'<div class="combo-section-label">RUNNING NOW</div>';
+  if(!RUNNING.length)
+    return html+'<div class="combo-empty">Nothing else is running that we can see.</div>';
+  html+='<div class="combo-list">';
+  RUNNING.forEach(function(a){
+    // The executable name is shown as well as the friendly one: two windows
+    // can describe themselves identically, and this is what tells them apart.
+    html+='<div class="combo-item" onclick="pickRunning(\''+a.i+'\')">'
+        +escapeHTML(a.name)+'<span class="exe">'+escapeHTML(a.exe)+'</span></div>';
+  });
+  return html+'</div>';
 }
 function itemHTML(id,name,missing){
   var cls='combo-item'+(id===currentGame?' active':'');
   var badge=missing?'<span class="combo-badge">NOT INSTALLED</span>':'';
   return '<div class="'+cls+'" onclick="pickGame(\''+id+'\')">'+escapeHTML(name)+badge+'</div>';
 }
+function askRunningApps(){ postMsg({type:'listRunning'}); }
+function askBrowseExe(){
+  // The file dialog is modal to this window, so the panel would otherwise sit
+  // open behind it and still be open when the dialog closes.
+  closeCombo();
+  postMsg({type:'browseExe'});
+}
+function pickRunning(token){ postMsg({type:'pickRunning',app:token}); }
+function closeRunning(){ runningOpen=false; renderCombo(); }
 // True for a picker entry that exists only because a profile refers to it.
 function gameMissing(gameId){
   for(var i=0;i<GAMES.length;i++) if(GAMES[i].id===gameId) return GAMES[i].missing==='1';
@@ -716,6 +814,7 @@ function escapeHTML(s){
 function openCombo(){
   comboOpen=true;
   comboQuery='';
+  runningOpen=false;
   document.getElementById('combo-search').value='';
   document.getElementById('combo-panel').style.display='block';
   renderCombo();
@@ -723,6 +822,7 @@ function openCombo(){
 }
 function closeCombo(){
   comboOpen=false;
+  runningOpen=false;
   var panel=document.getElementById('combo-panel');
   if(panel) panel.style.display='none';
 }
@@ -918,6 +1018,9 @@ document.getElementById('combo-toggle').onclick=function(e){
 };
 document.getElementById('combo-search').addEventListener('input',function(e){
   comboQuery=e.target.value;
+  // Typing is a search of the installed list, so it leaves the running-app
+  // view rather than filtering something the box does not describe.
+  runningOpen=false;
   renderCombo();
 });
 // Clicks inside the panel must not reach the document handler below, which
@@ -1109,20 +1212,69 @@ LRESULT RemapWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
 
+    case WM_NCCALCSIZE: {
+        // WS_THICKFRAME reserves a sizing frame on all four sides — 7 logical
+        // pixels of it. Windows draws the left, right and bottom ones as
+        // nothing at all, but paints the top, which is the pale band that sat
+        // above our own title bar and belonged to no part of this design.
+        //
+        // Giving the top back to the client area is what removes it: the page
+        // then reaches the very top of the window and there is no frame left
+        // there to paint. The other three sides are deliberately left alone —
+        // they cost nothing visually and they are what Windows snaps, sizes
+        // and casts the drop shadow from.
+        if (!wp) break;  // the RECT-only form; nothing to reclaim
+        // A maximized window is handed a rect that already overhangs the
+        // monitor by the frame on every side, and Windows trims it back to
+        // the work area. Reclaiming the top there would push the title bar
+        // off-screen — or under a taskbar docked at the top — so the frame
+        // is left exactly as Windows computed it. Reachable by snapping:
+        // this window has no maximize button, but Win+Up does not need one.
+        if (IsZoomed(hwnd)) break;
+        auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lp);
+        const LONG frameTop = params->rgrc[0].top;
+        const LRESULT result = DefWindowProcW(hwnd, msg, wp, lp);
+        if (result != 0) return result;  // Windows wants the client moved; defer
+        params->rgrc[0].top = frameTop;
+        return 0;
+    }
+
     case WM_NCHITTEST: {
         // Let Windows handle non-client areas (resize border, etc.) first.
         LRESULT hit = DefWindowProcW(hwnd, msg, wp, lp);
+
+        const POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        const UINT  dpi = GetDpiForWindow(hwnd);
+
+        // The top frame is client area now (see WM_NCCALCSIZE), so Windows no
+        // longer reports a resize target there and would let the title bar
+        // below claim it as somewhere to drag from. Restoring it by hand is
+        // the price of reclaiming those pixels, and it has to come before the
+        // caption test for the same reason.
+        RECT window{};
+        GetWindowRect(hwnd, &window);
+        const int grip = GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi)
+                       + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        // Worked out from the window rect rather than from what
+        // DefWindowProc said: with the top no longer part of the frame it
+        // stops reporting HTLEFT/HTRIGHT in the top corners, so asking it
+        // would cost the two diagonal resize grips.
+        if (pt.y < window.top + grip) {
+            if (pt.x <  window.left  + grip) return HTTOPLEFT;
+            if (pt.x >= window.right - grip) return HTTOPRIGHT;
+            return HTTOP;
+        }
+
         if (hit == HTCLIENT) {
-            POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
-            ScreenToClient(hwnd, &pt);
+            POINT local = pt;
+            ScreenToClient(hwnd, &local);
             RECT rc;
             GetClientRect(hwnd, &rc);
             // The right ~96px of the title bar hosts our close/min buttons —
             // leave those as HTCLIENT so WebView2 can receive the clicks.
-            UINT dpi   = GetDpiForWindow(hwnd);
-            int  tbPx  = MulDiv(46, dpi, 96);   // CSS 46px → physical pixels
-            int  ctlPx = MulDiv(96, dpi, 96);
-            if (pt.y < tbPx && pt.x < rc.right - ctlPx)
+            int tbPx  = MulDiv(46, dpi, 96);   // CSS 46px → physical pixels
+            int ctlPx = MulDiv(96, dpi, 96);
+            if (local.y < tbPx && local.x < rc.right - ctlPx)
                 return HTCAPTION;
         }
         return hit;
@@ -1152,6 +1304,37 @@ LRESULT RemapWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (m_onClose) m_onClose();
         return 0;
 
+    case WM_GAMES_READY: {
+        // Ownership arrives with the message; see StartEnumeration.
+        std::unique_ptr<std::vector<InstalledGame>> found(
+            reinterpret_cast<std::vector<InstalledGame>*>(lp));
+        // A second enumeration can land after the user has already added an
+        // application by hand — they can do that before the list arrives, and
+        // reopening the window starts another pass. Their entries are kept
+        // and re-appended, with their tokens, so a selection made against one
+        // still means the same thing afterwards.
+        std::vector<PickerEntry> manual;
+        for (auto& entry : m_games)
+            if (entry.game.source == GameSource::Manual
+                && m_gameProfiles.find(entry.game.id) == m_gameProfiles.end())
+                manual.push_back(std::move(entry));
+
+        m_games.clear();
+        for (auto& game : *found) {
+            const size_t token = TokenFor(game.id);
+            m_games.push_back({ std::move(game), token });
+        }
+        AppendOrphanProfiles();
+        // Anything the user added that has a profile is already back, put
+        // there by AppendOrphanProfiles; only the not-yet-applied ones need
+        // carrying over by hand.
+        for (auto& entry : manual)
+            m_games.push_back(std::move(entry));
+
+        SendGameList();
+        return 0;
+    }
+
     case WM_DESTROY:
         if (m_mgr) m_mgr->StopButtonCapture();
         m_webview.Reset();
@@ -1172,39 +1355,219 @@ RemapWindow::~RemapWindow() {
     s_instance = nullptr;
 }
 
-void RemapWindow::AppendOrphanProfiles() {
-    m_installedCount = m_games.size();
+// True for a profile id that names something we can still see on disk. An
+// application the user picked by hand is never in the enumerated list, so
+// without this every one of them would come back wearing the "not installed"
+// badge and an invitation to delete a profile that works. Also rescues an
+// ordinary game whose Start Menu shortcut was removed while the game stayed.
+static bool IdStillOnDisk(const std::wstring& id) {
+    // Only the two path-shaped ids can be checked this way. A "steam://" or
+    // "aumid:" id says nothing about the filesystem, and its game being
+    // absent from the enumerated list really does mean it is gone.
+    const bool isDir = id.rfind(L"dir:", 0) == 0;
+    if (!isDir && (id.rfind(L"steam://", 0) == 0 || id.rfind(L"aumid:", 0) == 0))
+        return false;
 
+    const std::wstring path = isDir ? id.substr(4) : id;
+    if (path.empty()) return false;
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES) return false;
+    return isDir == ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0);
+}
+
+void RemapWindow::AppendOrphanProfiles() {
     // An enumeration that found nothing at all looks exactly like every game
     // having been uninstalled, and is by far the likelier of the two — a COM
-    // failure reading shell:AppsFolder, or a Start Menu walk that came back
+    // failure reading the package list, or a Start Menu walk that came back
     // empty. Flagging every profile as missing on that evidence would invite
     // the user to delete the lot, so say nothing rather than guess.
     if (m_games.empty()) return;
 
+    const size_t enumerated = m_games.size();
     for (const auto& [id, profile] : m_gameProfiles) {
-        bool installed = false;
-        for (size_t i = 0; i < m_installedCount; ++i) {
-            if (_wcsicmp(m_games[i].id.c_str(), id.c_str()) == 0) {
-                installed = true;
+        bool found = false;
+        for (size_t i = 0; i < enumerated; ++i) {
+            if (_wcsicmp(m_games[i].game.id.c_str(), id.c_str()) == 0) {
+                found = true;
                 break;
             }
         }
-        if (installed) continue;
+        if (found) continue;
 
         InstalledGame orphan;
         orphan.id = id;
         // What displayName was stored for: naming a profile at a moment the
         // installed list cannot. Profiles written before it existed fall back
         // to the raw id — poor prose, but it still identifies the game.
-        orphan.name = profile.displayName.empty() ? id : profile.displayName;
-        m_games.push_back(std::move(orphan));
+        orphan.name   = profile.displayName.empty() ? id : profile.displayName;
+        orphan.source = IdStillOnDisk(id) ? GameSource::Manual : GameSource::Missing;
+        const size_t token = TokenFor(id);
+        m_games.push_back({ std::move(orphan), token });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Naming an application the installed list does not have
+// ---------------------------------------------------------------------------
+
+// "C:\Games\Celeste\Celeste.exe" -> "Celeste.exe".
+static std::wstring LeafOf(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L'\\');
+    return slash == std::wstring::npos ? path : path.substr(slash + 1);
+}
+
+void RemapWindow::SendRunningApps() {
+    if (!m_webview) return;
+
+    // Tokens for these come from the same sequence as the picker's, so a
+    // stale "pickRunning" cannot collide with a game's token.
+    m_runningApps.clear();
+    std::wstring json;
+    for (auto& app : GameLibrary::EnumerateRunning()) {
+        const size_t token = m_nextToken++;
+        if (!json.empty()) json += L",";
+        // The executable name is shown alongside the friendly one because two
+        // applications can describe themselves identically, and it is what
+        // tells them apart.
+        json += L"{\"i\":\"" + std::to_wstring(token) + L"\",\"name\":\""
+              + JsonEscape(app.name) + L"\",\"exe\":\""
+              + JsonEscape(LeafOf(app.id)) + L"\"}";
+        m_runningApps.push_back({ std::move(app), token });
+    }
+
+    PostToWebView(L"{\"type\":\"runningApps\",\"apps\":[" + json + L"]}");
+}
+
+void RemapWindow::BrowseForExe() {
+    Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&dialog))))
+        return;
+
+    COMDLG_FILTERSPEC filter[] = { { L"Programs", L"*.exe" } };
+    dialog->SetFileTypes(ARRAYSIZE(filter), filter);
+    dialog->SetTitle(L"Pick the program to make a profile for");
+
+    // Where games are, far more often than the last folder the user happened
+    // to open something from.
+    Microsoft::WRL::ComPtr<IShellItem> programFiles;
+    if (SUCCEEDED(SHCreateItemInKnownFolder(FOLDERID_ProgramFiles, 0, nullptr,
+                                            IID_PPV_ARGS(&programFiles))))
+        dialog->SetDefaultFolder(programFiles.Get());
+
+    // Modal to our own window, so it cannot end up behind it.
+    if (FAILED(dialog->Show(m_hwnd))) return;  // includes the user cancelling
+
+    Microsoft::WRL::ComPtr<IShellItem> result;
+    if (FAILED(dialog->GetResult(&result))) return;
+
+    PWSTR path = nullptr;
+    if (FAILED(result->GetDisplayName(SIGDN_FILESYSPATH, &path)) || !path) {
+        if (path) CoTaskMemFree(path);
+        return;
+    }
+    const std::wstring exePath(path);
+    CoTaskMemFree(path);
+
+    // The same rule the shortcut walk and the running-application list apply:
+    // a profile for part of Windows would fire at moments that have nothing
+    // to do with playing a game.
+    if (GameLibrary::IsSystemProgram(exePath)) {
+        MessageBoxW(m_hwnd,
+            L"That program is part of Windows itself.\n\n"
+            L"Pick a game or application you installed instead.",
+            L"Not a game", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    InstalledGame game;
+    game.id     = exePath;
+    game.source = GameSource::Manual;
+    game.name   = GameLibrary::NameForExecutable(exePath);
+    AddManualGame(std::move(game));
+}
+
+void RemapWindow::AddManualGame(InstalledGame game) {
+    if (game.id.empty() || !m_webview) return;
+
+    const size_t token = TokenFor(game.id);
+
+    // Picking something already in the list selects it rather than adding a
+    // second copy of it — which is the sensible reading of the action, and
+    // stops a browsed exe that turned out to be a listed game from producing
+    // two entries that both claim it.
+    for (const auto& entry : m_games) {
+        if (entry.token != token) continue;
+        PostToWebView(L"{\"type\":\"gameAdded\",\"id\":\"" + std::to_wstring(token)
+                      + L"\"}");
+        return;
+    }
+
+    m_games.push_back({ std::move(game), token });
+    // Only the list changed — the page keeps whatever the user was editing,
+    // and routes selecting the new entry through its own unsaved-changes
+    // prompt, exactly as if they had picked it from the list themselves.
+    SendGameList();
+    PostToWebView(L"{\"type\":\"gameAdded\",\"id\":\"" + std::to_wstring(token) + L"\"}");
+}
+
+size_t RemapWindow::TokenFor(const std::wstring& id) {
+    auto [it, inserted] = m_tokens.try_emplace(id, m_nextToken);
+    if (inserted) ++m_nextToken;
+    return it->second;
+}
+
+PickerEntry* RemapWindow::EntryForToken(const std::string& value) {
+    if (value.empty()) return nullptr;
+    size_t token = 0;
+    for (char c : value) {
+        if (c < '0' || c > '9') return nullptr;
+        token = token * 10 + static_cast<size_t>(c - '0');
+    }
+    for (auto& entry : m_games)
+        if (entry.token == token) return &entry;
+    return nullptr;
+}
+
+void RemapWindow::StartEnumeration() {
+    // Detached rather than joined. The only thing it touches afterwards is the
+    // window handle, by value, so it cannot outlive anything it refers to; and
+    // joining would mean blocking the UI thread on close for exactly as long
+    // as running this on the UI thread would have cost in the first place.
+    HWND hwnd = m_hwnd;
+    std::thread([hwnd] {
+        auto games = std::make_unique<std::vector<InstalledGame>>(
+            GameLibrary::EnumerateInstalled());
+
+        // Counted per source because "my game isn't in the list" is what this
+        // feature gets reported for, and one source coming back empty is
+        // nearly always the reason. GameLibraryProbe prints the same summary.
+        // Source names are ASCII literals, so narrowing them is exact; done a
+        // character at a time to say so explicitly rather than leaning on an
+        // implicit conversion the compiler is right to warn about.
+        std::map<std::string, size_t> counts;
+        for (const auto& g : *games) {
+            std::string name;
+            for (const wchar_t* c = GameSourceName(g.source); *c; ++c)
+                name += static_cast<char>(*c);
+            ++counts[name];
+        }
+        std::string summary;
+        for (const auto& [source, count] : counts)
+            summary += " " + source + "=" + std::to_string(count);
+        EventLog::Write("PROFILE: game picker found %zu app(s):%s",
+                        games->size(), summary.empty() ? " none" : summary.c_str());
+
+        // Fails when the window has already gone, which is the whole reason
+        // ownership only transfers on success.
+        if (PostMessageW(hwnd, WM_GAMES_READY, 0,
+                         reinterpret_cast<LPARAM>(games.get())))
+            games.release();
+    }).detach();
 }
 
 void RemapWindow::Open(HINSTANCE hInst, ControllerManager* mgr,
                        const ControllerProfile& cfg,
-                       std::vector<InstalledGame> games,
                        std::map<std::wstring, ControllerProfile> gameProfiles,
                        std::function<void(const std::wstring&, const ControllerProfile&)> applyCallback,
                        std::function<void(const std::wstring&)> deleteCallback)
@@ -1212,16 +1575,18 @@ void RemapWindow::Open(HINSTANCE hInst, ControllerManager* mgr,
     // If already open, just bring it to front.
     if (m_hwnd) {
         if (IsWindowVisible(m_hwnd)) { BringToFront(); return; }
-        // Was hidden. Refresh config and show.
+        // Was hidden. Refresh config and show. The list is rebuilt from
+        // scratch rather than kept, because the likeliest thing to have
+        // happened since it was last up is that the user installed a game.
         m_config        = cfg;
-        m_games         = std::move(games);
+        m_games.clear();
         m_gameProfiles  = std::move(gameProfiles);
         m_applyCallback = std::move(applyCallback);
         m_deleteCallback = std::move(deleteCallback);
-        AppendOrphanProfiles();
         ShowWindow(m_hwnd, SW_SHOW);
         BringToFront();
         SendInitState();
+        StartEnumeration();
         return;
     }
 
@@ -1239,11 +1604,10 @@ void RemapWindow::Open(HINSTANCE hInst, ControllerManager* mgr,
     m_hInst        = hInst;
     m_mgr          = mgr;
     m_config       = cfg;
-    m_games        = std::move(games);
+    m_games.clear();
     m_gameProfiles = std::move(gameProfiles);
     m_applyCallback = std::move(applyCallback);
     m_deleteCallback = std::move(deleteCallback);
-    AppendOrphanProfiles();
     s_instance     = this;
 
     // --- Register window class (once) ---
@@ -1289,6 +1653,12 @@ void RemapWindow::Open(HINSTANCE hInst, ControllerManager* mgr,
     // WebView2 initialization is async; callbacks run on the UI thread
     // via the app's existing GetMessage/DispatchMessage loop in TrayApp::Run().
     CreateWebViewAsync(m_hwnd);
+
+    // Started after the window exists, since that is what the result is
+    // posted back to. Finding every installed application takes well over a
+    // second on an ordinary machine — long enough that doing it before the
+    // window went up read as the app having hung.
+    StartEnumeration();
 }
 
 void RemapWindow::BringToFront() const {
@@ -1426,26 +1796,6 @@ static std::string JsonStr(const std::string& json, const std::string& key) {
     return end != std::string::npos ? json.substr(pos, end - pos) : std::string{};
 }
 
-// The page names a game by its index into m_games (ASCII decimal), never by
-// the raw game id — that can hold non-ASCII this hand-rolled channel would
-// mangle, and backslashes this parser does not unescape. Shared by "apply"
-// and "delete" so there is one place that decides what a valid index is.
-//
-// False for an absent index, which "apply" reads as the default profile, and
-// equally for a malformed or out-of-range one, which is a message we did not
-// send and neither handler acts on.
-static bool GameIndexFrom(const std::string& value, size_t count, size_t& out) {
-    if (value.empty()) return false;
-    size_t idx = 0;
-    for (char c : value) {
-        if (c < '0' || c > '9') return false;
-        idx = idx * 10 + static_cast<size_t>(c - '0');
-    }
-    if (idx >= count) return false;
-    out = idx;
-    return true;
-}
-
 void RemapWindow::OnWebMessage(const std::wstring& raw) {
     // All message content is ASCII; narrow explicitly to suppress C4244.
     std::string msg;
@@ -1529,34 +1879,48 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
         cfg.leftPad.scrollDir  = ScrollDirectionFromId(JsonStr(msg, "LPADdir"));
         cfg.rightPad.scrollDir = ScrollDirectionFromId(JsonStr(msg, "RPADdir"));
 
-        size_t idx = 0;
-        if (!GameIndexFrom(JsonStr(msg, "game"), m_games.size(), idx)) {
-            // No index at all is the default profile; a bad one is a message
-            // we did not send and will not act on.
-            if (JsonStr(msg, "game").empty()) {
-                m_config = cfg;
-                if (m_applyCallback) m_applyCallback(L"", cfg);
-            }
-        } else {
-            const std::wstring& gameId = m_games[idx].id;
+        const std::string token = JsonStr(msg, "game");
+        if (PickerEntry* entry = EntryForToken(token)) {
+            const std::wstring gameId = entry->game.id;
             // Captured here because this is the only place both halves
             // are in hand: the picker knows the friendly name, and
             // nothing downstream re-enumerates the installed list.
-            cfg.displayName = m_games[idx].name;
+            cfg.displayName = entry->game.name;
             m_gameProfiles[gameId] = cfg;
             if (m_applyCallback) m_applyCallback(gameId, cfg);
+        } else if (token.empty()) {
+            // No token at all is the default profile; an unknown one is a
+            // message we did not send and will not act on.
+            m_config = cfg;
+            if (m_applyCallback) m_applyCallback(L"", cfg);
         }
 
     } else if (type == "delete") {
-        // Never carries an empty index: the page does not offer removal for
+        // Never carries an empty token: the page does not offer removal for
         // the default profile, which has to exist for anything else to fall
         // back to.
-        size_t idx = 0;
-        if (GameIndexFrom(JsonStr(msg, "game"), m_games.size(), idx)) {
-            const std::wstring& gameId = m_games[idx].id;
+        if (PickerEntry* entry = EntryForToken(JsonStr(msg, "game"))) {
+            const std::wstring gameId = entry->game.id;
             m_gameProfiles.erase(gameId);
             if (m_deleteCallback) m_deleteCallback(gameId);
         }
+
+    } else if (type == "listRunning") {
+        SendRunningApps();
+
+    } else if (type == "pickRunning") {
+        // The list was captured when it was sent; an application that has
+        // closed since simply is not in it any more, which reads to the user
+        // as the click doing nothing — better than adding a profile for a
+        // window that is gone.
+        for (const auto& app : m_runningApps) {
+            if (std::to_string(app.token) != JsonStr(msg, "app")) continue;
+            AddManualGame(app.game);
+            break;
+        }
+
+    } else if (type == "browseExe") {
+        BrowseForExe();
     }
 }
 
@@ -1572,22 +1936,23 @@ void RemapWindow::PostCapturedBinding(const BackButtonBinding& binding) {
     PostToWebView(json);
 }
 
-void RemapWindow::SendInitState() {
-    if (!m_webview) return;
+// Convert ASCII action ID string to wstring without char→wchar_t narrowing warnings.
+static std::wstring Wid(const BackButtonBinding& b) {
+    const std::string s = b.Id();
+    return std::wstring(s.begin(), s.end());
+}
 
-    // Convert ASCII action ID string to wstring without char→wchar_t narrowing warnings.
-    auto wid = [](const BackButtonBinding& b) -> std::wstring {
-        const std::string s = b.Id();
-        return std::wstring(s.begin(), s.end());
-    };
-    auto narrow = [](const char* s) {
-        const std::string v = s;
-        return std::wstring(v.begin(), v.end());
-    };
-    // One flat object per profile — the page reads it back the same way, and
-    // the narrow JSON reader on this side cannot descend into nesting.
-    auto profileJson = [&](const ControllerProfile& p) {
-        return L"{\"useDefault\":\""
+static std::wstring Narrow(const char* s) {
+    const std::string v = s;
+    return std::wstring(v.begin(), v.end());
+}
+
+// One flat object per profile — the page reads it back the same way, and the
+// narrow JSON reader on this side cannot descend into nesting.
+std::wstring RemapWindow::ProfileJson(const ControllerProfile& p) {
+    const auto wid    = &Wid;
+    const auto narrow = &Narrow;
+    return L"{\"useDefault\":\""
                + std::wstring(p.useDefaultMappings ? L"1" : L"0")
                + L"\","
                L"\"platform\":\""
@@ -1603,7 +1968,12 @@ void RemapWindow::SendInitState() {
                L"\"RPADmode\":\"" + narrow(TrackpadModeId(p.rightPad.mode)) + L"\","
                L"\"LPADdir\":\"" + narrow(ScrollDirectionId(p.leftPad.scrollDir)) + L"\","
                L"\"RPADdir\":\"" + narrow(ScrollDirectionId(p.rightPad.scrollDir)) + L"\"}";
-    };
+}
+
+void RemapWindow::SendInitState() {
+    if (!m_webview) return;
+
+    auto wid = &Wid;
 
     // Key bindings need a label the page cannot derive on its own — their names
     // come from the keyboard layout. Sent as an id→name map so a paddle pair
@@ -1628,33 +1998,54 @@ void RemapWindow::SendInitState() {
     for (const auto& [id, cfg] : m_gameProfiles)
         addProfileLabels(cfg);
 
-    // Games list: index-based picker ids so the raw game id — possibly
-    // non-ASCII, sometimes backslash-laden — never has to cross the
-    // hand-rolled JSON channel; see OnWebMessage's "apply" handling for the
-    // other direction.
-    std::wstring gamesJson;
-    for (size_t i = 0; i < m_games.size(); ++i) {
-        if (!gamesJson.empty()) gamesJson += L",";
-        gamesJson += L"{\"id\":\"" + std::to_wstring(i) + L"\",\"name\":\""
-                   + JsonEscape(m_games[i].name) + L"\""
-                   + (i >= m_installedCount ? L",\"missing\":\"1\"" : L"")
-                   + L"}";
-    }
-
-    // Profiles: the default plus every game that already has a saved
-    // override. A listed game with no entry here simply has none yet — the
-    // page falls back to the default profile's bindings when first selected.
-    std::wstring profilesJson = L"\"\":" + profileJson(m_config);
-    for (size_t i = 0; i < m_games.size(); ++i) {
-        auto it = m_gameProfiles.find(m_games[i].id);
-        if (it == m_gameProfiles.end()) continue;
-        profilesJson += L",\"" + std::to_wstring(i) + L"\":" + profileJson(it->second);
-    }
-
+    // Which of the enumeration and WebView2's own startup finishes first is
+    // not ours to decide, and both orders happen. If the list got here first
+    // it is already in this message and nothing further is coming; saying so
+    // is what stops the picker sitting on "Looking for your games" forever
+    // waiting for a "games" message that was sent before anything could
+    // receive it.
     std::wstring json =
         L"{\"type\":\"init\""
+        L",\"pending\":\"" + std::wstring(m_games.empty() ? L"1" : L"0") + L"\""
         L",\"labels\":{" + labels + L"}"
-        L",\"games\":[" + gamesJson + L"]"
-        L",\"profiles\":{" + profilesJson + L"}}";
+        L",\"games\":[" + GamesJson() + L"]"
+        L",\"profiles\":{" + ProfilesJson() + L"}}";
     PostToWebView(json);
+}
+
+// Token-based picker ids so the raw game id — possibly non-ASCII, sometimes
+// backslash-laden — never has to cross the hand-rolled JSON channel; see
+// OnWebMessage's "apply" handling for the other direction.
+std::wstring RemapWindow::GamesJson() const {
+    std::wstring json;
+    for (const auto& entry : m_games) {
+        if (!json.empty()) json += L",";
+        json += L"{\"id\":\"" + std::to_wstring(entry.token) + L"\",\"name\":\""
+              + JsonEscape(entry.game.name) + L"\""
+              + (entry.game.source == GameSource::Missing ? L",\"missing\":\"1\"" : L"")
+              + L"}";
+    }
+    return json;
+}
+
+// The default plus every game that already has a saved override. A listed
+// game with no entry here simply has none yet — the page falls back to the
+// default profile's bindings when it is first selected.
+std::wstring RemapWindow::ProfilesJson() const {
+    std::wstring json = L"\"\":" + ProfileJson(m_config);
+    for (const auto& entry : m_games) {
+        auto it = m_gameProfiles.find(entry.game.id);
+        if (it == m_gameProfiles.end()) continue;
+        json += L",\"" + std::to_wstring(entry.token) + L"\":" + ProfileJson(it->second);
+    }
+    return json;
+}
+
+// Everything init carries except which profile is selected, because this is
+// sent while the user may already be part-way through editing one.
+void RemapWindow::SendGameList() {
+    if (!m_webview) return;
+    PostToWebView(L"{\"type\":\"games\""
+                  L",\"games\":[" + GamesJson() + L"]"
+                  L",\"profiles\":{" + ProfilesJson() + L"}}");
 }
