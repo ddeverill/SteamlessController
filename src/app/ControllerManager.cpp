@@ -117,21 +117,33 @@ struct ControllerManager::Slot {
 
     // Click haptic latch. Press: the firmware click bit must hold true for a
     // couple frames (filters single-frame glitches), then the press haptic
-    // fires. Release: the click bit is IGNORED from then on — chatter around
-    // the firmware's force threshold can't re-fire anything. The latch only
-    // releases (and the release haptic fires) once contact area falls back
-    // to genuinely idle — a light resting touch (~300-600), far below any
-    // pressing level (~1400+ even when easing off mid-hold, ~4000 at click).
-    // An absolute threshold, NOT a fraction of press area: grinding a hard
-    // press dips area to 1000-2000, which a relative threshold read as a
-    // release, firing press/release pairs in a crunchy stream.
-    static constexpr int   kPressConfirmFrames   = 2;     // ~8ms at 250Hz
-    static constexpr float kReleaseIdleArea      = 1000.0f;
-    static constexpr int   kAreaLowConfirmFrames = 8;     // ~32ms at 250Hz
-    int hapticRightClickTrueFrames = 0;
-    int hapticLeftClickTrueFrames  = 0;
-    int hapticRightAreaLowFrames   = 0;
-    int hapticLeftAreaLowFrames    = 0;
+    // fires. Release: the click bit must hold false for a few more, then the
+    // release haptic fires and the latch re-arms. Both edges are the same
+    // idea — believe the click bit once it has held an answer long enough to
+    // not be threshold chatter.
+    //
+    // Release used to wait on contact area falling to an absolute idle level
+    // instead, on the reasoning that the click bit chatters around the
+    // firmware's force threshold and area does not. It does not chatter, but
+    // it also never falls that far unless the thumb leaves the pad: measured
+    // with TrackpadZoneProbe, a thumb resting between two rapid taps sits
+    // around 2500, and the lowest a real tap gap reached was 1236 against a
+    // threshold of 1000. So every press after the first in a burst found the
+    // latch still waiting and fired no haptic at all — which is fine for a
+    // pad being clicked like a mouse button, and useless for one being
+    // tapped like a d-pad.
+    //
+    // Duration is what separates chatter from a release, and area is actively
+    // misleading for it: grinding a hard press dips area to 1000-2000, which
+    // is LOWER than the planted thumb between taps that has to count as a
+    // release. The same probe measured a real gap holding the click bit low
+    // for 18 frames, so four is a wide margin below anything deliberate.
+    static constexpr int kPressConfirmFrames   = 2;  // ~8ms at 250Hz
+    static constexpr int kReleaseConfirmFrames = 4;  // ~16ms at 250Hz
+    int hapticRightClickTrueFrames  = 0;
+    int hapticLeftClickTrueFrames   = 0;
+    int hapticRightClickLowFrames   = 0;
+    int hapticLeftClickLowFrames    = 0;
 
     // Movement-accumulator idle reset: if the finger stays still (below the
     // motion deadzone) this many frames, discard accumulated travel so a
@@ -1026,57 +1038,48 @@ void ControllerManager::ReadLoop(Slot* slot) {
                 memcpy(&rArea, buf + 28, 2);
             }
 
-            // Click haptic latch — press fires off the (briefly confirmed)
-            // firmware click bit; from then on the click bit is ignored so
-            // threshold chatter can't re-fire. The release haptic fires once
-            // contact area returns to idle.
+            // Click haptic latch — both edges believe the firmware click bit
+            // once it has held an answer long enough to not be chatter. See
+            // the constants on Slot for why release stopped waiting on contact
+            // area: a thumb that stays on the pad between rapid taps never
+            // reaches idle, so every tap after the first went unfelt.
             slot->hapticRightClickTrueFrames = rc ? slot->hapticRightClickTrueFrames + 1 : 0;
             slot->hapticLeftClickTrueFrames  = lc ? slot->hapticLeftClickTrueFrames  + 1 : 0;
+            slot->hapticRightClickLowFrames  = rc ? 0 : slot->hapticRightClickLowFrames + 1;
+            slot->hapticLeftClickLowFrames   = lc ? 0 : slot->hapticLeftClickLowFrames  + 1;
 
-            if (slot->hapticRightClickState == Slot::ClickState::WaitingForPress
-                    && slot->hapticRightClickTrueFrames >= Slot::kPressConfirmFrames) {
+            if (slot->hapticRightClickState == Slot::ClickState::WaitingForPress) {
+                if (slot->hapticRightClickTrueFrames >= Slot::kPressConfirmFrames) {
+                    slot->sc->PulseTrackpadHaptic(false, true);
+                    slot->hapticRightClickState   = Slot::ClickState::WaitingForRelease;
+                    slot->hapticPrevRightX        = rx;
+                    slot->hapticPrevRightY        = ry;
+                    slot->hapticRightDistAccum    = 0.0f;
+                }
+            } else if (slot->hapticRightClickLowFrames >= Slot::kReleaseConfirmFrames) {
                 slot->sc->PulseTrackpadHaptic(false, true);
-                slot->hapticRightClickState    = Slot::ClickState::WaitingForRelease;
-                slot->hapticRightAreaLowFrames = 0;
+                slot->hapticRightClickState   = Slot::ClickState::WaitingForPress;
+                slot->hapticRightReleaseGrace = Slot::kPostReleaseGraceFrames;
                 slot->hapticPrevRightX        = rx;
                 slot->hapticPrevRightY        = ry;
                 slot->hapticRightDistAccum    = 0.0f;
-            } else if (slot->hapticRightClickState == Slot::ClickState::WaitingForRelease) {
-                if (!rc && static_cast<float>(rArea) <= Slot::kReleaseIdleArea) {
-                    if (++slot->hapticRightAreaLowFrames >= Slot::kAreaLowConfirmFrames) {
-                        slot->sc->PulseTrackpadHaptic(false, true);
-                        slot->hapticRightClickState  = Slot::ClickState::WaitingForPress;
-                        slot->hapticRightReleaseGrace = Slot::kPostReleaseGraceFrames;
-                        slot->hapticPrevRightX      = rx;
-                        slot->hapticPrevRightY      = ry;
-                        slot->hapticRightDistAccum  = 0.0f;
-                    }
-                } else {
-                    slot->hapticRightAreaLowFrames = 0;
-                }
             }
 
-            if (slot->hapticLeftClickState == Slot::ClickState::WaitingForPress
-                    && slot->hapticLeftClickTrueFrames >= Slot::kPressConfirmFrames) {
-                slot->sc->PulseTrackpadHaptic(true, true);
-                slot->hapticLeftClickState    = Slot::ClickState::WaitingForRelease;
-                slot->hapticLeftAreaLowFrames = 0;
-                slot->hapticPrevLeftX         = lx;
-                slot->hapticPrevLeftY         = ly;
-                slot->hapticLeftDistAccum     = 0.0f;
-            } else if (slot->hapticLeftClickState == Slot::ClickState::WaitingForRelease) {
-                if (!lc && static_cast<float>(lArea) <= Slot::kReleaseIdleArea) {
-                    if (++slot->hapticLeftAreaLowFrames >= Slot::kAreaLowConfirmFrames) {
-                        slot->sc->PulseTrackpadHaptic(true, true);
-                        slot->hapticLeftClickState   = Slot::ClickState::WaitingForPress;
-                        slot->hapticLeftReleaseGrace = Slot::kPostReleaseGraceFrames;
-                        slot->hapticPrevLeftX      = lx;
-                        slot->hapticPrevLeftY      = ly;
-                        slot->hapticLeftDistAccum  = 0.0f;
-                    }
-                } else {
-                    slot->hapticLeftAreaLowFrames = 0;
+            if (slot->hapticLeftClickState == Slot::ClickState::WaitingForPress) {
+                if (slot->hapticLeftClickTrueFrames >= Slot::kPressConfirmFrames) {
+                    slot->sc->PulseTrackpadHaptic(true, true);
+                    slot->hapticLeftClickState   = Slot::ClickState::WaitingForRelease;
+                    slot->hapticPrevLeftX        = lx;
+                    slot->hapticPrevLeftY        = ly;
+                    slot->hapticLeftDistAccum    = 0.0f;
                 }
+            } else if (slot->hapticLeftClickLowFrames >= Slot::kReleaseConfirmFrames) {
+                slot->sc->PulseTrackpadHaptic(true, true);
+                slot->hapticLeftClickState   = Slot::ClickState::WaitingForPress;
+                slot->hapticLeftReleaseGrace = Slot::kPostReleaseGraceFrames;
+                slot->hapticPrevLeftX        = lx;
+                slot->hapticPrevLeftY        = ly;
+                slot->hapticLeftDistAccum    = 0.0f;
             }
 
             // Movement haptic — tick once per TRACKPAD_HAPTIC_TICK_DISTANCE of travel.
