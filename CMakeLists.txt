@@ -123,6 +123,17 @@ if (MSVC)
     target_compile_options(SteamlessDeviceCycle PRIVATE /W4 /WX /utf-8)
 endif()
 
+# TrackpadZoneProbe — measures where a thumb lands when it clicks a pad, so the
+# Directional Pad ring boundary is calibrated rather than guessed.
+add_executable(TrackpadZoneProbe
+    src/probe/TrackpadZoneProbe.cpp
+)
+target_link_libraries(TrackpadZoneProbe PRIVATE SteamController)
+if (MSVC)
+    target_compile_options(TrackpadZoneProbe PRIVATE /W4 /WX /utf-8)
+    set_target_properties(TrackpadZoneProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+endif()
+
 # HapticTester — local-only interactive haptic tuning tool (source is gitignored)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/probe/HapticTester.cpp")
     add_executable(HapticTester src/probe/HapticTester.cpp)
