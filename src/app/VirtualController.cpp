@@ -298,15 +298,15 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
 
         struct PadState {
             const TrackpadSettings& pad;
-            bool    touching;
+            bool    touching;     // already narrowed to a tap, not a press
             bool    clicked;      // already narrowed to a centre press
             uint8_t dirs;
         };
         const PadState pads[] = {
-            { profile.leftPad,  (b3 & SteamController::BTN_TP_LT) != 0,
+            { profile.leftPad,  resolved.leftTouch,
                                 (b3 & SteamController::BTN_TP_LT_CLICK) != 0
                                     && resolved.leftClickInCentre,  resolved.leftDirs },
-            { profile.rightPad, (b2 & SteamController::BTN_TP_RT) != 0,
+            { profile.rightPad, resolved.rightTouch,
                                 (b2 & SteamController::BTN_TP_RT_CLICK) != 0
                                     && resolved.rightClickInCentre, resolved.rightDirs },
         };

@@ -27,6 +27,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -309,6 +310,222 @@ void PrintSummary() {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Tap tracking — why a haptic does not fire on every press
+// ---------------------------------------------------------------------------
+
+// The live constants from ControllerManager's click haptic latch, mirrored so
+// the session can be replayed through the real state machine rather than
+// through a description of it. Keep in step with Slot.
+constexpr int   kPressConfirmFrames   = 2;
+constexpr float kReleaseIdleArea      = 1000.0f;
+constexpr int   kAreaLowConfirmFrames = 8;
+
+struct Tap {
+    uint16_t areaAtPress = 0;
+    // Frames between the finger landing and the click bit going high. A press
+    // sets the touch bit on its way down, so a touch binding fired off the raw
+    // bit fires on every press — this is the window a tap has to outlast
+    // before it counts as one, and the shortest of these is the ceiling on
+    // ControllerManager's kTouchConfirmFrames. -1 when the finger was already
+    // down before this session started.
+    int      touchToClick = -1;
+    // Frames the click bit stayed low after this press before going high
+    // again, and the lowest contact area reached in that gap. Together these
+    // say whether a release is distinguishable from threshold chatter, and
+    // whether the thumb ever came near the idle area the latch waits for.
+    int      lowFrames   = 0;
+    uint16_t minGapArea  = 0xFFFF;
+    bool     gapClosed   = false;  // the next press arrived, so the gap is final
+    bool     haptic      = false;  // the latch would have fired for this press
+};
+
+struct TapTracker {
+    std::vector<Tap> taps;
+    bool prevClick = false;
+
+    // Frames actually seen, and over how long. A session that captures fewer
+    // presses than the thumb made is worthless until this says why: at the
+    // report rate the stream is healthy and the presses genuinely were not
+    // there, and far below it the reports are being dropped before this sees
+    // them. Two processes reading one device each get their own queue, and an
+    // overflowing queue drops silently.
+    long long frames = 0;
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    bool haveStart = false;
+
+    // A replay of the real latch, frame for frame.
+    enum class State { WaitingForPress, WaitingForRelease };
+    State state         = State::WaitingForPress;
+    int   clickTrue     = 0;
+    int   areaLow       = 0;
+    int   hapticsFired  = 0;   // presses and releases both pulse
+
+    // Frames the finger has been down for, or -1 when it is not down. Starts
+    // at -1 so a finger already resting when the session opens is not credited
+    // with a landing nobody saw.
+    int  framesDown = -1;
+    bool prevTouch  = false;
+
+    void Frame(bool touching, bool click, uint16_t area) {
+        if (!haveStart) { started = std::chrono::steady_clock::now(); haveStart = true; }
+        ++frames;
+
+        if (!touching)            framesDown = -1;
+        else if (!prevTouch)      framesDown = 0;
+        else if (framesDown >= 0) ++framesDown;
+        prevTouch = touching;
+
+        // --- what the user did ---
+        if (click && !prevClick) {
+            if (!taps.empty() && !taps.back().gapClosed) taps.back().gapClosed = true;
+            // Echoed as it happens, so a session that is missing presses says
+            // so while there is still a thumb on the pad to check it with,
+            // rather than at the summary once the evidence is gone.
+            if (taps.empty()) {
+                printf("\n  tap  1  area %5u\n", area);
+            } else {
+                printf("  tap %2zu  area %5u   (gap %d frames, area down to %u)\n",
+                       taps.size() + 1, area, taps.back().lowFrames,
+                       taps.back().minGapArea == 0xFFFF ? 0 : taps.back().minGapArea);
+            }
+            fflush(stdout);
+            Tap t;
+            t.areaAtPress  = area;
+            t.touchToClick = framesDown;
+            taps.push_back(t);
+        }
+        if (!click && !taps.empty() && !taps.back().gapClosed) {
+            Tap& t = taps.back();
+            ++t.lowFrames;
+            t.minGapArea = std::min(t.minGapArea, area);
+        }
+
+        // --- what the latch would have done ---
+        clickTrue = click ? clickTrue + 1 : 0;
+        if (state == State::WaitingForPress) {
+            if (clickTrue >= kPressConfirmFrames) {
+                state   = State::WaitingForRelease;
+                areaLow = 0;
+                ++hapticsFired;
+                if (!taps.empty()) taps.back().haptic = true;
+            }
+        } else {
+            if (!click && static_cast<float>(area) <= kReleaseIdleArea) {
+                if (++areaLow >= kAreaLowConfirmFrames) {
+                    state = State::WaitingForPress;
+                    ++hapticsFired;
+                }
+            } else {
+                areaLow = 0;
+            }
+        }
+
+        prevClick = click;
+    }
+};
+
+std::mutex g_tapMutex;
+TapTracker g_tap;
+std::atomic<bool> g_tapMode{false};
+
+void PrintTapSummary() {
+    std::lock_guard<std::mutex> lk(g_tapMutex);
+    const auto& taps = g_tap.taps;
+
+    printf("\n===========================================================\n");
+    printf("  Tap session — %s pad, %zu presses\n",
+           g_useLeftPad.load() ? "LEFT" : "RIGHT", taps.size());
+    printf("===========================================================\n\n");
+
+    // First, and before any of the numbers below mean anything: was the stream
+    // healthy? Printed even when nothing was captured, which is exactly the
+    // case where the answer decides whether the session says anything at all.
+    const double secs = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - g_tap.started).count();
+    const double hz = secs > 0.0 ? static_cast<double>(g_tap.frames) / secs : 0.0;
+    printf("STREAM: %lld frames over %.1fs = %.0f Hz\n", g_tap.frames, secs, hz);
+    if (g_tap.frames == 0) {
+        printf("  Nothing arrived at all. The opened interface is not the one\n"
+               "  carrying this controller's state.\n\n");
+        return;
+    }
+    if (hz < 100.0) {
+        printf("  Well under the controller's report rate — frames are being\n"
+               "  dropped before this tool sees them, so presses can go missing\n"
+               "  from this session that your thumb definitely made. Close the\n"
+               "  tray app (two readers, two queues) and run the session again.\n");
+    }
+    printf("\n");
+
+    if (taps.empty()) {
+        printf("No presses seen. With the stream rate above in mind: at the full\n"
+               "report rate the click bit genuinely never went high on this\n"
+               "interface, which points at the wrong pad or the wrong slot.\n\n");
+        return;
+    }
+
+    int fired = 0;
+    for (const auto& t : taps) if (t.haptic) ++fired;
+    printf("PRESS HAPTICS: %d of %zu presses would fire\n\n",
+           fired, taps.size());
+
+    printf("  %-4s %-10s %-9s %-10s %s\n",
+           "#", "area@press", "lowFrames", "minGapArea", "haptic");
+    int i = 0;
+    for (const auto& t : taps) {
+        printf("  %-4d %-10u %-9d %-10s %s\n",
+               ++i, t.areaAtPress, t.lowFrames,
+               t.minGapArea == 0xFFFF ? "-" : std::to_string(t.minGapArea).c_str(),
+               t.haptic ? "yes" : "NO");
+    }
+
+    // The two questions the fix turns on: does the thumb ever get near the
+    // idle area the latch waits for, and is a real release long enough to be
+    // told apart from threshold chatter by duration alone?
+    std::vector<double> gapAreas, lowRuns;
+    for (const auto& t : taps) {
+        if (t.minGapArea != 0xFFFF) gapAreas.push_back(t.minGapArea);
+        if (t.gapClosed)            lowRuns.push_back(t.lowFrames);
+    }
+
+    if (!gapAreas.empty()) {
+        printf("\nCONTACT AREA BETWEEN PRESSES (the latch re-arms at <= %.0f)\n",
+               kReleaseIdleArea);
+        printf("  min %.0f   p05 %.0f   p50 %.0f   max %.0f\n",
+               Percentile(gapAreas, 0.0),  Percentile(gapAreas, 0.05),
+               Percentile(gapAreas, 0.50), Percentile(gapAreas, 1.0));
+        int under = 0;
+        for (double a : gapAreas) if (a <= kReleaseIdleArea) ++under;
+        printf("  %d of %zu gaps reach it\n", under, gapAreas.size());
+    }
+
+    // The other window that matters: how long a press spends touching before
+    // it clicks. A tap has to outlast that to be told apart from one.
+    std::vector<double> toClick;
+    for (const auto& t : taps) if (t.touchToClick >= 0) toClick.push_back(t.touchToClick);
+    if (!toClick.empty()) {
+        printf("\nFINGER DOWN BEFORE THE CLICK, in frames (~4ms each)\n");
+        printf("  min %.0f   p05 %.0f   p50 %.0f   max %.0f   (n=%zu)\n",
+               Percentile(toClick, 0.0),  Percentile(toClick, 0.05),
+               Percentile(toClick, 0.50), Percentile(toClick, 1.0), toClick.size());
+        printf("  kTouchConfirmFrames must exceed the shortest of these (%.0f) or a\n"
+               "  quick press still fires the tap binding on its way down. It is\n"
+               "  currently 12.\n", Percentile(toClick, 0.0));
+    }
+
+    if (!lowRuns.empty()) {
+        printf("\nCLICK BIT LOW between presses, in frames (~4ms each)\n");
+        printf("  min %.0f   p05 %.0f   p50 %.0f   max %.0f\n",
+               Percentile(lowRuns, 0.0),  Percentile(lowRuns, 0.05),
+               Percentile(lowRuns, 0.50), Percentile(lowRuns, 1.0));
+        printf("  A release confirmed on the click bit alone would need a\n"
+               "  window under %.0f frames to catch every one of these.\n",
+               Percentile(lowRuns, 0.0));
+    }
+    printf("\n");
+}
+
 // Reader thread
 // ---------------------------------------------------------------------------
 
@@ -421,8 +638,17 @@ void ReaderThread(HidDevice* dev) {
         const bool rightClick = (b2 & SteamController::BTN_TP_RT_CLICK) != 0;
         const bool wantLeft   = g_useLeftPad.load();
 
-        if (wantLeft && leftClick && !prevLeftClick)   RecordPress(left,  lf.area);
-        if (!wantLeft && rightClick && !prevRightClick) RecordPress(right, rf.area);
+        // Tap mode replays the latch frame by frame, so it needs every frame,
+        // not just the click edges the zone recorder cares about.
+        if (g_tapMode.load()) {
+            std::lock_guard<std::mutex> lk(g_tapMutex);
+            g_tap.Frame(wantLeft ? lf.touching : rf.touching,
+                        wantLeft ? leftClick   : rightClick,
+                        wantLeft ? lf.area     : rf.area);
+        } else {
+            if (wantLeft && leftClick && !prevLeftClick)   RecordPress(left,  lf.area);
+            if (!wantLeft && rightClick && !prevRightClick) RecordPress(right, rf.area);
+        }
 
         prevLeftClick  = leftClick;
         prevRightClick = rightClick;
@@ -442,6 +668,8 @@ void PrintHelp() {
         "\n"
         "Commands:\n"
         "  cal          start the guided calibration (%d stages)\n"
+        "  tap          record rapid presses and replay the haptic latch over\n"
+        "               them, to show which presses would fire a haptic\n"
         "  stop         abandon a calibration in progress\n"
         "  pad l|r      choose which pad to watch (currently %s)\n"
         "  sum          print the summary for what has been collected so far\n"
@@ -474,6 +702,15 @@ int main() {
         return 1;
     }
     printf("Opened %ls\n", paths[0].c_str());
+    // A puck publishes an interface per slot and only one has a controller in
+    // it, so the first path is not always the live one. Say when there was a
+    // choice, since "no presses recorded" and "watching an empty slot" look
+    // identical from the outside.
+    if (paths.size() > 1) {
+        printf("NOTE: %zu interfaces found; this is the first. If presses do not\n"
+               "      register, the controller is on one of the others.\n",
+               paths.size());
+    }
 
     PrintHelp();
 
@@ -512,7 +749,8 @@ int main() {
         if (cmd == "stop") {
             g_stage.store(-1);
             g_stageDone.store(0);
-            puts("Calibration abandoned. Samples so far are kept — 'sum' to see them.");
+            g_tapMode.store(false);
+            puts("Stopped. Samples so far are kept — 'sum' to see them.");
             continue;
         }
 
@@ -526,8 +764,20 @@ int main() {
             continue;
         }
 
+        if (cmd == "tap") {
+            {
+                std::lock_guard<std::mutex> lk(g_tapMutex);
+                g_tap = TapTracker{};
+            }
+            g_tapMode.store(true);
+            printf("\nTap the pad repeatedly, the way you would to walk down a\n"
+                   "menu — thumb staying on the pad between presses. Then 'sum'.\n");
+            continue;
+        }
+
         if (cmd == "sum" || cmd == "summary") {
-            PrintSummary();
+            if (g_tapMode.load()) PrintTapSummary();
+            else                  PrintSummary();
             continue;
         }
 

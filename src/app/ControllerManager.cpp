@@ -79,6 +79,32 @@ struct ControllerManager::Slot {
     uint8_t prevLeftDirs  = DirNone;
     uint8_t prevRightDirs = DirNone;
 
+    // Touch confirmation, and the previous answer for the same reason as the
+    // directions above.
+    //
+    // The report's touch bit means "pad active", which a press sets on its way
+    // down — the finger lands, force builds, and only then does the click bit
+    // follow. So a touch binding dispatched off the raw bit fired on every
+    // press, before the press itself, in every mode. Touch is not an
+    // independent signal: a click always implies one.
+    //
+    // What makes touch its own thing is a contact that does NOT become a
+    // press. So a finger has to be down this long without clicking before
+    // touch is reported at all, and a contact that clicks first reports none —
+    // nor any later in that same contact, since it has stopped being a tap.
+    //
+    // Nothing distinguishes the two at the moment of contact: contact area
+    // does not separate them (a thumb loading for a press sits around 2500,
+    // above a light rest and overlapping a grinding one), and the click that
+    // would settle it has not happened yet. Only waiting does.
+    static constexpr int kTouchConfirmFrames = 12;  // ~48ms at 250Hz
+    int  touchFramesLeft   = 0;
+    int  touchFramesRight  = 0;
+    bool touchClickedLeft  = false;
+    bool touchClickedRight = false;
+    bool prevLeftTouch     = false;
+    bool prevRightTouch    = false;
+
     // Auto-repeat for held key bindings. When the next repeat is due, and the
     // gap to use after that — both captured at press time from the user's
     // keyboard settings, so the rate cannot shift mid-hold.
@@ -1000,10 +1026,30 @@ void ControllerManager::ReadLoop(Slot* slot) {
         // worse, a direction still held for a frame after release.
         slot->leftPad.Update(buf, n);
         slot->rightPad.Update(buf, n);
-        const PadDigital resolved{ slot->leftPad.Directions(),
-                               slot->rightPad.Directions(),
-                               slot->leftPad.ClickInCentre(),
-                               slot->rightPad.ClickInCentre() };
+        // Is this contact a tap, or the beginning of a press? See
+        // kTouchConfirmFrames — nothing but time tells the two apart.
+        auto confirmTouch = [](bool touching, bool clicked,
+                               int& framesDown, bool& sawClick) -> bool {
+            if (!touching) { framesDown = 0; sawClick = false; return false; }
+            if (clicked) sawClick = true;
+            ++framesDown;
+            return !sawClick && framesDown >= Slot::kTouchConfirmFrames;
+        };
+        const uint8_t tb2 = n > 4 ? buf[4] : 0;
+        const uint8_t tb3 = n > 5 ? buf[5] : 0;
+
+        const PadDigital resolved{
+            slot->leftPad.Directions(),
+            slot->rightPad.Directions(),
+            slot->leftPad.ClickInCentre(),
+            slot->rightPad.ClickInCentre(),
+            confirmTouch((tb3 & SteamController::BTN_TP_LT) != 0,
+                         (tb3 & SteamController::BTN_TP_LT_CLICK) != 0,
+                         slot->touchFramesLeft, slot->touchClickedLeft),
+            confirmTouch((tb2 & SteamController::BTN_TP_RT) != 0,
+                         (tb2 & SteamController::BTN_TP_RT_CLICK) != 0,
+                         slot->touchFramesRight, slot->touchClickedRight),
+        };
         if (slot->vc) slot->vc->Update(buf, n, m_profile, resolved);
 
         // Trackpad haptics.
@@ -1270,11 +1316,14 @@ void ControllerManager::ReadLoop(Slot* slot) {
                 { n>3 && (buf[3]&SteamController::BTN_R5)!=0, (prevBuf[3]&SteamController::BTN_R5)!=0, m_profile.back.r5 },
                 { n>5 && (buf[5]&SteamController::BTN_TP_LT_CLICK)!=0 && leftClickInCentre,  (prevBuf[5]&SteamController::BTN_TP_LT_CLICK)!=0 && leftClickInCentre,  leftPadClick },
                 { n>4 && (buf[4]&SteamController::BTN_TP_RT_CLICK)!=0 && rightClickInCentre, (prevBuf[4]&SteamController::BTN_TP_RT_CLICK)!=0 && rightClickInCentre, rightPadClick },
-                // Touch is not zoned: it cannot collide with a direction,
+                // Touch is not zoned — it cannot collide with a direction,
                 // which comes from the click, and a thumb crosses zones
-                // constantly while sliding.
-                { n>5 && (buf[5]&SteamController::BTN_TP_LT)!=0, (prevBuf[5]&SteamController::BTN_TP_LT)!=0, lPad.EffectiveTouch() },
-                { n>4 && (buf[4]&SteamController::BTN_TP_RT)!=0, (prevBuf[4]&SteamController::BTN_TP_RT)!=0, rPad.EffectiveTouch() },
+                // constantly while sliding. It is confirmed rather than read
+                // from the report, though: the raw bit is also set by a press
+                // on its way down, so the previous answer is carried on the
+                // slot the same way the directions are.
+                { resolved.leftTouch,  slot->prevLeftTouch,  lPad.EffectiveTouch() },
+                { resolved.rightTouch, slot->prevRightTouch, rPad.EffectiveTouch() },
                 // Directions are resolved rather than read, so their previous
                 // state is the one carried on the slot, not a bit in prevBuf.
                 { (lDirs&DirUp)!=0,    (lPrevDirs&DirUp)!=0,    lPad.EffectiveDirection(DirUp) },
@@ -1345,6 +1394,8 @@ void ControllerManager::ReadLoop(Slot* slot) {
         // it on any frame would stand a direction up or down for good.
         slot->prevLeftDirs  = resolved.leftDirs;
         slot->prevRightDirs = resolved.rightDirs;
+        slot->prevLeftTouch  = resolved.leftTouch;
+        slot->prevRightTouch = resolved.rightTouch;
 
         memcpy(prevBuf, buf, n);
         hasPrev = true;
