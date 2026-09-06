@@ -45,7 +45,7 @@ std::string DirsName(uint8_t d) {
     return s;
 }
 
-// A state report carrying one pad's position and click state. Everything the
+// A state report carrying one pad's position and button state. Everything the
 // resolver reads lives in the first 30 bytes; the rest stays zero.
 struct Report {
     uint8_t buf[64] = {};
@@ -67,9 +67,9 @@ struct Report {
 };
 
 // Feeds one frame and returns what the pad resolved.
-uint8_t Feed(TrackpadInput& pad, bool leftPad, bool clicked, int16_t x, int16_t y) {
-    Report r(leftPad, /*touching=*/true, clicked, x, y);
-    pad.Update(r.buf, 30);
+uint8_t Feed(TrackpadInput& pad, bool leftPad, bool pressed, int16_t x, int16_t y) {
+    Report r(leftPad, /*touching=*/true, pressed, x, y);
+    pad.Update(r.buf, 30, pressed);
     return pad.Directions();
 }
 
@@ -92,7 +92,7 @@ void CheckAngle(bool leftPad, double deg, uint8_t want) {
     TrackpadInput pad = MakePad(leftPad);
     int16_t x = 0, y = 0;
     AtAngle(deg, 25000, x, y);
-    const uint8_t got = Feed(pad, leftPad, /*clicked=*/true, x, y);
+    const uint8_t got = Feed(pad, leftPad, /*pressed=*/true, x, y);
     char label[96];
     snprintf(label, sizeof(label), "%5.1f deg -> %-16s (wanted %s)",
              deg, DirsName(got).c_str(), DirsName(want).c_str());
@@ -127,7 +127,7 @@ int main() {
         int16_t x = 0, y = 0;
         AtAngle(90.0, 25000, x, y);
         Report r(/*leftPad=*/false, true, true, x, y);
-        pad.Update(r.buf, 30);
+        pad.Update(r.buf, 30, /*pressed=*/true);
         Check(pad.Directions() == DirNone, "left pad ignores a right-pad press");
     }
 
@@ -183,7 +183,7 @@ int main() {
         TrackpadInput pad = MakePad(false);
         int16_t x = 0, y = 0;
         AtAngle(90.0, 25000, x, y);
-        Check(Feed(pad, false, /*clicked=*/false, x, y) == DirNone,
+        Check(Feed(pad, false, /*pressed=*/false, x, y) == DirNone,
               "a thumb resting out in the ring presses nothing");
     }
 
@@ -215,7 +215,7 @@ int main() {
         int16_t x = 0, y = 0;
         AtAngle(90.0, 25000, x, y);
         Feed(pad, false, true, x, y);
-        Check(Feed(pad, false, /*clicked=*/false, x, y) == DirNone, "release drops the direction");
+        Check(Feed(pad, false, /*pressed=*/false, x, y) == DirNone, "release drops the direction");
         // A fresh press re-decides the zone, so the pad is usable again.
         Check(Feed(pad, false, true, 0, 0) == DirNone, "next press re-reads the zone as centre");
         Check(pad.ClickInCentre(), "and says so");
@@ -267,7 +267,7 @@ int main() {
         int16_t x = 0, y = 0;
         AtAngle(90.0, 25000, x, y);
         Report r(false, true, true, x, y);
-        pad.Update(r.buf, 30);
+        pad.Update(r.buf, 30, /*pressed=*/true);
         char label[80];
         snprintf(label, sizeof(label), "mode %-8s presses no direction", TrackpadModeId(mode));
         Check(pad.Directions() == DirNone, label);
@@ -283,7 +283,7 @@ int main() {
         int16_t x = 0, y = 0;
         AtAngle(90.0, 25000, x, y);
         Report r(false, true, true, x, y);
-        pad.Update(r.buf, 20);
+        pad.Update(r.buf, 20, /*pressed=*/true);
         Check(pad.Directions() == DirNone, "29 bytes or fewer resolves nothing");
     }
 

@@ -289,13 +289,11 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
 
     // Calls `apply` once for every trackpad binding the pads are currently
     // pressing, so the two report paths below only have to say how one binding
-    // reaches their own report format. Directions and the click's zone were
-    // both resolved by TrackpadInput and arrive in `dirs`; touch and the click
-    // bit itself are read from the report here.
+    // reaches their own report format. Nothing here is read from the report:
+    // the tap, the press and its zone, and the directions were all resolved by
+    // ControllerManager and arrive in `resolved`, so both delivery paths and
+    // the haptics all act on one answer rather than three derivations of it.
     auto forEachPadBinding = [&](const auto& apply) {
-        const uint8_t b2 = n > 4 ? buf[4] : 0;
-        const uint8_t b3 = n > 5 ? buf[5] : 0;
-
         struct PadState {
             const TrackpadSettings& pad;
             bool    tapped;       // a contact that ended without ever clicking
@@ -304,11 +302,11 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
         };
         const PadState pads[] = {
             { profile.leftPad,  resolved.leftTap,
-                                (b3 & SteamController::BTN_TP_LT_CLICK) != 0
-                                    && resolved.leftClickInCentre,  resolved.leftDirs },
+                                resolved.leftPressed && resolved.leftClickInCentre,
+                                resolved.leftDirs },
             { profile.rightPad, resolved.rightTap,
-                                (b2 & SteamController::BTN_TP_RT_CLICK) != 0
-                                    && resolved.rightClickInCentre, resolved.rightDirs },
+                                resolved.rightPressed && resolved.rightClickInCentre,
+                                resolved.rightDirs },
         };
 
         for (const PadState& p : pads) {

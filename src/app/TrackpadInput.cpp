@@ -229,7 +229,7 @@ void TrackpadInput::UpdateDirections(bool clicked, int16_t x, int16_t y) {
     m_dirs = SectorDirs(m_sector, m_diagonals);
 }
 
-void TrackpadInput::Update(const uint8_t* buf, size_t n) {
+void TrackpadInput::Update(const uint8_t* buf, size_t n, bool pressed) {
     // Only three modes read the pad's position at all. A pad set to None or
     // feeding the DS4 touchpad has nothing for this class to work out, and a
     // single button is the click bit alone, which ControllerManager reads for
@@ -256,10 +256,7 @@ void TrackpadInput::Update(const uint8_t* buf, size_t n) {
     }
 
     if (wantsDirections) {
-        const bool clicked = m_isLeftPad
-            ? (b3 & SteamController::BTN_TP_LT_CLICK) != 0
-            : (b2 & SteamController::BTN_TP_RT_CLICK) != 0;
-        UpdateDirections(clicked, x, y);
+        UpdateDirections(pressed, x, y);
         return;
     }
 

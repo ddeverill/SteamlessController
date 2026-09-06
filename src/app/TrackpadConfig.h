@@ -129,6 +129,11 @@ struct PadDigital {
     // Slot::TapState in ControllerManager for why that bit cannot be bound.
     bool leftTap  = false;
     bool rightTap = false;
+    // The pad is being pressed, worked out from contact area rather than taken
+    // from the firmware's click bit, which reports fewer than half of them.
+    // See kPadPressArea.
+    bool leftPressed  = false;
+    bool rightPressed = false;
 };
 
 // Where a click landed on a pad, which is what keeps a directional pad's three
@@ -148,6 +153,34 @@ struct PadDigital {
 // margin on the centre side and 1.5x on the ring side. Roughly a 15mm circle
 // on the physical pad.
 inline constexpr int kPadRingRadius = 12000;
+
+// Contact area above which a thumb is pressing rather than resting.
+//
+// The firmware's own click bit cannot be trusted for this: measured with
+// TrackpadZoneProbe, a thumb that stays on the pad gets about nine of every
+// twenty presses reported as clicks. The presses are all in the report —
+// pressing flattens the fingertip and the contact area shows every one — so
+// they are recovered from the area instead.
+//
+// One threshold, not two. Above it is pressed, below it is not, and everything
+// below counts as backed off however heavily a particular thumb rests. A
+// separate "released" level would be a second per-person number, and one
+// guessed too high latches the detector and swallows every press after the
+// first — exactly the bug the click haptic had.
+//
+// 250 because a resting thumb reports almost nothing at all: over 1250 resting
+// samples the median was 0 and the highest 33, against presses peaking past
+// 6000. Deliberately near the bottom of that range rather than the middle: the
+// area dips and recovers within a single press, so a threshold up in the press
+// range splits one press into several, while one just above resting does not.
+inline constexpr int kPadPressArea = 250;
+
+// Frames the area must hold one side of the threshold before the answer
+// changes. Not a per-person number — it describes the sensor's noise rather
+// than anyone's grip — and it is what a single threshold needs in place of the
+// second level it does without. Two frames is 8ms; three starts merging
+// genuinely separate presses that arrive in quick succession.
+inline constexpr int kPadPressFrames = 2;
 
 // One physical trackpad's configuration. The click is a BackButtonBinding
 // rather than a type of its own: a pad click and a back paddle are the same
