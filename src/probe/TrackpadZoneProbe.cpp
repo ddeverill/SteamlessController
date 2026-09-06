@@ -317,9 +317,8 @@ void PrintSummary() {
 // The live constants from ControllerManager's click haptic latch, mirrored so
 // the session can be replayed through the real state machine rather than
 // through a description of it. Keep in step with Slot.
-constexpr int   kPressConfirmFrames   = 2;
-constexpr float kReleaseIdleArea      = 1000.0f;
-constexpr int   kAreaLowConfirmFrames = 8;
+constexpr int kPressConfirmFrames   = 2;
+constexpr int kReleaseConfirmFrames = 4;
 
 struct Tap {
     uint16_t areaAtPress = 0;
@@ -358,7 +357,7 @@ struct TapTracker {
     enum class State { WaitingForPress, WaitingForRelease };
     State state         = State::WaitingForPress;
     int   clickTrue     = 0;
-    int   areaLow       = 0;
+    int   clickLow      = 0;
     int   hapticsFired  = 0;   // presses and releases both pulse
 
     // Frames the finger has been down for, or -1 when it is not down. Starts
@@ -403,22 +402,16 @@ struct TapTracker {
 
         // --- what the latch would have done ---
         clickTrue = click ? clickTrue + 1 : 0;
+        clickLow  = click ? 0 : clickLow + 1;
         if (state == State::WaitingForPress) {
             if (clickTrue >= kPressConfirmFrames) {
-                state   = State::WaitingForRelease;
-                areaLow = 0;
+                state = State::WaitingForRelease;
                 ++hapticsFired;
                 if (!taps.empty()) taps.back().haptic = true;
             }
-        } else {
-            if (!click && static_cast<float>(area) <= kReleaseIdleArea) {
-                if (++areaLow >= kAreaLowConfirmFrames) {
-                    state = State::WaitingForPress;
-                    ++hapticsFired;
-                }
-            } else {
-                areaLow = 0;
-            }
+        } else if (clickLow >= kReleaseConfirmFrames) {
+            state = State::WaitingForPress;
+            ++hapticsFired;
         }
 
         prevClick = click;
@@ -490,14 +483,17 @@ void PrintTapSummary() {
     }
 
     if (!gapAreas.empty()) {
-        printf("\nCONTACT AREA BETWEEN PRESSES (the latch re-arms at <= %.0f)\n",
-               kReleaseIdleArea);
+        // Kept because it is the evidence for why the latch stopped consulting
+        // it: the release used to wait for this to fall to 1000, which a thumb
+        // that stays on the pad never does.
+        printf("\nCONTACT AREA BETWEEN PRESSES (what the latch used to wait on)\n");
         printf("  min %.0f   p05 %.0f   p50 %.0f   max %.0f\n",
                Percentile(gapAreas, 0.0),  Percentile(gapAreas, 0.05),
                Percentile(gapAreas, 0.50), Percentile(gapAreas, 1.0));
         int under = 0;
-        for (double a : gapAreas) if (a <= kReleaseIdleArea) ++under;
-        printf("  %d of %zu gaps reach it\n", under, gapAreas.size());
+        for (double a : gapAreas) if (a <= 1000.0) ++under;
+        printf("  %d of %zu gaps would have reached the old 1000 threshold\n",
+               under, gapAreas.size());
     }
 
     // The other window that matters: how long a press spends touching before
@@ -509,9 +505,11 @@ void PrintTapSummary() {
         printf("  min %.0f   p05 %.0f   p50 %.0f   max %.0f   (n=%zu)\n",
                Percentile(toClick, 0.0),  Percentile(toClick, 0.05),
                Percentile(toClick, 0.50), Percentile(toClick, 1.0), toClick.size());
-        printf("  kTouchConfirmFrames must exceed the shortest of these (%.0f) or a\n"
-               "  quick press still fires the tap binding on its way down. It is\n"
-               "  currently 12.\n", Percentile(toClick, 0.0));
+        printf("  This is why a tap is decided on the lift rather than after a\n"
+               "  fixed wait. Suppressing a tap on every press would need a wait\n"
+               "  longer than the LONGEST of these (%.0f frames), which is no wait\n"
+               "  at all — a thumb gets planted and then pressed.\n",
+               Percentile(toClick, 1.0));
     }
 
     if (!lowRuns.empty()) {
