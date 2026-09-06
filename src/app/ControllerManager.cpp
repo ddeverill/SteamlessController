@@ -1116,9 +1116,43 @@ void ControllerManager::ReadLoop(Slot* slot) {
                 static constexpr float TRACKPAD_TICK_MAX_AREA = 900.0f;
                 static constexpr float TRACKPAD_TICK_MAX_STEP = 4000.0f;
 
+                // What a movement tick means depends on what the pad is for.
+                //
+                // A directional pad ticks once per direction change, which is
+                // the detent a d-pad gives when the thumb rolls from one
+                // direction to the next. Distance means nothing to it: sliding
+                // around inside a single direction changes nothing, and would
+                // buzz continuously for no event at all.
+                //
+                // Deliberately outside the distance gates below, all of which
+                // would suppress it — directions only change while the click
+                // is held, and those gates exist to keep a press from bleeding
+                // a tick into the click haptic.
+                //
+                // Only between two directions: coming from nothing is the
+                // press and going back to nothing is the release, and both
+                // already fire their own click haptic.
+                auto directionTick = [&](bool leftPad, uint8_t prev, uint8_t now) {
+                    if (prev != DirNone && now != DirNone && prev != now)
+                        slot->sc->TickTrackpadMovement(leftPad);
+                };
+                const bool rightIsDpad = m_profile.rightPad.IsDirectionalPad();
+                const bool leftIsDpad  = m_profile.leftPad.IsDirectionalPad();
+                if (rightIsDpad)
+                    directionTick(false, slot->prevRightDirs, resolved.rightDirs);
+                if (leftIsDpad)
+                    directionTick(true, slot->prevLeftDirs, resolved.leftDirs);
+
+                // A single button has no movement to report on at all, and a
+                // directional pad has already had its say above.
+                const bool rightWantsDistance =
+                    !rightIsDpad && m_profile.rightPad.mode != TrackpadMode::SingleButton;
+                const bool leftWantsDistance =
+                    !leftIsDpad && m_profile.leftPad.mode != TrackpadMode::SingleButton;
+
                 // Gate on the latch state, not the raw click bit — while the
                 // click is held (even if the bit chatters low), no ticks.
-                if (rt && slot->hapticWasRightTouching && !rc
+                if (rightWantsDistance && rt && slot->hapticWasRightTouching && !rc
                         && slot->hapticRightClickState == Slot::ClickState::WaitingForPress
                         && slot->hapticRightTouchGrace == 0) {
                     const float dx   = static_cast<float>(rx - slot->hapticPrevRightX);
@@ -1159,7 +1193,7 @@ void ControllerManager::ReadLoop(Slot* slot) {
                         slot->hapticPrevRightY     = ry;
                     }
                 }
-                if (lt && slot->hapticWasLeftTouching && !lc
+                if (leftWantsDistance && lt && slot->hapticWasLeftTouching && !lc
                         && slot->hapticLeftClickState == Slot::ClickState::WaitingForPress
                         && slot->hapticLeftTouchGrace == 0) {
                     const float dx   = static_cast<float>(lx - slot->hapticPrevLeftX);
