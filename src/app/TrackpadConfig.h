@@ -18,15 +18,23 @@ enum class TrackpadMode : uint8_t {
     // touchpad press by definition and is therefore not rebindable; letting
     // it be both would report one physical press two different ways.
     DS4Touchpad  = 3,
+    // Pad is four directional buttons. Which one a press means is decided by
+    // where on the pad the thumb is — see PadZone below.
+    DirectionalPad = 4,
+    // Pad is one big button: no directions and no movement, just the click
+    // and touch bindings every mode but None and DS4Touchpad offers.
+    SingleButton   = 5,
     COUNT
 };
 
 inline const char* TrackpadModeId(TrackpadMode m) {
     switch (m) {
-    case TrackpadMode::MousePointer: return "pointer";
-    case TrackpadMode::ScrollWheel:  return "scroll";
-    case TrackpadMode::DS4Touchpad:  return "ds4";
-    default:                         return "none";
+    case TrackpadMode::MousePointer:   return "pointer";
+    case TrackpadMode::ScrollWheel:    return "scroll";
+    case TrackpadMode::DS4Touchpad:    return "ds4";
+    case TrackpadMode::DirectionalPad: return "dpad";
+    case TrackpadMode::SingleButton:   return "button";
+    default:                           return "none";
     }
 }
 
@@ -34,6 +42,8 @@ inline TrackpadMode TrackpadModeFromId(const std::string& id) {
     if (id == "pointer") return TrackpadMode::MousePointer;
     if (id == "scroll")  return TrackpadMode::ScrollWheel;
     if (id == "ds4")     return TrackpadMode::DS4Touchpad;
+    if (id == "dpad")    return TrackpadMode::DirectionalPad;
+    if (id == "button")  return TrackpadMode::SingleButton;
     return TrackpadMode::None;
 }
 
@@ -64,6 +74,63 @@ inline ScrollDirection ScrollDirectionFromDword(uint32_t v) {
          : ScrollDirection::Natural;
 }
 
+// Whether a directional pad's diagonals press two directions at once (what a
+// real d-pad does, and what makes diagonal movement in a game possible) or
+// resolve to the nearer single direction (steadier for menus). Eight-way is
+// the default.
+enum class DiagonalMode : uint8_t { EightWay = 0, FourWay = 1, COUNT };
+
+inline const char* DiagonalModeId(DiagonalMode d) {
+    return d == DiagonalMode::FourWay ? "four" : "eight";
+}
+
+inline DiagonalMode DiagonalModeFromId(const std::string& id) {
+    return id == "four" ? DiagonalMode::FourWay : DiagonalMode::EightWay;
+}
+
+inline DiagonalMode DiagonalModeFromDword(uint32_t v) {
+    return v < static_cast<uint32_t>(DiagonalMode::COUNT)
+         ? static_cast<DiagonalMode>(v)
+         : DiagonalMode::EightWay;
+}
+
+// The four directions a pad in DirectionalPad mode can press, as a bitmask so
+// a diagonal is one value rather than two booleans that have to travel
+// together.
+enum PadDir : uint8_t {
+    DirNone  = 0,
+    DirUp    = 1 << 0,
+    DirDown  = 1 << 1,
+    DirLeft  = 1 << 2,
+    DirRight = 1 << 3,
+};
+
+// What both pads' directions resolved to this frame. Passed to the virtual
+// controller, which cannot work them out for itself — resolving a direction
+// needs the hysteresis state that lives per-pad in TrackpadInput.
+struct PadDigital {
+    uint8_t leftDirs  = DirNone;
+    uint8_t rightDirs = DirNone;
+};
+
+// Where a click landed on a pad, which is what keeps a directional pad's three
+// signals disjoint: a click in the middle is the Trackpad Click binding, a
+// click out in the ring is the direction under the thumb, and touch is not
+// zoned at all. Without this split one physical press would have to mean both
+// a direction and a click.
+//
+// The boundary is in raw report units rather than a fraction of the pad,
+// because the pad's coordinate space is square — both axes saturate at 32767,
+// so the distance to a corner (46341) is 1.41x the distance to an edge and no
+// single fraction describes the same circle.
+//
+// 12000 comes from TrackpadZoneProbe (src/probe/TrackpadZoneProbe.cpp) run
+// against real presses: deliberate centre presses reached at most 6035 and the
+// loosest direction press was 17731, eyes-free. That leaves roughly a 2x
+// margin on the centre side and 1.5x on the ring side. Roughly a 15mm circle
+// on the physical pad.
+inline constexpr int kPadRingRadius = 12000;
+
 // One physical trackpad's configuration. The click is a BackButtonBinding
 // rather than a type of its own: a pad click and a back paddle are the same
 // question ("what should this button do"), answered by the same catalog and
@@ -72,13 +139,31 @@ struct TrackpadSettings {
     TrackpadMode      mode      = TrackpadMode::None;
     ScrollDirection   scrollDir = ScrollDirection::Natural;
     BackButtonBinding click     = BackButtonBinding::FromAction(BackButtonAction::None);
+    // Fires while a finger rests on the pad, whatever the pad's mode is doing
+    // with movement. Deliberately not zoned like the click: touch and click
+    // are different physical events so they cannot collide, and a thumb
+    // crosses zones constantly while sliding, which would make a zoned touch
+    // flicker.
+    BackButtonBinding touch     = BackButtonBinding::FromAction(BackButtonAction::None);
+
+    // DirectionalPad only. Default to the gamepad d-pad so choosing the mode
+    // does the obvious thing before anything is rebound.
+    BackButtonBinding up        = BackButtonBinding::FromAction(BackButtonAction::DPadUp);
+    BackButtonBinding down      = BackButtonBinding::FromAction(BackButtonAction::DPadDown);
+    BackButtonBinding left      = BackButtonBinding::FromAction(BackButtonAction::DPadLeft);
+    BackButtonBinding right     = BackButtonBinding::FromAction(BackButtonAction::DPadRight);
+    DiagonalMode      diagonals = DiagonalMode::EightWay;
 
     bool operator==(const TrackpadSettings& o) const {
-        return mode == o.mode && scrollDir == o.scrollDir && click == o.click;
+        return mode == o.mode && scrollDir == o.scrollDir && click == o.click
+            && touch == o.touch && up == o.up && down == o.down
+            && left == o.left && right == o.right && diagonals == o.diagonals;
     }
     bool operator!=(const TrackpadSettings& o) const { return !(*this == o); }
 
-    // True when this pad's movement is driving the desktop.
+    // True when this pad's movement is driving the desktop. The two new modes
+    // are not here: they dispatch bindings, which a paddle does too, and none
+    // of them steer the pointer.
     bool ClaimedForDesktop() const {
         return mode == TrackpadMode::MousePointer || mode == TrackpadMode::ScrollWheel;
     }
@@ -87,12 +172,41 @@ struct TrackpadSettings {
     // which also makes its click the touchpad press rather than a binding.
     bool FeedsDs4Touchpad() const { return mode == TrackpadMode::DS4Touchpad; }
 
+    // True when this pad resolves directions, and therefore when its click is
+    // split between the centre and the ring.
+    bool IsDirectionalPad() const { return mode == TrackpadMode::DirectionalPad; }
+
     // The binding this pad's click should dispatch, which is nothing at all
-    // while the click belongs to the DS4 touchpad. Reading it through here
-    // rather than touching `click` directly is what stops a binding left over
-    // from an earlier mode firing behind the hidden UI.
+    // while the click belongs to the DS4 touchpad. Reading the bindings
+    // through these rather than touching the fields directly is what stops one
+    // left over from another mode firing from behind hidden UI.
+    //
+    // A directional pad narrows this further — only a press that lands inside
+    // kPadRingRadius is the click, since one out in the ring is a direction —
+    // but that needs the press position, which lives with the resolver rather
+    // than here. The caller that has it applies the zone; see TrackpadInput.
     BackButtonBinding EffectiveClick() const {
         return FeedsDs4Touchpad() ? BackButtonBinding{} : click;
+    }
+
+    // A pad set to None is not in use at all, and a DS4 touchpad's contact is
+    // the touchpad contact — every other mode can carry a touch binding.
+    BackButtonBinding EffectiveTouch() const {
+        return (mode == TrackpadMode::None || FeedsDs4Touchpad()) ? BackButtonBinding{}
+                                                                  : touch;
+    }
+
+    // The binding for one direction, or nothing when this pad is not a
+    // directional pad at all.
+    BackButtonBinding EffectiveDirection(PadDir d) const {
+        if (!IsDirectionalPad()) return {};
+        switch (d) {
+        case DirUp:    return up;
+        case DirDown:  return down;
+        case DirLeft:  return left;
+        case DirRight: return right;
+        default:       return {};
+        }
     }
 };
 
