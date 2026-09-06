@@ -122,11 +122,13 @@ struct PadDigital {
     // click binding on this without asking what mode the pad is in.
     bool leftClickInCentre  = true;
     bool rightClickInCentre = true;
-    // A finger resting on the pad without pressing it. Not the report's touch
-    // bit, which a press also sets on its way down — see kTouchConfirmFrames
-    // in ControllerManager for why a touch binding cannot use the raw bit.
-    bool leftTouch  = false;
-    bool rightTouch = false;
+    // A tap just happened: a contact that ended without ever clicking. Held
+    // true for a few frames so it dispatches as an ordinary press and release
+    // — the event is over by the time it is known to have happened. Not the
+    // report's touch bit, which a press also sets on its way down; see
+    // Slot::TapState in ControllerManager for why that bit cannot be bound.
+    bool leftTap  = false;
+    bool rightTap = false;
 };
 
 // Where a click landed on a pad, which is what keeps a directional pad's three
