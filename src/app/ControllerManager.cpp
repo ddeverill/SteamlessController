@@ -3,7 +3,7 @@
 #include "InputInjection.h"
 #include "ViGEmBusInfo.h"
 #include "VirtualController.h"
-#include "TrackpadMouse.h"
+#include "TrackpadInput.h"
 #include "KeyInput.h"
 #include "TouchKeyboard.h"
 #include "steam/SteamController.h"
@@ -35,8 +35,8 @@ struct ControllerManager::Slot {
     std::unique_ptr<SteamController>   sc;
     std::unique_ptr<VirtualController> vc;
     // One per physical pad — they are configured independently.
-    TrackpadMouse                      leftPad;
-    TrackpadMouse                      rightPad;
+    TrackpadInput                      leftPad;
+    TrackpadInput                      rightPad;
     std::thread                        readThread;
     std::atomic<bool>                  readRunning{false};
     bool                               gameModeActive = false;
@@ -377,6 +377,8 @@ void ControllerManager::ApplyPadSettings(Slot& slot) {
     slot.rightPad.SetMode(m_profile.rightPad.mode);
     slot.leftPad.SetScrollDirection(m_profile.leftPad.scrollDir);
     slot.rightPad.SetScrollDirection(m_profile.rightPad.scrollDir);
+    slot.leftPad.SetDiagonals(m_profile.leftPad.diagonals);
+    slot.rightPad.SetDiagonals(m_profile.rightPad.diagonals);
     // The virtual controller reads pad modes straight off the profile it is
     // handed every frame, so there is nothing to push to it here.
 }
@@ -404,7 +406,7 @@ void ControllerManager::SetProfile(const ControllerProfile& profile) {
 
     // Live update: the ReadLoop reads m_profile on every frame, so paddle and
     // pad-click changes take effect on the very next report. Movement modes
-    // live inside the per-slot TrackpadMouse objects, so those are pushed.
+    // live inside the per-slot TrackpadInput objects, so those are pushed.
     for (auto& slot : m_slots)
         ApplyPadSettings(*slot);
 }
@@ -1175,7 +1177,7 @@ void ControllerManager::ReadLoop(Slot* slot) {
         // Edge-detected so each press sends exactly one down and each release
         // exactly one up.
         //
-        // Pad clicks ride this same path rather than living in TrackpadMouse,
+        // Pad clicks ride this same path rather than living in TrackpadInput,
         // which is what makes a pad's click independent of its movement mode —
         // the click used to be hardcoded to a left button and only fired while
         // that pad was driving the mouse.
