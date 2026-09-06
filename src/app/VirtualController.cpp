@@ -282,9 +282,42 @@ void VirtualController::SetBatteryState(uint8_t levelPercent, uint8_t chargeStat
 }
 
 void VirtualController::Update(const uint8_t* buf, size_t n,
-                               const ControllerProfile& profile) {
+                               const ControllerProfile& profile,
+                               PadDigital resolved) {
     if (!m_valid) return;
     const BackButtonConfig& backCfg = profile.back;
+
+    // Calls `apply` once for every trackpad binding the pads are currently
+    // pressing, so the two report paths below only have to say how one binding
+    // reaches their own report format. Directions and the click's zone were
+    // both resolved by TrackpadInput and arrive in `dirs`; touch and the click
+    // bit itself are read from the report here.
+    auto forEachPadBinding = [&](const auto& apply) {
+        const uint8_t b2 = n > 4 ? buf[4] : 0;
+        const uint8_t b3 = n > 5 ? buf[5] : 0;
+
+        struct PadState {
+            const TrackpadSettings& pad;
+            bool    touching;
+            bool    clicked;      // already narrowed to a centre press
+            uint8_t dirs;
+        };
+        const PadState pads[] = {
+            { profile.leftPad,  (b3 & SteamController::BTN_TP_LT) != 0,
+                                (b3 & SteamController::BTN_TP_LT_CLICK) != 0
+                                    && resolved.leftClickInCentre,  resolved.leftDirs },
+            { profile.rightPad, (b2 & SteamController::BTN_TP_RT) != 0,
+                                (b2 & SteamController::BTN_TP_RT_CLICK) != 0
+                                    && resolved.rightClickInCentre, resolved.rightDirs },
+        };
+
+        for (const PadState& p : pads) {
+            if (p.touching) apply(p.pad.EffectiveTouch());
+            if (p.clicked)  apply(p.pad.EffectiveClick());
+            for (uint8_t d : { DirUp, DirDown, DirLeft, DirRight })
+                if (p.dirs & d) apply(p.pad.EffectiveDirection(static_cast<PadDir>(d)));
+        }
+    };
 
     if (m_platform == ControllerPlatform::PlayStation) {
         // A pad reaches the DS4 touchpad only when that is what it was set
@@ -373,13 +406,15 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
             if (n > 3) {
                 if (buf[3] & SteamController::BTN_R5) applyBack(backCfg.r5);
             }
-            // Pad clicks bound to a gamepad action reach the virtual pad the
-            // same way the paddles do. EffectiveClick yields nothing for a
-            // pad feeding the touchpad, whose press is reported below instead.
-            if (n > 5 && (buf[5] & SteamController::BTN_TP_LT_CLICK))
-                applyBack(profile.leftPad.EffectiveClick());
-            if (n > 4 && (buf[4] & SteamController::BTN_TP_RT_CLICK))
-                applyBack(profile.rightPad.EffectiveClick());
+            // Trackpad clicks, touches and directions bound to a gamepad
+            // action reach the virtual pad the same way the paddles do. The
+            // Effective* accessors yield nothing for a pad feeding the
+            // touchpad, whose press is reported below instead.
+            //
+            // Applied before the hat is worked out below, so a direction bound
+            // to the d-pad — which is the default — folds into it and its
+            // diagonals come out as diagonals rather than as two cardinals.
+            forEachPadBinding(applyBack);
 
             DS4_DPAD_DIRECTIONS hat = DS4_BUTTON_DPAD_NONE;
             if      (dUp && dRt) hat = DS4_BUTTON_DPAD_NORTHEAST;
@@ -492,13 +527,13 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
         if (n > 3) {
             if (buf[3] & SteamController::BTN_R5) ApplyBackActionX360(backCfg.r5, report);
         }
-        // Pad clicks bound to a gamepad action. EffectiveClick still applies:
-        // a pad set to DS4 Touchpad has no binding to deliver, and on this
-        // platform no touchpad to deliver it to either.
-        if (n > 5 && (buf[5] & SteamController::BTN_TP_LT_CLICK))
-            ApplyBackActionX360(profile.leftPad.EffectiveClick(), report);
-        if (n > 4 && (buf[4] & SteamController::BTN_TP_RT_CLICK))
-            ApplyBackActionX360(profile.rightPad.EffectiveClick(), report);
+        // Trackpad clicks, touches and directions bound to a gamepad action.
+        // The Effective* accessors still apply: a pad set to DS4 Touchpad has
+        // no binding to deliver, and on this platform no touchpad to deliver
+        // it to either.
+        forEachPadBinding([&](const BackButtonBinding& b) {
+            ApplyBackActionX360(b, report);
+        });
 
         vigem_target_x360_update(static_cast<PVIGEM_CLIENT>(m_client),
                                  static_cast<PVIGEM_TARGET>(m_target),

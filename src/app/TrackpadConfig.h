@@ -105,12 +105,23 @@ enum PadDir : uint8_t {
     DirRight = 1 << 3,
 };
 
-// What both pads' directions resolved to this frame. Passed to the virtual
-// controller, which cannot work them out for itself — resolving a direction
-// needs the hysteresis state that lives per-pad in TrackpadInput.
+// What both pads resolved to this frame, for the two places a pad binding is
+// delivered — the virtual controller and SendInput. Neither can work these out
+// for itself: a direction and a click's zone both need the hysteresis and
+// latch state that lives per-pad in TrackpadInput.
+//
+// Carrying the zone here rather than re-deriving it is what keeps the two
+// delivery paths agreeing. It is inferrable — a directional pad only presses
+// directions from a ring click, so a click with nothing under it is a centre
+// one — but an inference that holds "except for one frame after the diagonals
+// setting changes" is exactly the kind that gets found the hard way.
 struct PadDigital {
     uint8_t leftDirs  = DirNone;
     uint8_t rightDirs = DirNone;
+    // True for any pad that is not a directional pad, so a caller can gate the
+    // click binding on this without asking what mode the pad is in.
+    bool leftClickInCentre  = true;
+    bool rightClickInCentre = true;
 };
 
 // Where a click landed on a pad, which is what keeps a directional pad's three

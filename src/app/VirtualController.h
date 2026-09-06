@@ -35,7 +35,11 @@ public:
     // for choosing what to tell the user. Empty unless a connect failed.
     const std::wstring& BusReport() const { return m_busReport; }
 
-    void Update(const uint8_t* buf, size_t n, const ControllerProfile& profile);
+    // `resolved` carries what each pad's directions and click zone came out as
+    // this frame. Passed in rather than worked out here because resolving them
+    // needs the per-pad hysteresis and latch state that lives in TrackpadInput.
+    void Update(const uint8_t* buf, size_t n, const ControllerProfile& profile,
+                PadDigital resolved);
     void OnRumble(uint8_t largeMotor, uint8_t smallMotor);
 
     // DS4-only: update battery level shown in the DS4 report.

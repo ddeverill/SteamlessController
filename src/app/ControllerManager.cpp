@@ -64,10 +64,20 @@ struct ControllerManager::Slot {
     // what the press actually sent rather than reading the binding again on
     // release, so rebinding mid-hold still releases cleanly.
     //
-    // Indices 0-3 are the paddles (L4, L5, R4, R5); 4-5 are the left and right
-    // pad clicks, which are ordinary bindings dispatched down this same path.
-    static constexpr size_t kBindableCount = 6;
+    // Indices 0-3 are the paddles (L4, L5, R4, R5); everything after them
+    // belongs to the trackpads, which are ordinary bindings dispatched down
+    // this same path. 4-5 are the pad clicks, 6-7 the pad touches, and 8-15
+    // the four directions of each pad in turn.
+    static constexpr size_t kBindableCount = 16;
     BackButtonBinding paddleHeld[kBindableCount];
+
+    // What each pad's directions were last frame. Unlike every other edge
+    // dispatched here these are not bits in the report — they are resolved
+    // from a position, so the previous report cannot be re-read for them and
+    // the answer has to be carried. Written every frame, including the first,
+    // so a direction cannot be stranded down across a mode change.
+    uint8_t prevLeftDirs  = DirNone;
+    uint8_t prevRightDirs = DirNone;
 
     // Auto-repeat for held key bindings. When the next repeat is due, and the
     // gap to use after that — both captured at press time from the user's
@@ -972,9 +982,17 @@ void ControllerManager::ReadLoop(Slot* slot) {
                                 "dropped before it reaches SendInput", n);
         }
 
-        if (slot->vc) slot->vc->Update(buf, n, m_profile);
+        // The pads first: a directional pad's directions are resolved here and
+        // the virtual controller is handed them, so updating it first would
+        // report last frame's directions — a frame of lag on every press and,
+        // worse, a direction still held for a frame after release.
         slot->leftPad.Update(buf, n);
         slot->rightPad.Update(buf, n);
+        const PadDigital resolved{ slot->leftPad.Directions(),
+                               slot->rightPad.Directions(),
+                               slot->leftPad.ClickInCentre(),
+                               slot->rightPad.ClickInCentre() };
+        if (slot->vc) slot->vc->Update(buf, n, m_profile, resolved);
 
         // Trackpad haptics.
         {
@@ -1189,14 +1207,47 @@ void ControllerManager::ReadLoop(Slot* slot) {
             const BackButtonBinding leftPadClick  = m_profile.leftPad.EffectiveClick();
             const BackButtonBinding rightPadClick = m_profile.rightPad.EffectiveClick();
 
-            struct PaddleEdge { bool cur; bool prev; const BackButtonBinding& binding; };
+            // A directional pad's click is only its click binding when the
+            // press landed in the middle — out in the ring the same press is a
+            // direction, and letting both through is the one physical press
+            // meaning two things that the zone split exists to prevent. The
+            // zone is latched for the press's whole life, so this cannot flip
+            // mid-hold and strand a binding down. Every other mode answers
+            // "centre", so they gate to exactly what they did before.
+            const bool leftClickInCentre  = resolved.leftClickInCentre;
+            const bool rightClickInCentre = resolved.rightClickInCentre;
+
+            const uint8_t lDirs = resolved.leftDirs,  lPrevDirs = slot->prevLeftDirs;
+            const uint8_t rDirs = resolved.rightDirs, rPrevDirs = slot->prevRightDirs;
+            const auto& lPad = m_profile.leftPad;
+            const auto& rPad = m_profile.rightPad;
+
+            // Held by value rather than by reference: half of these bindings
+            // are returned by value from the Effective* accessors, and a
+            // reference member would be bound to a temporary.
+            struct PaddleEdge { bool cur; bool prev; BackButtonBinding binding; };
             const PaddleEdge edges[] = {
                 { n>4 && (buf[4]&SteamController::BTN_L4)!=0, (prevBuf[4]&SteamController::BTN_L4)!=0, m_profile.back.l4 },
                 { n>4 && (buf[4]&SteamController::BTN_L5)!=0, (prevBuf[4]&SteamController::BTN_L5)!=0, m_profile.back.l5 },
                 { n>2 && (buf[2]&SteamController::BTN_R4)!=0, (prevBuf[2]&SteamController::BTN_R4)!=0, m_profile.back.r4 },
                 { n>3 && (buf[3]&SteamController::BTN_R5)!=0, (prevBuf[3]&SteamController::BTN_R5)!=0, m_profile.back.r5 },
-                { n>5 && (buf[5]&SteamController::BTN_TP_LT_CLICK)!=0, (prevBuf[5]&SteamController::BTN_TP_LT_CLICK)!=0, leftPadClick },
-                { n>4 && (buf[4]&SteamController::BTN_TP_RT_CLICK)!=0, (prevBuf[4]&SteamController::BTN_TP_RT_CLICK)!=0, rightPadClick },
+                { n>5 && (buf[5]&SteamController::BTN_TP_LT_CLICK)!=0 && leftClickInCentre,  (prevBuf[5]&SteamController::BTN_TP_LT_CLICK)!=0 && leftClickInCentre,  leftPadClick },
+                { n>4 && (buf[4]&SteamController::BTN_TP_RT_CLICK)!=0 && rightClickInCentre, (prevBuf[4]&SteamController::BTN_TP_RT_CLICK)!=0 && rightClickInCentre, rightPadClick },
+                // Touch is not zoned: it cannot collide with a direction,
+                // which comes from the click, and a thumb crosses zones
+                // constantly while sliding.
+                { n>5 && (buf[5]&SteamController::BTN_TP_LT)!=0, (prevBuf[5]&SteamController::BTN_TP_LT)!=0, lPad.EffectiveTouch() },
+                { n>4 && (buf[4]&SteamController::BTN_TP_RT)!=0, (prevBuf[4]&SteamController::BTN_TP_RT)!=0, rPad.EffectiveTouch() },
+                // Directions are resolved rather than read, so their previous
+                // state is the one carried on the slot, not a bit in prevBuf.
+                { (lDirs&DirUp)!=0,    (lPrevDirs&DirUp)!=0,    lPad.EffectiveDirection(DirUp) },
+                { (lDirs&DirDown)!=0,  (lPrevDirs&DirDown)!=0,  lPad.EffectiveDirection(DirDown) },
+                { (lDirs&DirLeft)!=0,  (lPrevDirs&DirLeft)!=0,  lPad.EffectiveDirection(DirLeft) },
+                { (lDirs&DirRight)!=0, (lPrevDirs&DirRight)!=0, lPad.EffectiveDirection(DirRight) },
+                { (rDirs&DirUp)!=0,    (rPrevDirs&DirUp)!=0,    rPad.EffectiveDirection(DirUp) },
+                { (rDirs&DirDown)!=0,  (rPrevDirs&DirDown)!=0,  rPad.EffectiveDirection(DirDown) },
+                { (rDirs&DirLeft)!=0,  (rPrevDirs&DirLeft)!=0,  rPad.EffectiveDirection(DirLeft) },
+                { (rDirs&DirRight)!=0, (rPrevDirs&DirRight)!=0, rPad.EffectiveDirection(DirRight) },
             };
             static_assert(std::size(edges) == Slot::kBindableCount,
                           "paddleHeld must have one entry per edge-dispatched binding");
@@ -1249,6 +1300,14 @@ void ControllerManager::ReadLoop(Slot* slot) {
                     m_captureCallback(BackButtonBinding::FromAction(captured));
             }
         }
+
+        // Deliberately outside the hasPrev guard above, alongside the report
+        // it is the equivalent of: the first frame of a read loop establishes
+        // a baseline rather than dispatching against a stale one, and every
+        // later frame leaves behind what the next will compare with. Skipping
+        // it on any frame would stand a direction up or down for good.
+        slot->prevLeftDirs  = resolved.leftDirs;
+        slot->prevRightDirs = resolved.rightDirs;
 
         memcpy(prevBuf, buf, n);
         hasPrev = true;
