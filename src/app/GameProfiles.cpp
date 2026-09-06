@@ -34,6 +34,48 @@ void WriteSz(HKEY key, const wchar_t* name, const std::wstring& val) {
                    static_cast<DWORD>((val.size() + 1) * sizeof(wchar_t)));
 }
 
+DWORD Packed(BackButtonAction a) {
+    return BackButtonBinding::FromAction(a).Pack();
+}
+
+// One pad's values. Named rather than spelled out twice because the two pads
+// carry the same twelve settings and only the prefix differs, and a
+// copy-pasted second copy is where a left-pad name ends up reading a
+// right-pad value.
+void ReadPad(HKEY key, const wchar_t* prefix, TrackpadSettings& pad) {
+    auto name = [&](const wchar_t* suffix) { return std::wstring(prefix) + suffix; };
+    auto binding = [&](const wchar_t* suffix, BackButtonAction def) {
+        return BackButtonBinding::Unpack(ReadDw(key, name(suffix).c_str(), Packed(def)));
+    };
+
+    pad.mode      = TrackpadModeFromDword(ReadDw(key, name(L"Mode").c_str(), 0));
+    pad.click     = binding(L"Click", BackButtonAction::None);
+    pad.scrollDir = ScrollDirectionFromDword(ReadDw(key, name(L"ScrollDir").c_str(), 0));
+    // Absent from every profile written before the directional modes existed.
+    // The defaults match TrackpadSettings' own, so those profiles read back as
+    // an unconfigured directional pad rather than a broken one.
+    pad.touch     = binding(L"Touch", BackButtonAction::None);
+    pad.up        = binding(L"Up",    BackButtonAction::DPadUp);
+    pad.down      = binding(L"Down",  BackButtonAction::DPadDown);
+    pad.left      = binding(L"Left",  BackButtonAction::DPadLeft);
+    pad.right     = binding(L"Right", BackButtonAction::DPadRight);
+    pad.diagonals = DiagonalModeFromDword(ReadDw(key, name(L"Diagonals").c_str(), 0));
+}
+
+void WritePad(HKEY key, const wchar_t* prefix, const TrackpadSettings& pad) {
+    auto name = [&](const wchar_t* suffix) { return std::wstring(prefix) + suffix; };
+
+    WriteDw(key, name(L"Mode").c_str(),      static_cast<DWORD>(pad.mode));
+    WriteDw(key, name(L"Click").c_str(),     pad.click.Pack());
+    WriteDw(key, name(L"ScrollDir").c_str(), static_cast<DWORD>(pad.scrollDir));
+    WriteDw(key, name(L"Touch").c_str(),     pad.touch.Pack());
+    WriteDw(key, name(L"Up").c_str(),        pad.up.Pack());
+    WriteDw(key, name(L"Down").c_str(),      pad.down.Pack());
+    WriteDw(key, name(L"Left").c_str(),      pad.left.Pack());
+    WriteDw(key, name(L"Right").c_str(),     pad.right.Pack());
+    WriteDw(key, name(L"Diagonals").c_str(), static_cast<DWORD>(pad.diagonals));
+}
+
 }  // namespace
 
 namespace GameProfiles {
@@ -73,12 +115,8 @@ std::map<std::wstring, ControllerProfile> Load() {
             // Profiles written before per-pad settings existed have none of
             // these values; the defaults leave both pads unclaimed, which is
             // exactly how those profiles behaved.
-            p.leftPad.mode       = TrackpadModeFromDword(ReadDw(child, L"LeftPadMode",  0));
-            p.leftPad.click      = BackButtonBinding::Unpack(ReadDw(child, L"LeftPadClick",  unbound));
-            p.leftPad.scrollDir  = ScrollDirectionFromDword(ReadDw(child, L"LeftPadScrollDir",  0));
-            p.rightPad.mode      = TrackpadModeFromDword(ReadDw(child, L"RightPadMode", 0));
-            p.rightPad.click     = BackButtonBinding::Unpack(ReadDw(child, L"RightPadClick", unbound));
-            p.rightPad.scrollDir = ScrollDirectionFromDword(ReadDw(child, L"RightPadScrollDir", 0));
+            ReadPad(child, L"LeftPad",  p.leftPad);
+            ReadPad(child, L"RightPad", p.rightPad);
             profiles[id] = p;
         }
         RegCloseKey(child);
@@ -113,12 +151,8 @@ void Save(const std::map<std::wstring, ControllerProfile>& profiles) {
             WriteDw(child, L"L5", p.back.l5.Pack());
             WriteDw(child, L"R4", p.back.r4.Pack());
             WriteDw(child, L"R5", p.back.r5.Pack());
-            WriteDw(child, L"LeftPadMode",       static_cast<DWORD>(p.leftPad.mode));
-            WriteDw(child, L"LeftPadClick",      p.leftPad.click.Pack());
-            WriteDw(child, L"LeftPadScrollDir",  static_cast<DWORD>(p.leftPad.scrollDir));
-            WriteDw(child, L"RightPadMode",      static_cast<DWORD>(p.rightPad.mode));
-            WriteDw(child, L"RightPadClick",     p.rightPad.click.Pack());
-            WriteDw(child, L"RightPadScrollDir", static_cast<DWORD>(p.rightPad.scrollDir));
+            WritePad(child, L"LeftPad",  p.leftPad);
+            WritePad(child, L"RightPad", p.rightPad);
             RegCloseKey(child);
         }
         ++i;

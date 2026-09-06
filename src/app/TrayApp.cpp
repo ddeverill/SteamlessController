@@ -1747,12 +1747,30 @@ void TrayApp::LoadSettings() {
             pad.click = BackButtonBinding::FromAction(BackButtonAction::LeftMouseButton);
         }
     } else {
-        profile.leftPad.mode       = TrackpadModeFromDword(readDw(L"LeftPadMode", 0));
-        profile.leftPad.click      = BackButtonBinding::Unpack(readDw(L"LeftPadClick",  unbound));
-        profile.leftPad.scrollDir  = ScrollDirectionFromDword(readDw(L"LeftPadScrollDir", 0));
-        profile.rightPad.mode      = TrackpadModeFromDword(readDw(L"RightPadMode", 0));
-        profile.rightPad.click     = BackButtonBinding::Unpack(readDw(L"RightPadClick", unbound));
-        profile.rightPad.scrollDir = ScrollDirectionFromDword(readDw(L"RightPadScrollDir", 0));
+        // Both pads carry the same twelve settings under different prefixes.
+        // The direction and touch values are absent from anything written
+        // before the directional modes existed, and their defaults here match
+        // TrackpadSettings' own so those profiles read back as an
+        // unconfigured directional pad rather than a silently unbound one.
+        auto readPad = [&](const wchar_t* prefix, TrackpadSettings& pad) {
+            auto name = [&](const wchar_t* suffix) { return std::wstring(prefix) + suffix; };
+            auto binding = [&](const wchar_t* suffix, BackButtonAction def) {
+                return BackButtonBinding::Unpack(
+                    readDw(name(suffix).c_str(),
+                           BackButtonBinding::FromAction(def).Pack()));
+            };
+            pad.mode      = TrackpadModeFromDword(readDw(name(L"Mode").c_str(), 0));
+            pad.click     = binding(L"Click", BackButtonAction::None);
+            pad.scrollDir = ScrollDirectionFromDword(readDw(name(L"ScrollDir").c_str(), 0));
+            pad.touch     = binding(L"Touch", BackButtonAction::None);
+            pad.up        = binding(L"Up",    BackButtonAction::DPadUp);
+            pad.down      = binding(L"Down",  BackButtonAction::DPadDown);
+            pad.left      = binding(L"Left",  BackButtonAction::DPadLeft);
+            pad.right     = binding(L"Right", BackButtonAction::DPadRight);
+            pad.diagonals = DiagonalModeFromDword(readDw(name(L"Diagonals").c_str(), 0));
+        };
+        readPad(L"LeftPad",  profile.leftPad);
+        readPad(L"RightPad", profile.rightPad);
     }
 
     m_defaultProfile = profile;
@@ -1815,12 +1833,20 @@ void TrayApp::SaveSettings() {
     writeDw(L"BackBtnR4", profile.back.r4.Pack());
     writeDw(L"BackBtnR5", profile.back.r5.Pack());
 
-    writeDw(L"LeftPadMode",       static_cast<DWORD>(profile.leftPad.mode));
-    writeDw(L"LeftPadClick",      profile.leftPad.click.Pack());
-    writeDw(L"LeftPadScrollDir",  static_cast<DWORD>(profile.leftPad.scrollDir));
-    writeDw(L"RightPadMode",      static_cast<DWORD>(profile.rightPad.mode));
-    writeDw(L"RightPadClick",     profile.rightPad.click.Pack());
-    writeDw(L"RightPadScrollDir", static_cast<DWORD>(profile.rightPad.scrollDir));
+    auto writePad = [&](const wchar_t* prefix, const TrackpadSettings& pad) {
+        auto name = [&](const wchar_t* suffix) { return std::wstring(prefix) + suffix; };
+        writeDw(name(L"Mode").c_str(),      static_cast<DWORD>(pad.mode));
+        writeDw(name(L"Click").c_str(),     pad.click.Pack());
+        writeDw(name(L"ScrollDir").c_str(), static_cast<DWORD>(pad.scrollDir));
+        writeDw(name(L"Touch").c_str(),     pad.touch.Pack());
+        writeDw(name(L"Up").c_str(),        pad.up.Pack());
+        writeDw(name(L"Down").c_str(),      pad.down.Pack());
+        writeDw(name(L"Left").c_str(),      pad.left.Pack());
+        writeDw(name(L"Right").c_str(),     pad.right.Pack());
+        writeDw(name(L"Diagonals").c_str(), static_cast<DWORD>(pad.diagonals));
+    };
+    writePad(L"LeftPad",  profile.leftPad);
+    writePad(L"RightPad", profile.rightPad);
     // Written last and unconditionally: its presence is what tells the next
     // launch the per-pad values above are authoritative.
     writeDw(L"PadsMigrated", 1);
