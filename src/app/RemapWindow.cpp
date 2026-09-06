@@ -163,6 +163,9 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 .btn-save{padding:8px 18px;border-radius:4px;border:1px solid #4c7a1d;background:linear-gradient(to bottom,#94c63d,#5d8a1f);color:#13260a;font-weight:700;font-size:13px;}
 .btn-save:hover{opacity:.9;}
 </style>
+)HTML"
+// Styles above, markup below.
+R"HTML(
 </head>
 <body>
 
@@ -290,10 +293,18 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
   </div>
 </div>
 )HTML"
-// Split here only to stay under MSVC's ~16KB limit on a single string literal
-// (C2026); the pieces are concatenated back into one document. Markup and
-// styles above, script below — keep any new content on whichever side is
-// smaller rather than rejoining these.
+// The page is split across several adjacent string literals only because MSVC
+// caps one at 16380 bytes (C2026); the compiler concatenates them straight
+// back into a single document, so a split can go anywhere two complete lines
+// meet and means nothing at runtime.
+//
+// Keep every piece under about 12KB. An earlier arrangement aimed at "roughly
+// 16KB" and drifted to 17.5KB apiece, which built for a while and then stopped
+// compiling outright when the toolchain moved to VS 2026 — the limit is exact,
+// and there is no warning on the way to hitting it. When a piece outgrows its
+// budget, add another split rather than rebalancing the existing ones.
+//
+// Markup above, script below.
 R"HTML(
 <script>
 'use strict';
@@ -515,6 +526,9 @@ if(window.chrome&&window.chrome.webview){
   });
 }
 
+)HTML"
+// Bridge and catalog above, the actions they drive below.
+R"HTML(
 // ---- Actions ----
 function startListening(rowId){
   if(listening&&listening!==rowId) postMsg({type:'stopListening'});
@@ -908,6 +922,9 @@ function renderPadRows(){
     if(clickRow) clickRow.style.display=(modes[padId]==='ds4')?'none':'';
   });
 }
+)HTML"
+// Picker and dropdowns above, row rendering and static wiring below.
+R"HTML(
 // ---- Render helpers ----
 // Resolves a binding id to something renderable. Keys aren't in the static
 // catalog, so they're built on the fly from the label C++ sent.
