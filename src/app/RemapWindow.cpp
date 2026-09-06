@@ -84,6 +84,9 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 .inherit-note{font-size:12px;color:#7d8b96;padding:8px 0 14px 26px;line-height:1.45;}
 .combo-badge{margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.6px;color:#c9a86a;border:1px solid rgba(201,168,106,.35);border-radius:3px;padding:1px 5px;}
 .missing-note{margin-top:11px;font-size:12px;color:#c9a86a;line-height:1.45;}
+/* Says how a directional pad splits its surface, which is the one thing about
+   these rows that cannot be worked out from their labels. */
+.pad-note{font-size:12px;color:#7d8b96;padding:2px 0 10px;line-height:1.45;}
 /* Following the default leaves nothing below worth reading as editable. */
 #settings.inherited{opacity:.38;pointer-events:none;}
 .connector{flex:1;height:1.5px;border-top:1.5px dashed rgba(255,255,255,.1);}
@@ -239,7 +242,20 @@ R"HTML(
         <select id="dir-LPAD" class="mode-select"></select>
       </div>
     </div>
+    <div class="row mode-row" id="diag-row-LPAD">
+      <div class="row-top">
+        <span class="pos-label">Diagonals</span>
+        <div class="connector"></div>
+        <select id="diag-LPAD" class="mode-select"></select>
+      </div>
+    </div>
+    <div class="pad-note" id="note-LPAD">Press the outer part of the pad for a direction, or the middle for the trackpad click. Touch works anywhere.</div>
+    <div id="row-LPADup" class="row"></div>
+    <div id="row-LPADdown" class="row"></div>
+    <div id="row-LPADleft" class="row"></div>
+    <div id="row-LPADright" class="row"></div>
     <div id="row-LPAD" class="row"></div>
+    <div id="row-LPADtouch" class="row"></div>
   </div>
   <div class="group">
     <div class="group-label">RIGHT TRACKPAD</div>
@@ -257,7 +273,20 @@ R"HTML(
         <select id="dir-RPAD" class="mode-select"></select>
       </div>
     </div>
+    <div class="row mode-row" id="diag-row-RPAD">
+      <div class="row-top">
+        <span class="pos-label">Diagonals</span>
+        <div class="connector"></div>
+        <select id="diag-RPAD" class="mode-select"></select>
+      </div>
+    </div>
+    <div class="pad-note" id="note-RPAD">Press the outer part of the pad for a direction, or the middle for the trackpad click. Touch works anywhere.</div>
+    <div id="row-RPADup" class="row"></div>
+    <div id="row-RPADdown" class="row"></div>
+    <div id="row-RPADleft" class="row"></div>
+    <div id="row-RPADright" class="row"></div>
     <div id="row-RPAD" class="row"></div>
+    <div id="row-RPADtouch" class="row"></div>
   </div>
   <div class="group">
     <div class="group-label">LEFT GRIP</div>
@@ -313,9 +342,15 @@ R"HTML(
 // clicks while the left pad scrolls. Keep in sync with ControllerProfile in
 // TrackpadConfig.h — these two are what "default" means, and a fresh install
 // and this window's reset button both have to land on the same thing.
-var DEFAULTS = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RPAD:'leftMouse'};
+var DEFAULTS = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RPAD:'leftMouse',
+  // Directions default to the gamepad d-pad so picking the mode does the
+  // obvious thing before anything is rebound; touch starts unbound. Keep in
+  // step with TrackpadSettings in TrackpadConfig.h.
+  LPADup:'Up',LPADdown:'Down',LPADleft:'Left',LPADright:'Right',LPADtouch:'none',
+  RPADup:'Up',RPADdown:'Down',RPADleft:'Left',RPADright:'Right',RPADtouch:'none'};
 var DEFAULT_MODES = {LPAD:'scroll',RPAD:'pointer'};
 var DEFAULT_DIRS  = {LPAD:'natural',RPAD:'natural'};
+var DEFAULT_DIAGS = {LPAD:'eight',RPAD:'eight'};
 var DEFAULT_PLATFORM = 'xbox';
 
 // ---- State ----
@@ -325,6 +360,9 @@ var modes = {LPAD:'none',RPAD:'none'};
 // Scroll direction per pad. Only meaningful in scroll mode, but kept for
 // every pad so switching modes back and forth does not lose the choice.
 var dirs = {LPAD:'natural',RPAD:'natural'};
+// Whether a directional pad's diagonals press two directions or round to one.
+// Kept for every pad for the same reason as the scroll direction.
+var diags = {LPAD:'eight',RPAD:'eight'};
 var platform = 'xbox';
 // This game follows the default profile's controls instead of carrying its
 // own. Only ever true for a game — the default has nothing to follow.
@@ -340,11 +378,17 @@ function modeOptions(){
     {id:'scroll',  label:'Scroll Wheel'},
     {id:'ds4',     label:platform==='ps'?'DS4 Touchpad'
                                         :'DS4 Touchpad (PlayStation only)'},
+    {id:'dpad',    label:'Directional Pad'},
+    {id:'button',  label:'Single Button'},
   ];
 }
 var DIR_OPTIONS = [
   {id:'natural',  label:'Natural'},
   {id:'reversed', label:'Reversed'},
+];
+var DIAG_OPTIONS = [
+  {id:'eight', label:'8-way (press two at once)'},
+  {id:'four',  label:'4-way (one at a time)'},
 ];
 var PLATFORM_OPTIONS = [
   {id:'xbox', label:'Xbox Controller'},
@@ -414,7 +458,7 @@ var runningOpen = false;
 // Each profile is a flat object: one entry per bindable row id, plus
 // "<pad>mode" for each trackpad's movement mode. Flat because the JSON
 // reader on the C++ side matches "key":"value" pairs without nesting.
-var PROFILES = {'':{platform:'xbox',L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RPAD:'leftMouse',LPADmode:'scroll',RPADmode:'pointer',LPADdir:'natural',RPADdir:'natural'}};
+var PROFILES = {'':{platform:'xbox',L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RPAD:'leftMouse',LPADmode:'scroll',RPADmode:'pointer',LPADdir:'natural',RPADdir:'natural',LPADdiag:'eight',RPADdiag:'eight',LPADtouch:'none',RPADtouch:'none',LPADup:'Up',LPADdown:'Down',LPADleft:'Left',LPADright:'Right',RPADup:'Up',RPADdown:'Down',RPADleft:'Left',RPADright:'Right'}};
 var currentGame = '';
 var comboOpen = false;
 var comboQuery = '';
@@ -473,9 +517,37 @@ var ROWS = [
   {id:'R5',posTag:'LOWER',posLabel:'Lower grip'},
   {id:'LPAD',badge:'L',posTag:'PAD',posLabel:'Trackpad Click'},
   {id:'RPAD',badge:'R',posTag:'PAD',posLabel:'Trackpad Click'},
+  {id:'LPADtouch',badge:'L',posTag:'TOUCH',posLabel:'Trackpad Touch'},
+  {id:'RPADtouch',badge:'R',posTag:'TOUCH',posLabel:'Trackpad Touch'},
+  {id:'LPADup',   badge:'L',posTag:'UP',   posLabel:'Up'},
+  {id:'LPADdown', badge:'L',posTag:'DOWN', posLabel:'Down'},
+  {id:'LPADleft', badge:'L',posTag:'LEFT', posLabel:'Left'},
+  {id:'LPADright',badge:'L',posTag:'RIGHT',posLabel:'Right'},
+  {id:'RPADup',   badge:'R',posTag:'UP',   posLabel:'Up'},
+  {id:'RPADdown', badge:'R',posTag:'DOWN', posLabel:'Down'},
+  {id:'RPADleft', badge:'R',posTag:'LEFT', posLabel:'Left'},
+  {id:'RPADright',badge:'R',posTag:'RIGHT',posLabel:'Right'},
 ];
 // The pads, and the dropdown id each one's Movement Mode lives in.
 var PADS = ['LPAD','RPAD'];
+// Every row a pad can have, as the suffix appended to its id. The empty one is
+// the click, whose row id is the bare pad id — it was the only pad row when
+// these were named, and renaming it would strand every profile already saved.
+var PAD_SUFFIXES = ['','touch','up','down','left','right'];
+// Which of a pad's rows each mode shows. The click and the four directions are
+// the same physical press told apart by where it lands, so a mode either
+// offers directions or it does not; touch is a separate event and rides along
+// with anything that is using the pad at all.
+var PAD_ROWS_BY_MODE = {
+  none:    [],
+  pointer: ['','touch'],
+  scroll:  ['','touch'],
+  // A DS4 touchpad's press and contact are the touchpad's own, so neither is
+  // rebindable — offering either would promise what the pad cannot deliver.
+  ds4:     [],
+  dpad:    ['up','down','left','right','','touch'],
+  button:  ['','touch'],
+};
 
 // ---- WebView2 bridge ----
 function postMsg(obj){
@@ -568,22 +640,32 @@ function resetRow(rowId){
 }
 function setMode(padId,modeId){
   modes[padId]=modeId;
-  // The rows below the dropdown depend on the mode: Scroll Direction only
-  // applies to scrolling, and a DS4 touchpad's click is the touchpad press
-  // rather than anything rebindable.
-  if(listening===padId&&modeId==='ds4') cancelListening();
+  // The rows below the dropdown depend on the mode. Anything listening that
+  // the new mode hides has to stop: left running it would bind a row nobody
+  // can see, and the captured press would land somewhere invisible.
+  if(listening&&listening.indexOf(padId)===0){
+    var shown=PAD_ROWS_BY_MODE[modeId]||[];
+    if(shown.indexOf(listening.slice(padId.length))<0) cancelListening();
+  }
   renderPadRows();
 }
 function setDir(padId,dirId){
   dirs[padId]=dirId;
+}
+function setDiag(padId,diagId){
+  diags[padId]=diagId;
 }
 function resetDefaults(){
   cancelListening();
   platform=DEFAULT_PLATFORM;
   bindings={};
   ROWS.forEach(function(r){bindings[r.id]=DEFAULTS[r.id];});
-  modes={}; dirs={};
-  PADS.forEach(function(p){modes[p]=DEFAULT_MODES[p];dirs[p]=DEFAULT_DIRS[p];});
+  modes={}; dirs={}; diags={};
+  PADS.forEach(function(p){
+    modes[p]=DEFAULT_MODES[p];
+    dirs[p]=DEFAULT_DIRS[p];
+    diags[p]=DEFAULT_DIAGS[p];
+  });
   flash=null;
   clearTimeout(flashTimer);
   renderModeSelects();
@@ -601,7 +683,11 @@ function applyBindings(){
 function currentProfile(){
   var p={useDefault:useDefault?'1':'0',platform:platform};
   ROWS.forEach(function(r){p[r.id]=bindings[r.id];});
-  PADS.forEach(function(x){p[x+'mode']=modes[x];p[x+'dir']=dirs[x];});
+  PADS.forEach(function(x){
+    p[x+'mode']=modes[x];
+    p[x+'dir']=dirs[x];
+    p[x+'diag']=diags[x];
+  });
   return p;
 }
 // Inverse of currentProfile: adopt a stored profile as the live state, filling
@@ -622,10 +708,11 @@ function loadProfileInto(p){
   ROWS.forEach(function(r){
     bindings[r.id]=p.hasOwnProperty(r.id)?p[r.id]:DEFAULTS[r.id];
   });
-  modes={}; dirs={};
+  modes={}; dirs={}; diags={};
   PADS.forEach(function(x){
     modes[x]=p.hasOwnProperty(x+'mode')?p[x+'mode']:DEFAULT_MODES[x];
     dirs[x] =p.hasOwnProperty(x+'dir') ?p[x+'dir'] :DEFAULT_DIRS[x];
+    diags[x]=p.hasOwnProperty(x+'diag')?p[x+'diag']:DEFAULT_DIAGS[x];
   });
   savedProfile=currentProfile();
 }
@@ -907,19 +994,26 @@ function renderModeSelects(){
   PADS.forEach(function(padId){
     fillSelect('mode-'+padId,opts,modes[padId]);
     fillSelect('dir-'+padId,DIR_OPTIONS,dirs[padId]);
+    fillSelect('diag-'+padId,DIAG_OPTIONS,diags[padId]);
   });
   renderPadRows();
 }
 // Show only the rows the current mode actually has settings for.
 function renderPadRows(){
   PADS.forEach(function(padId){
+    var mode=modes[padId];
+    var shown=PAD_ROWS_BY_MODE[mode]||[];
     var dirRow=document.getElementById('dir-row-'+padId);
-    if(dirRow) dirRow.style.display=(modes[padId]==='scroll')?'':'none';
-    // A pad feeding the DS4 touchpad has no rebindable click: the press is
-    // the touchpad press, and offering to remap it would promise behaviour
-    // the pad cannot deliver.
-    var clickRow=document.getElementById('row-'+padId);
-    if(clickRow) clickRow.style.display=(modes[padId]==='ds4')?'none':'';
+    if(dirRow) dirRow.style.display=(mode==='scroll')?'':'none';
+    var diagRow=document.getElementById('diag-row-'+padId);
+    if(diagRow) diagRow.style.display=(mode==='dpad')?'':'none';
+    // Only a directional pad splits its surface, so only it needs explaining.
+    var note=document.getElementById('note-'+padId);
+    if(note) note.style.display=(mode==='dpad')?'':'none';
+    PAD_SUFFIXES.forEach(function(suffix){
+      var row=document.getElementById('row-'+padId+suffix);
+      if(row) row.style.display=(shown.indexOf(suffix)>=0)?'':'none';
+    });
   });
 }
 )HTML"
@@ -1021,6 +1115,8 @@ PADS.forEach(function(padId){
   if(modeSel) modeSel.addEventListener('change',function(e){setMode(padId,e.target.value);});
   var dirSel=document.getElementById('dir-'+padId);
   if(dirSel) dirSel.addEventListener('change',function(e){setDir(padId,e.target.value);});
+  var diagSel=document.getElementById('diag-'+padId);
+  if(diagSel) diagSel.addEventListener('change',function(e){setDiag(padId,e.target.value);});
 });
 
 // mousedown as well as click: the document-level handler below closes the
@@ -1889,12 +1985,22 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
         cfg.back.l5 = BackButtonBinding::FromId(JsonStr(msg, "L5"));
         cfg.back.r4 = BackButtonBinding::FromId(JsonStr(msg, "R4"));
         cfg.back.r5 = BackButtonBinding::FromId(JsonStr(msg, "R5"));
-        cfg.leftPad.click  = BackButtonBinding::FromId(JsonStr(msg, "LPAD"));
-        cfg.rightPad.click = BackButtonBinding::FromId(JsonStr(msg, "RPAD"));
-        cfg.leftPad.mode       = TrackpadModeFromId(JsonStr(msg, "LPADmode"));
-        cfg.rightPad.mode      = TrackpadModeFromId(JsonStr(msg, "RPADmode"));
-        cfg.leftPad.scrollDir  = ScrollDirectionFromId(JsonStr(msg, "LPADdir"));
-        cfg.rightPad.scrollDir = ScrollDirectionFromId(JsonStr(msg, "RPADdir"));
+        // The reader matches on "key":" including the colon, so the bare pad
+        // id cannot be found inside a longer one — "LPAD" does not match
+        // "LPADup", and "LPADdir" does not match "LPADdiag".
+        auto readPad = [&](const std::string& id, TrackpadSettings& s) {
+            s.click     = BackButtonBinding::FromId(JsonStr(msg, id));
+            s.mode      = TrackpadModeFromId(JsonStr(msg, id + "mode"));
+            s.scrollDir = ScrollDirectionFromId(JsonStr(msg, id + "dir"));
+            s.diagonals = DiagonalModeFromId(JsonStr(msg, id + "diag"));
+            s.touch     = BackButtonBinding::FromId(JsonStr(msg, id + "touch"));
+            s.up        = BackButtonBinding::FromId(JsonStr(msg, id + "up"));
+            s.down      = BackButtonBinding::FromId(JsonStr(msg, id + "down"));
+            s.left      = BackButtonBinding::FromId(JsonStr(msg, id + "left"));
+            s.right     = BackButtonBinding::FromId(JsonStr(msg, id + "right"));
+        };
+        readPad("LPAD", cfg.leftPad);
+        readPad("RPAD", cfg.rightPad);
 
         const std::string token = JsonStr(msg, "game");
         if (PickerEntry* entry = EntryForToken(token)) {
@@ -1969,6 +2075,21 @@ static std::wstring Narrow(const char* s) {
 std::wstring RemapWindow::ProfileJson(const ControllerProfile& p) {
     const auto wid    = &Wid;
     const auto narrow = &Narrow;
+    // One pad's rows, under the prefix the page keys them by. The click keeps
+    // the bare pad id it has always had, so profiles saved before the other
+    // rows existed still read back.
+    auto pad = [&](const wchar_t* id, const TrackpadSettings& s) {
+        const std::wstring k = id;
+        return L"\"" + k + L"\":\"" + wid(s.click) + L"\","
+               L"\"" + k + L"mode\":\"" + narrow(TrackpadModeId(s.mode)) + L"\","
+               L"\"" + k + L"dir\":\"" + narrow(ScrollDirectionId(s.scrollDir)) + L"\","
+               L"\"" + k + L"diag\":\"" + narrow(DiagonalModeId(s.diagonals)) + L"\","
+               L"\"" + k + L"touch\":\"" + wid(s.touch) + L"\","
+               L"\"" + k + L"up\":\"" + wid(s.up) + L"\","
+               L"\"" + k + L"down\":\"" + wid(s.down) + L"\","
+               L"\"" + k + L"left\":\"" + wid(s.left) + L"\","
+               L"\"" + k + L"right\":\"" + wid(s.right) + L"\"";
+    };
     return L"{\"useDefault\":\""
                + std::wstring(p.useDefaultMappings ? L"1" : L"0")
                + L"\","
@@ -1979,12 +2100,8 @@ std::wstring RemapWindow::ProfileJson(const ControllerProfile& p) {
                L"\"L5\":\"" + wid(p.back.l5) + L"\","
                L"\"R4\":\"" + wid(p.back.r4) + L"\","
                L"\"R5\":\"" + wid(p.back.r5) + L"\","
-               L"\"LPAD\":\"" + wid(p.leftPad.click) + L"\","
-               L"\"RPAD\":\"" + wid(p.rightPad.click) + L"\","
-               L"\"LPADmode\":\"" + narrow(TrackpadModeId(p.leftPad.mode)) + L"\","
-               L"\"RPADmode\":\"" + narrow(TrackpadModeId(p.rightPad.mode)) + L"\","
-               L"\"LPADdir\":\"" + narrow(ScrollDirectionId(p.leftPad.scrollDir)) + L"\","
-               L"\"RPADdir\":\"" + narrow(ScrollDirectionId(p.rightPad.scrollDir)) + L"\"}";
+             + pad(L"LPAD", p.leftPad) + L","
+             + pad(L"RPAD", p.rightPad) + L"}";
 }
 
 void RemapWindow::SendInitState() {
@@ -2007,8 +2124,15 @@ void RemapWindow::SendInitState() {
         labels += entry;
     };
     auto addProfileLabels = [&](const ControllerProfile& p) {
-        for (const auto* b : { &p.back.l4, &p.back.l5, &p.back.r4, &p.back.r5,
-                               &p.leftPad.click, &p.rightPad.click })
+        // Every binding a profile holds, not just the ones a given mode is
+        // using: the page names a key by looking it up here, and a direction
+        // stored under a pad that is currently a mouse pointer still has to
+        // have a name ready for when the mode is switched back.
+        for (const auto* pad : { &p.leftPad, &p.rightPad })
+            for (const auto* b : { &pad->click, &pad->touch, &pad->up,
+                                   &pad->down, &pad->left, &pad->right })
+                addLabel(*b);
+        for (const auto* b : { &p.back.l4, &p.back.l5, &p.back.r4, &p.back.r5 })
             addLabel(*b);
     };
     addProfileLabels(m_config);
