@@ -137,6 +137,28 @@ struct ControllerManager::Slot {
     bool prevLeftTap  = false;
     bool prevRightTap = false;
 
+    // Is the pad being pressed? Worked out from contact area rather than taken
+    // from the firmware's click bit — see kPadPressArea. The click bit is still
+    // consulted, because when it does fire it is right; it just misses more
+    // than half of what a thumb does.
+    struct PressState {
+        bool pressed = false;
+        int  above   = 0;
+        int  below   = 0;
+
+        bool Update(uint16_t area, bool clickBit) {
+            const bool raw = area >= kPadPressArea || clickBit;
+            if (raw) { ++above; below = 0; } else { ++below; above = 0; }
+            if (!pressed && above >= kPadPressFrames)      pressed = true;
+            else if (pressed && below >= kPadPressFrames)  pressed = false;
+            return pressed;
+        }
+    };
+    PressState leftPress;
+    PressState rightPress;
+    bool prevLeftPressed  = false;
+    bool prevRightPressed = false;
+
     // Auto-repeat for held key bindings. When the next repeat is due, and the
     // gap to use after that — both captured at press time from the user's
     // keyboard settings, so the rate cannot shift mid-hold.
@@ -1052,12 +1074,28 @@ void ControllerManager::ReadLoop(Slot* slot) {
                                 "dropped before it reaches SendInput", n);
         }
 
+        // Whether each pad is pressed has to be settled before the pads are
+        // updated, because a directional pad resolves its directions from it.
+        {
+            const uint8_t pb2 = n > 4 ? buf[4] : 0;
+            const uint8_t pb3 = n > 5 ? buf[5] : 0;
+            uint16_t pLArea = 0, pRArea = 0;
+            if (n >= 30) {
+                memcpy(&pLArea, buf + 22, 2);
+                memcpy(&pRArea, buf + 28, 2);
+            }
+            slot->leftPress.Update(pLArea,
+                (pb3 & SteamController::BTN_TP_LT_CLICK) != 0);
+            slot->rightPress.Update(pRArea,
+                (pb2 & SteamController::BTN_TP_RT_CLICK) != 0);
+        }
+
         // The pads first: a directional pad's directions are resolved here and
         // the virtual controller is handed them, so updating it first would
         // report last frame's directions — a frame of lag on every press and,
         // worse, a direction still held for a frame after release.
-        slot->leftPad.Update(buf, n);
-        slot->rightPad.Update(buf, n);
+        slot->leftPad.Update(buf, n, slot->leftPress.pressed);
+        slot->rightPad.Update(buf, n, slot->rightPress.pressed);
         // Was that contact a tap? Only the lift can say — see Slot::TapState.
         const uint8_t tb2 = n > 4 ? buf[4] : 0;
         const uint8_t tb3 = n > 5 ? buf[5] : 0;
@@ -1080,6 +1118,8 @@ void ControllerManager::ReadLoop(Slot* slot) {
             slot->rightTap.Update((tb2 & SteamController::BTN_TP_RT) != 0,
                                   (tb2 & SteamController::BTN_TP_RT_CLICK) != 0,
                                   trx, try_),
+            slot->leftPress.pressed,
+            slot->rightPress.pressed,
         };
         if (slot->vc) slot->vc->Update(buf, n, m_profile, resolved);
 
@@ -1099,8 +1139,12 @@ void ControllerManager::ReadLoop(Slot* slot) {
             const uint8_t b3 = n > 5 ? buf[5] : 0;
             const bool rt = (b2 & SteamController::BTN_TP_RT)       != 0;
             const bool lt = (b3 & SteamController::BTN_TP_LT)       != 0;
-            const bool rc = (b2 & SteamController::BTN_TP_RT_CLICK) != 0;
-            const bool lc = (b3 & SteamController::BTN_TP_LT_CLICK) != 0;
+            // The press, from contact area rather than the firmware's click
+            // bit. Feeding the latch the bit meant the haptic fired for fewer
+            // than half the presses a thumb made, which is what "the pad only
+            // buzzes sometimes" was.
+            const bool rc = resolved.rightPressed;
+            const bool lc = resolved.leftPressed;
 
             int16_t  rx = 0, ry = 0, lx = 0, ly = 0;
             uint16_t rArea = 0, lArea = 0;
@@ -1345,8 +1389,11 @@ void ControllerManager::ReadLoop(Slot* slot) {
                 { n>4 && (buf[4]&SteamController::BTN_L5)!=0, (prevBuf[4]&SteamController::BTN_L5)!=0, m_profile.back.l5 },
                 { n>2 && (buf[2]&SteamController::BTN_R4)!=0, (prevBuf[2]&SteamController::BTN_R4)!=0, m_profile.back.r4 },
                 { n>3 && (buf[3]&SteamController::BTN_R5)!=0, (prevBuf[3]&SteamController::BTN_R5)!=0, m_profile.back.r5 },
-                { n>5 && (buf[5]&SteamController::BTN_TP_LT_CLICK)!=0 && leftClickInCentre,  (prevBuf[5]&SteamController::BTN_TP_LT_CLICK)!=0 && leftClickInCentre,  leftPadClick },
-                { n>4 && (buf[4]&SteamController::BTN_TP_RT_CLICK)!=0 && rightClickInCentre, (prevBuf[4]&SteamController::BTN_TP_RT_CLICK)!=0 && rightClickInCentre, rightPadClick },
+                // Pressed comes from contact area, not the report's click bit,
+                // so like the directions its previous answer is carried on the
+                // slot rather than re-read from the previous report.
+                { resolved.leftPressed  && leftClickInCentre,  slot->prevLeftPressed  && leftClickInCentre,  leftPadClick },
+                { resolved.rightPressed && rightClickInCentre, slot->prevRightPressed && rightClickInCentre, rightPadClick },
                 // A tap is not zoned — it cannot collide with a direction,
                 // which comes from the click, and a thumb crosses zones
                 // constantly while sliding. It is decided on the lift rather
@@ -1426,6 +1473,8 @@ void ControllerManager::ReadLoop(Slot* slot) {
         slot->prevRightDirs = resolved.rightDirs;
         slot->prevLeftTap  = resolved.leftTap;
         slot->prevRightTap = resolved.rightTap;
+        slot->prevLeftPressed  = resolved.leftPressed;
+        slot->prevRightPressed = resolved.rightPressed;
 
         memcpy(prevBuf, buf, n);
         hasPrev = true;

@@ -26,7 +26,10 @@ public:
     void SetScrollDirection(ScrollDirection dir) { m_scrollDir = dir; }
     void SetDiagonals(DiagonalMode d);
 
-    void Update(const uint8_t* buf, size_t n);
+    // `pressed` is whether the pad is being pressed, worked out from contact
+    // area by the caller — the firmware's click bit reports fewer than half of
+    // them. See kPadPressArea.
+    void Update(const uint8_t* buf, size_t n, bool pressed);
     void Reset();
 
     // Which directions this pad is pressing right now, as PadDir bits. Always
