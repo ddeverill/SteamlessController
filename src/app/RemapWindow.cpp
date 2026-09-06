@@ -249,7 +249,7 @@ R"HTML(
         <select id="diag-LPAD" class="mode-select"></select>
       </div>
     </div>
-    <div class="pad-note" id="note-LPAD">Press the outer part of the pad for a direction, or the middle for the trackpad click. Touch works anywhere.</div>
+    <div class="pad-note" id="note-LPAD">Press the outer part of the pad for a direction, or the middle for the trackpad click.</div>
     <div id="row-LPADup" class="row"></div>
     <div id="row-LPADdown" class="row"></div>
     <div id="row-LPADleft" class="row"></div>
@@ -280,7 +280,7 @@ R"HTML(
         <select id="diag-RPAD" class="mode-select"></select>
       </div>
     </div>
-    <div class="pad-note" id="note-RPAD">Press the outer part of the pad for a direction, or the middle for the trackpad click. Touch works anywhere.</div>
+    <div class="pad-note" id="note-RPAD">Press the outer part of the pad for a direction, or the middle for the trackpad click.</div>
     <div id="row-RPADup" class="row"></div>
     <div id="row-RPADdown" class="row"></div>
     <div id="row-RPADleft" class="row"></div>
@@ -517,8 +517,8 @@ var ROWS = [
   {id:'R5',posTag:'LOWER',posLabel:'Lower grip'},
   {id:'LPAD',badge:'L',posTag:'PAD',posLabel:'Trackpad Click'},
   {id:'RPAD',badge:'R',posTag:'PAD',posLabel:'Trackpad Click'},
-  {id:'LPADtouch',badge:'L',posTag:'TOUCH',posLabel:'Trackpad Touch'},
-  {id:'RPADtouch',badge:'R',posTag:'TOUCH',posLabel:'Trackpad Touch'},
+  {id:'LPADtouch',badge:'L',posTag:'TAP',posLabel:'Trackpad Tap'},
+  {id:'RPADtouch',badge:'R',posTag:'TAP',posLabel:'Trackpad Tap'},
   {id:'LPADup',   badge:'L',posTag:'UP',   posLabel:'Up'},
   {id:'LPADdown', badge:'L',posTag:'DOWN', posLabel:'Down'},
   {id:'LPADleft', badge:'L',posTag:'LEFT', posLabel:'Left'},
