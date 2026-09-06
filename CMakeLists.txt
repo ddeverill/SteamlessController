@@ -123,6 +123,21 @@ if (MSVC)
     target_compile_options(SteamlessDeviceCycle PRIVATE /W4 /WX /utf-8)
 endif()
 
+# Directional pad checks — the sector maths wraps at 0/360, holds a sector
+# against hysteresis, and latches a press's zone, none of which fail loudly
+add_executable(TrackpadDirectionProbe
+    src/probe/TrackpadDirectionProbe.cpp
+    src/app/TrackpadInput.cpp
+    src/app/InputInjection.cpp
+    src/app/EventLog.cpp
+)
+target_include_directories(TrackpadDirectionProbe PRIVATE src)
+target_link_libraries(TrackpadDirectionProbe PRIVATE SteamController)
+if (MSVC)
+    target_compile_options(TrackpadDirectionProbe PRIVATE /W4 /WX /utf-8)
+    set_target_properties(TrackpadDirectionProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+endif()
+
 # TrackpadZoneProbe — measures where a thumb lands when it clicks a pad, so the
 # Directional Pad ring boundary is calibrated rather than guessed.
 add_executable(TrackpadZoneProbe
@@ -164,7 +179,7 @@ add_executable(SteamlessController WIN32
     src/app/TrayApp.cpp
     src/app/ControllerManager.cpp
     src/app/VirtualController.cpp
-    src/app/TrackpadMouse.cpp
+    src/app/TrackpadInput.cpp
     src/app/KeyInput.cpp
     src/app/TouchKeyboard.cpp
     src/app/InputInjection.cpp
