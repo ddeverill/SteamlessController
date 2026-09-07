@@ -168,12 +168,28 @@ inline constexpr int kPadRingRadius = 12000;
 // guessed too high latches the detector and swallows every press after the
 // first — exactly the bug the click haptic had.
 //
-// 250 because a resting thumb reports almost nothing at all: over 1250 resting
-// samples the median was 0 and the highest 33, against presses peaking past
-// 6000. Deliberately near the bottom of that range rather than the middle: the
-// area dips and recovers within a single press, so a threshold up in the press
-// range splits one press into several, while one just above resting does not.
-inline constexpr int kPadPressArea = 250;
+// 1800, from TrackpadDirectionProbe --live traced against the firmware's click
+// bit. Four bands, none of which overlap:
+//
+//   thumb resting or gliding      259..381    must not read as a press
+//   presses the firmware misses  2840..3921
+//   presses it calls a click     4026..4427   (it releases again around 2200)
+//   a press being held           4671..14784  the area climbs while held
+//
+// So the empty span between a thumb that is merely down and one that is
+// pressing runs from roughly 400 to 2800, and this sits in the middle of it:
+// about five times a resting thumb, and still low enough to recover the
+// presses the click bit drops, which is the whole reason the area is read.
+//
+// The previous 250 was calibrated against a thumb held OFF the pad — median 0,
+// max 33 — rather than one resting on it, which put it inside the resting
+// band. A thumb doing nothing read as a held press, and since the area never
+// fell back through it, consecutive clicks merged into a single press: the
+// swallowing described above, reached from a threshold too low rather than one
+// too high. Traces do not support the dip that reasoning also rested on —
+// while a press is held the area only climbs, and the apparent dips were
+// separate press attempts merged into one span by that same low threshold.
+inline constexpr int kPadPressArea = 1800;
 
 // Frames the area must hold one side of the threshold before the answer
 // changes. Not a per-person number — it describes the sensor's noise rather
