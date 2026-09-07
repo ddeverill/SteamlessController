@@ -286,18 +286,73 @@ namespace InputInjection {
 // choose. Scroll is injected as wheel events — 120 units to a notch — and
 // Windows multiplies each notch by this before anything moves, so identical
 // injection scrolls wildly different amounts on two machines. The default is
-// 3 lines; WHEEL_PAGESCROLL means a notch is a whole page, which turns the
-// gentlest flick of a pad into a page jump and is not something a sensitivity
-// setting can tune away, the granularity being the problem rather than the
-// scale. Worth a line in the log, since a scroll-feels-wrong report otherwise
-// gives no way to tell this apart from a bug in our own arithmetic.
+// 3 lines; WHEEL_PAGESCROLL means a notch is a whole page.
+//
+// Zero when the system will not say, which callers read as "we do not know"
+// rather than as a number of lines.
+static UINT RawWheelLines() {
+    UINT lines = 0;
+    if (!SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0)) return 0;
+    return lines;
+}
+
+// Worth a line in the log, since a scroll-feels-wrong report otherwise gives
+// no way to tell this apart from a bug in our own arithmetic. Carries the
+// correction as well as the setting: the two together say both what the
+// machine does and what we did about it, which is the difference between a
+// report that reproduces and one that does not.
 static std::wstring DescribeWheelLines() {
-    UINT lines = 3;
-    if (!SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0))
-        return L"unknown";
-    if (lines == WHEEL_PAGESCROLL) return L"one page per notch (!)";
+    const UINT lines = RawWheelLines();
+    if (lines == 0) return L"unknown";
+
+    const std::wstring correction =
+        L", scroll scaled to "
+        + std::to_wstring(static_cast<int>(
+              WheelCorrection(WheelLinesPerNotch()) * 100.0f + 0.5f))
+        + L"%";
+
+    if (lines == WHEEL_PAGESCROLL)
+        return L"one page per notch (!)" + correction;
     return std::to_wstring(lines) + L" lines per notch"
-         + (lines == 3 ? L"" : L" (not the default 3)");
+         + (lines == 3 ? L"" : L" (not the default 3)") + correction;
+}
+
+// A page, counted in lines, for the one setting that is not measured in them.
+// Nothing reports how tall the scrolling thing under the cursor is, so this is
+// an estimate of a screenful of text and it is only ever approximately right.
+// It is still much closer than treating a page as three lines, which is what
+// not handling this case at all amounts to.
+//
+// Note that scaling cannot fully rescue WHEEL_PAGESCROLL: with a whole page to
+// a notch the granularity is the problem rather than the scale, and the
+// smallest movement that survives rounding is still a big one.
+constexpr float kPageScrollLines = 20.0f;
+
+// Re-read at most this often. The value changes only when somebody drags a
+// slider in Settings.
+constexpr uint64_t kWheelCacheMs = 1000;
+
+float WheelLinesPerNotch() {
+    // Asked once per scroll frame — at report rate while a thumb is moving —
+    // so it is cached rather than plumbed through WM_SETTINGCHANGE: nothing on
+    // this path owns a window, and a second of staleness in a comfort setting
+    // is not something a hand can feel.
+    static std::atomic<uint64_t> nextReadAt{0};  // 0: never read, so read now
+    static std::atomic<float>    cached{kCalibratedWheelLines};
+
+    const uint64_t now = GetTickCount64();
+    if (now >= nextReadAt.load(std::memory_order_relaxed)) {
+        nextReadAt.store(now + kWheelCacheMs, std::memory_order_relaxed);
+        const UINT lines = RawWheelLines();
+        // An unreadable setting is assumed to be the default, which makes the
+        // correction 1.0 and leaves the scale exactly where it was.
+        const float effective = lines == 0               ? kCalibratedWheelLines
+                              : lines == WHEEL_PAGESCROLL ? kPageScrollLines
+                                                          : static_cast<float>(lines);
+        cached.store(effective, std::memory_order_relaxed);
+        return effective;
+    }
+    return cached.load(std::memory_order_relaxed);
 }
 
 void LogEnvironment(const char* reason) {

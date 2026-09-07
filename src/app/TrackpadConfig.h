@@ -74,6 +74,28 @@ inline ScrollDirection ScrollDirectionFromDword(uint32_t v) {
          : ScrollDirection::Natural;
 }
 
+// How fast a pad in scroll mode scrolls, as a percentage of the built-in
+// scale. A taste setting: kCalibratedWheelLines in InputInjection.h already
+// makes a given swipe scroll the same distance on every machine, and this is
+// what remains for people who want that distance to be a different one.
+//
+// Stored as a DWORD, so 0 is what every profile written before this existed
+// reads back as — which has to mean "unset", not "do not scroll at all".
+// ScrollSpeedFromDword maps it to the default rather than clamping it up.
+inline constexpr uint32_t kScrollSpeedDefault = 100;
+inline constexpr uint32_t kScrollSpeedMin     = 25;
+inline constexpr uint32_t kScrollSpeedMax     = 400;
+
+inline constexpr uint32_t ClampScrollSpeed(uint32_t v) {
+    if (v < kScrollSpeedMin) return kScrollSpeedMin;
+    if (v > kScrollSpeedMax) return kScrollSpeedMax;
+    return v;
+}
+
+inline uint32_t ScrollSpeedFromDword(uint32_t v) {
+    return v == 0 ? kScrollSpeedDefault : ClampScrollSpeed(v);
+}
+
 // Whether a directional pad's diagonals press two directions at once (what a
 // real d-pad does, and what makes diagonal movement in a game possible) or
 // resolve to the nearer single direction (steadier for menus). Eight-way is
@@ -205,6 +227,8 @@ inline constexpr int kPadPressFrames = 2;
 struct TrackpadSettings {
     TrackpadMode      mode      = TrackpadMode::None;
     ScrollDirection   scrollDir = ScrollDirection::Natural;
+    // ScrollWheel only, as a percentage — see kScrollSpeedDefault.
+    uint32_t          scrollSpeed = kScrollSpeedDefault;
     BackButtonBinding click     = BackButtonBinding::FromAction(BackButtonAction::None);
     // Fires while a finger rests on the pad, whatever the pad's mode is doing
     // with movement. Deliberately not zoned like the click: touch and click
@@ -223,6 +247,7 @@ struct TrackpadSettings {
 
     bool operator==(const TrackpadSettings& o) const {
         return mode == o.mode && scrollDir == o.scrollDir && click == o.click
+            && scrollSpeed == o.scrollSpeed
             && touch == o.touch && up == o.up && down == o.down
             && left == o.left && right == o.right && diagonals == o.diagonals;
     }
