@@ -11,6 +11,7 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 - Supports all connection modes! Puck, wired, and Bluetooth!
 - Runs alongside Steam! No need to close Steam to toggle modes or force you to use your PC in a weird way.
 - Brand new extensive remapping controls for back buttons and trackpads. Save custom mappings and load them per game!
+- Use a trackpad as a **directional pad** — press its outer edge for a direction and its middle for a button of its own — or as a **single button**. Each direction, the click and a tap are all rebindable.
 - Enable/Disable manually, or use new auto modes to turn on / off when it makes sense.
 - Start on launch, suppress notifications, make this utility your own.
 
