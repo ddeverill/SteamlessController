@@ -1872,6 +1872,7 @@ void TrayApp::LoadSettings() {
             pad.mode      = TrackpadModeFromDword(readDw(name(L"Mode").c_str(), 0));
             pad.click     = binding(L"Click", BackButtonAction::None);
             pad.scrollDir = ScrollDirectionFromDword(readDw(name(L"ScrollDir").c_str(), 0));
+            pad.scrollSpeed = ScrollSpeedFromDword(readDw(name(L"ScrollSpeed").c_str(), 0));
             pad.touch     = binding(L"Touch", BackButtonAction::None);
             pad.up        = binding(L"Up",    BackButtonAction::DPadUp);
             pad.down      = binding(L"Down",  BackButtonAction::DPadDown);
@@ -1948,6 +1949,7 @@ void TrayApp::SaveSettings() {
         writeDw(name(L"Mode").c_str(),      static_cast<DWORD>(pad.mode));
         writeDw(name(L"Click").c_str(),     pad.click.Pack());
         writeDw(name(L"ScrollDir").c_str(), static_cast<DWORD>(pad.scrollDir));
+        writeDw(name(L"ScrollSpeed").c_str(), pad.scrollSpeed);
         writeDw(name(L"Touch").c_str(),     pad.touch.Pack());
         writeDw(name(L"Up").c_str(),        pad.up.Pack());
         writeDw(name(L"Down").c_str(),      pad.down.Pack());

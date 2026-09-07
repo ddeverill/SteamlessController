@@ -772,6 +772,34 @@ int RunChecks() {
     }
 
 
+    // Scroll speed bounds (#95). The page has its own copy of these rules in
+    // clampSpeed, so the two have to agree — a value the page allows and this
+    // side rewrites shows up as a setting that will not stay put.
+    printf("\nScroll speed clamping\n");
+    {
+        // Zero is what the registry yields for every profile written before
+        // the setting existed. It has to read as "unset", not as "do not
+        // scroll" — a pad that silently stopped scrolling on upgrade would be
+        // a far worse bug than one that scrolls at the wrong speed.
+        Check(ScrollSpeedFromDword(0) == kScrollSpeedDefault,
+              "an absent value is the default, not zero");
+        Check(ScrollSpeedFromDword(100) == 100, "a normal value is kept");
+        Check(ScrollSpeedFromDword(kScrollSpeedMin) == kScrollSpeedMin,
+              "the minimum is kept");
+        Check(ScrollSpeedFromDword(kScrollSpeedMax) == kScrollSpeedMax,
+              "the maximum is kept");
+        Check(ScrollSpeedFromDword(1) == kScrollSpeedMin,
+              "below the minimum clamps up");
+        Check(ScrollSpeedFromDword(99999) == kScrollSpeedMax,
+              "above the maximum clamps down");
+        // A DWORD read from the registry can be anything at all.
+        Check(ScrollSpeedFromDword(0xFFFFFFFFu) == kScrollSpeedMax,
+              "a nonsense DWORD clamps rather than wrapping");
+        Check(kScrollSpeedMin <= kScrollSpeedDefault
+                  && kScrollSpeedDefault <= kScrollSpeedMax,
+              "the default sits inside the range");
+    }
+
     // Scroll normalisation (#95). A machine's lines-per-notch setting
     // multiplies every wheel event we send, so identical injection scrolls a
     // different distance on two machines — which is how a scroll-is-far-too-

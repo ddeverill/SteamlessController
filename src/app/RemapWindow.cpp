@@ -13,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <cstring>
+#include <cstdlib>
 
 RemapWindow* RemapWindow::s_instance = nullptr;
 
@@ -126,6 +127,12 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 .mode-select{background:#101925;border:1px solid rgba(255,255,255,.12);border-radius:6px;color:#fff;font-size:13px;font-family:'Barlow',system-ui,sans-serif;padding:7px 10px;font-weight:600;cursor:pointer;flex:none;min-width:215px;}
 .mode-select:hover{border-color:#66c0f4;}
 .mode-select:focus{outline:none;border-color:#66c0f4;}
+.speed-wrap{display:flex;align-items:center;gap:10px;flex:none;min-width:215px;}
+.speed-slider{-webkit-appearance:none;appearance:none;flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.16);outline:none;cursor:pointer;}
+.speed-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:15px;height:15px;border-radius:50%;background:#66c0f4;border:none;cursor:pointer;}
+.speed-slider:hover::-webkit-slider-thumb{background:#8fd3ff;}
+.speed-slider:focus{outline:none;}
+.speed-val{font-family:'JetBrains Mono',monospace;font-size:12px;color:#8f98a0;font-weight:600;min-width:44px;text-align:right;}
 .picker{margin-top:12px;background:#101925;border:1px solid rgba(102,192,244,.2);border-radius:8px;padding:12px 13px;}
 .picker-label{font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:1px;color:#5c6b78;font-weight:600;}
 .picker-rows{display:flex;flex-direction:column;gap:7px;margin-top:10px;}
@@ -242,6 +249,16 @@ R"HTML(
         <select id="dir-LPAD" class="mode-select"></select>
       </div>
     </div>
+    <div class="row mode-row" id="speed-row-LPAD">
+      <div class="row-top">
+        <span class="pos-label">Scroll Speed</span>
+        <div class="connector"></div>
+        <div class="speed-wrap">
+          <input type="range" id="speed-LPAD" class="speed-slider">
+          <span class="speed-val" id="speed-val-LPAD">100%</span>
+        </div>
+      </div>
+    </div>
     <div class="row mode-row" id="diag-row-LPAD">
       <div class="row-top">
         <span class="pos-label">Diagonals</span>
@@ -271,6 +288,16 @@ R"HTML(
         <span class="pos-label">Scroll Direction</span>
         <div class="connector"></div>
         <select id="dir-RPAD" class="mode-select"></select>
+      </div>
+    </div>
+    <div class="row mode-row" id="speed-row-RPAD">
+      <div class="row-top">
+        <span class="pos-label">Scroll Speed</span>
+        <div class="connector"></div>
+        <div class="speed-wrap">
+          <input type="range" id="speed-RPAD" class="speed-slider">
+          <span class="speed-val" id="speed-val-RPAD">100%</span>
+        </div>
       </div>
     </div>
     <div class="row mode-row" id="diag-row-RPAD">
@@ -351,6 +378,11 @@ var DEFAULTS = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RP
 var DEFAULT_MODES = {LPAD:'scroll',RPAD:'pointer'};
 var DEFAULT_DIRS  = {LPAD:'natural',RPAD:'natural'};
 var DEFAULT_DIAGS = {LPAD:'eight',RPAD:'eight'};
+// Percent of the calibrated scroll scale. Keep the bounds in step with
+// kScrollSpeedMin/Max in TrackpadConfig.h — the C++ side clamps to them, so a
+// slider allowed to travel further would just snap back on apply.
+var DEFAULT_SPEEDS = {LPAD:100,RPAD:100};
+var SPEED_MIN = 25, SPEED_MAX = 400, SPEED_STEP = 5;
 var DEFAULT_PLATFORM = 'xbox';
 
 // ---- State ----
@@ -363,6 +395,9 @@ var dirs = {LPAD:'natural',RPAD:'natural'};
 // Whether a directional pad's diagonals press two directions or round to one.
 // Kept for every pad for the same reason as the scroll direction.
 var diags = {LPAD:'eight',RPAD:'eight'};
+// Scroll speed per pad, kept for every pad for the same reason as the two
+// above: switching modes back and forth must not lose the choice.
+var speeds = {LPAD:100,RPAD:100};
 var platform = 'xbox';
 // This game follows the default profile's controls instead of carrying its
 // own. Only ever true for a game — the default has nothing to follow.
@@ -458,7 +493,7 @@ var runningOpen = false;
 // Each profile is a flat object: one entry per bindable row id, plus
 // "<pad>mode" for each trackpad's movement mode. Flat because the JSON
 // reader on the C++ side matches "key":"value" pairs without nesting.
-var PROFILES = {'':{platform:'xbox',L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RPAD:'leftMouse',LPADmode:'scroll',RPADmode:'pointer',LPADdir:'natural',RPADdir:'natural',LPADdiag:'eight',RPADdiag:'eight',LPADtouch:'none',RPADtouch:'none',LPADup:'Up',LPADdown:'Down',LPADleft:'Left',LPADright:'Right',RPADup:'Up',RPADdown:'Down',RPADleft:'Left',RPADright:'Right'}};
+var PROFILES = {'':{platform:'xbox',L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RPAD:'leftMouse',LPADmode:'scroll',RPADmode:'pointer',LPADdir:'natural',RPADdir:'natural',LPADspeed:'100',RPADspeed:'100',LPADdiag:'eight',RPADdiag:'eight',LPADtouch:'none',RPADtouch:'none',LPADup:'Up',LPADdown:'Down',LPADleft:'Left',LPADright:'Right',RPADup:'Up',RPADdown:'Down',RPADleft:'Left',RPADright:'Right'}};
 var currentGame = '';
 var comboOpen = false;
 var comboQuery = '';
@@ -652,6 +687,23 @@ function setMode(padId,modeId){
 function setDir(padId,dirId){
   dirs[padId]=dirId;
 }
+// The one place a scroll speed is bounded, so a value arriving from storage
+// and one arriving from the slider cannot disagree. Anything unparseable or
+// zero is "unset", which is what the registry writes for a profile saved
+// before this setting existed — see ScrollSpeedFromDword.
+function clampSpeed(padId,value){
+  var v=parseInt(value,10);
+  if(isNaN(v)||v===0) return DEFAULT_SPEEDS[padId];
+  return Math.min(SPEED_MAX,Math.max(SPEED_MIN,v));
+}
+// Live while dragging, so the readout tracks the thumb. Stored as a number;
+// currentProfile stringifies it on the way out, matching every other value on
+// the wire.
+function setSpeed(padId,value){
+  speeds[padId]=clampSpeed(padId,value);
+  var out=document.getElementById('speed-val-'+padId);
+  if(out) out.textContent=speeds[padId]+'%';
+}
 function setDiag(padId,diagId){
   diags[padId]=diagId;
 }
@@ -660,11 +712,12 @@ function resetDefaults(){
   platform=DEFAULT_PLATFORM;
   bindings={};
   ROWS.forEach(function(r){bindings[r.id]=DEFAULTS[r.id];});
-  modes={}; dirs={}; diags={};
+  modes={}; dirs={}; diags={}; speeds={};
   PADS.forEach(function(p){
     modes[p]=DEFAULT_MODES[p];
     dirs[p]=DEFAULT_DIRS[p];
     diags[p]=DEFAULT_DIAGS[p];
+    speeds[p]=DEFAULT_SPEEDS[p];
   });
   flash=null;
   clearTimeout(flashTimer);
@@ -687,6 +740,7 @@ function currentProfile(){
     p[x+'mode']=modes[x];
     p[x+'dir']=dirs[x];
     p[x+'diag']=diags[x];
+    p[x+'speed']=String(speeds[x]);
   });
   return p;
 }
@@ -708,11 +762,14 @@ function loadProfileInto(p){
   ROWS.forEach(function(r){
     bindings[r.id]=p.hasOwnProperty(r.id)?p[r.id]:DEFAULTS[r.id];
   });
-  modes={}; dirs={}; diags={};
+  modes={}; dirs={}; diags={}; speeds={};
   PADS.forEach(function(x){
     modes[x]=p.hasOwnProperty(x+'mode')?p[x+'mode']:DEFAULT_MODES[x];
     dirs[x] =p.hasOwnProperty(x+'dir') ?p[x+'dir'] :DEFAULT_DIRS[x];
     diags[x]=p.hasOwnProperty(x+'diag')?p[x+'diag']:DEFAULT_DIAGS[x];
+    // clampSpeed turns a missing key into the default, so this needs no
+    // hasOwnProperty guard of its own.
+    speeds[x]=clampSpeed(x,p[x+'speed']);
   });
   savedProfile=currentProfile();
 }
@@ -995,6 +1052,14 @@ function renderModeSelects(){
     fillSelect('mode-'+padId,opts,modes[padId]);
     fillSelect('dir-'+padId,DIR_OPTIONS,dirs[padId]);
     fillSelect('diag-'+padId,DIAG_OPTIONS,diags[padId]);
+    var speedSel=document.getElementById('speed-'+padId);
+    if(speedSel){
+      speedSel.min=SPEED_MIN; speedSel.max=SPEED_MAX; speedSel.step=SPEED_STEP;
+      speedSel.value=speeds[padId];
+    }
+    // Goes through setSpeed so the readout beside the slider is written by the
+    // one function that owns it, rather than by two that can drift apart.
+    setSpeed(padId,speeds[padId]);
   });
   renderPadRows();
 }
@@ -1005,6 +1070,8 @@ function renderPadRows(){
     var shown=PAD_ROWS_BY_MODE[mode]||[];
     var dirRow=document.getElementById('dir-row-'+padId);
     if(dirRow) dirRow.style.display=(mode==='scroll')?'':'none';
+    var speedRow=document.getElementById('speed-row-'+padId);
+    if(speedRow) speedRow.style.display=(mode==='scroll')?'':'none';
     var diagRow=document.getElementById('diag-row-'+padId);
     if(diagRow) diagRow.style.display=(mode==='dpad')?'':'none';
     // Only a directional pad splits its surface, so only it needs explaining.
@@ -1117,6 +1184,10 @@ PADS.forEach(function(padId){
   if(dirSel) dirSel.addEventListener('change',function(e){setDir(padId,e.target.value);});
   var diagSel=document.getElementById('diag-'+padId);
   if(diagSel) diagSel.addEventListener('change',function(e){setDiag(padId,e.target.value);});
+  var speedSel=document.getElementById('speed-'+padId);
+  // 'input' rather than 'change': the readout has to follow the thumb while it
+  // is being dragged, not only when it is let go.
+  if(speedSel) speedSel.addEventListener('input',function(e){setSpeed(padId,e.target.value);});
 });
 
 // mousedown as well as click: the document-level handler below closes the
@@ -1992,6 +2063,10 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
             s.click     = BackButtonBinding::FromId(JsonStr(msg, id));
             s.mode      = TrackpadModeFromId(JsonStr(msg, id + "mode"));
             s.scrollDir = ScrollDirectionFromId(JsonStr(msg, id + "dir"));
+            // strtoul yields 0 for anything unparseable, which is the same
+            // "unset" the registry uses and lands on the default.
+            s.scrollSpeed = ScrollSpeedFromDword(static_cast<uint32_t>(
+                std::strtoul(JsonStr(msg, id + "speed").c_str(), nullptr, 10)));
             s.diagonals = DiagonalModeFromId(JsonStr(msg, id + "diag"));
             s.touch     = BackButtonBinding::FromId(JsonStr(msg, id + "touch"));
             s.up        = BackButtonBinding::FromId(JsonStr(msg, id + "up"));
@@ -2083,6 +2158,7 @@ std::wstring RemapWindow::ProfileJson(const ControllerProfile& p) {
         return L"\"" + k + L"\":\"" + wid(s.click) + L"\","
                L"\"" + k + L"mode\":\"" + narrow(TrackpadModeId(s.mode)) + L"\","
                L"\"" + k + L"dir\":\"" + narrow(ScrollDirectionId(s.scrollDir)) + L"\","
+               L"\"" + k + L"speed\":\"" + std::to_wstring(s.scrollSpeed) + L"\","
                L"\"" + k + L"diag\":\"" + narrow(DiagonalModeId(s.diagonals)) + L"\","
                L"\"" + k + L"touch\":\"" + wid(s.touch) + L"\","
                L"\"" + k + L"up\":\"" + wid(s.up) + L"\","
