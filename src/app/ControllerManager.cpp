@@ -479,6 +479,8 @@ void ControllerManager::ApplyPadSettings(Slot& slot) {
     slot.rightPad.SetMode(m_profile.rightPad.mode);
     slot.leftPad.SetScrollDirection(m_profile.leftPad.scrollDir);
     slot.rightPad.SetScrollDirection(m_profile.rightPad.scrollDir);
+    slot.leftPad.SetScrollSpeed(m_profile.leftPad.scrollSpeed);
+    slot.rightPad.SetScrollSpeed(m_profile.rightPad.scrollSpeed);
     slot.leftPad.SetDiagonals(m_profile.leftPad.diagonals);
     slot.rightPad.SetDiagonals(m_profile.rightPad.diagonals);
     // The virtual controller reads pad modes straight off the profile it is
