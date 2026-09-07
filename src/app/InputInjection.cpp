@@ -282,24 +282,43 @@ std::wstring DescribeCursor() {
 
 namespace InputInjection {
 
+// How far one wheel notch scrolls on this machine, which is not ours to
+// choose. Scroll is injected as wheel events — 120 units to a notch — and
+// Windows multiplies each notch by this before anything moves, so identical
+// injection scrolls wildly different amounts on two machines. The default is
+// 3 lines; WHEEL_PAGESCROLL means a notch is a whole page, which turns the
+// gentlest flick of a pad into a page jump and is not something a sensitivity
+// setting can tune away, the granularity being the problem rather than the
+// scale. Worth a line in the log, since a scroll-feels-wrong report otherwise
+// gives no way to tell this apart from a bug in our own arithmetic.
+static std::wstring DescribeWheelLines() {
+    UINT lines = 3;
+    if (!SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0))
+        return L"unknown";
+    if (lines == WHEEL_PAGESCROLL) return L"one page per notch (!)";
+    return std::to_wstring(lines) + L" lines per notch"
+         + (lines == 3 ? L"" : L" (not the default 3)");
+}
+
 void LogEnvironment(const char* reason) {
     DWORD fgIntegrity = kIntegrityUnknown;
-    const std::wstring fg   = DescribeForeground(fgIntegrity);
-    const DWORD        own  = OwnIntegrity();
-    const std::wstring clip = DescribeClip();
-    const std::wstring cur  = DescribeCursor();
+    const std::wstring fg    = DescribeForeground(fgIntegrity);
+    const DWORD        own   = OwnIntegrity();
+    const std::wstring clip  = DescribeClip();
+    const std::wstring cur   = DescribeCursor();
+    const std::wstring wheel = DescribeWheelLines();
 
     const bool outranked = fgIntegrity != kIntegrityUnknown
                         && own         != kIntegrityUnknown
                         && fgIntegrity > own;
 
     EventLog::Write("INJECT: %s — foreground=%ls, us=integrity=%ls%s, "
-                    "cursorClip=%ls, cursor=%ls",
+                    "cursorClip=%ls, cursor=%ls, wheel=%ls",
                     reason, fg.c_str(), IntegrityName(own),
                     outranked ? " — FOREGROUND OUTRANKS US, injected input is "
                                 "blocked (UIPI) until focus moves or it closes"
                               : "",
-                    clip.c_str(), cur.c_str());
+                    clip.c_str(), cur.c_str(), wheel.c_str());
 }
 
 void SetAlertCallback(AlertFn fn) {
