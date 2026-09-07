@@ -723,12 +723,22 @@ void TrayApp::OnForegroundChanged(const ForegroundIdentity& id) {
     // would apply their changes to the wrong game.
     if (m_remapWindow.IsOpen()) return;
 
-    if (!SelectProfile(MatchProfile(id))) return;
-    // Before pushing: a game coming to the front claims the pad type, and
-    // keeps it until it exits. Landing on the desktop claims nothing and
-    // leaves the previous claim standing, which is what stops an alt-tab
-    // rebuilding the pad under a game that is still running.
+    const bool selectionChanged = SelectProfile(MatchProfile(id));
+
+    // A game coming to the front claims the pad type and keeps it until it
+    // exits. Landing on the desktop claims nothing and leaves the previous
+    // claim standing, which is what stops an alt-tab rebuilding the pad under
+    // a game that is still running.
+    //
+    // Asked before the early return below, because the hold follows a process
+    // while the selection follows a profile, and the two do not change
+    // together. A loader that hands off to the game it launched is the same
+    // profile wearing a new pid: the selection does not change, so the return
+    // fires, and a hold left on the old process is dropped the moment that
+    // process exits — rebuilding the pad under a game that has only just
+    // started.
     UpdatePlatformHold(id);
+    if (!selectionChanged) return;
     // Only push a profile we are actually going to run. Applying one changes
     // the pad in place, but a profile whose platform differs rebuilds the
     // virtual controller outright — so pushing the default on the way out of

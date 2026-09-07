@@ -29,3 +29,6 @@ src/probe/HapticTester.cpp
 .vs/
 *.user
 *.suo
+
+# Built installers and packaged output
+Output/
