@@ -266,6 +266,9 @@ private:
     // The game the "profile loaded" balloon last named, so alt-tabbing in and
     // out of one game does not raise it over and over.
     std::wstring                       m_toastedGameId;
+    // What was last reported as applied, so the line is written on a change
+    // rather than on every foreground switch.
+    std::wstring                       m_lastAppliedDescription;
 
     // Which game's profile decides the kind of virtual pad, for as long as
     // that game is running. Set when a profile matches the foreground and kept

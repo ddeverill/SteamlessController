@@ -658,9 +658,33 @@ bool TrayApp::SelectProfile(const std::wstring& gameId) {
 
 void TrayApp::PushActiveProfile() {
     const ControllerProfile& profile = ActiveProfile();
+    const ControllerProfile  applied = EffectiveProfile();
     // The blend, not the selection: bindings from whatever is in front, pad
     // type from whatever game is still running. See EffectiveProfile.
-    m_controller->SetProfile(EffectiveProfile());
+    m_controller->SetProfile(applied);
+
+    // What actually reached the controller, which is not the same question as
+    // which profile matched — a profile set to follow the default matches, is
+    // reported as switched to, and then supplies none of its own bindings.
+    // That is the shape of "my custom bindings do nothing", and without this
+    // line a log shows a profile loading correctly while the user watches it
+    // have no effect.
+    //
+    // Only on a change: this is called on every foreground switch, and one
+    // line per alt-tab would bury everything else.
+    const bool following = !m_activeGameId.empty()
+                        && ActiveProfile().useDefaultMappings;
+    std::wstring applying = (m_activeGameId.empty() ? std::wstring(L"the default profile")
+                                                    : m_activeGameId)
+                          + (applied.platform == ControllerPlatform::PlayStation
+                                 ? L" [PlayStation]" : L" [Xbox]")
+                          + (following ? L" (following the default — its own bindings are"
+                                         L" not being used)"
+                                       : L"");
+    if (applying != m_lastAppliedDescription) {
+        m_lastAppliedDescription = applying;
+        EventLog::Write("PROFILE: applied %ls", applying.c_str());
+    }
 
     if (m_activeGameId.empty()) return;  // returning to the default is not news
 

@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <cstdint>
 #include <cstddef>
 #include "TrackpadConfig.h"
@@ -54,6 +55,11 @@ private:
     // hysteresis margin. Reads m_sector; does not write it.
     int  ResolveSector(double angleDeg) const;
     void UpdateDirections(bool clicked, int16_t x, int16_t y);
+    // Diagnostic only — reports single frames that moved further than a finger
+    // can, and how long since the previous one, which is what separates a
+    // sensor jump from reports going missing. Changes nothing about what is
+    // sent. See the definition.
+    void NoteJump(const uint8_t* buf, size_t n, int dx, int dy);
 
     bool            m_isLeftPad = false;
     TrackpadMode    m_mode      = TrackpadMode::None;
@@ -112,4 +118,20 @@ private:
     // edge-dispatched that is a stream of key down/up pairs rather than a
     // cosmetic flicker.
     static constexpr double SECTOR_HYSTERESIS_DEG = 8.0;
+
+    // ---- Movement jump reporting (diagnostic) ----
+
+    // Far enough in one frame that no finger did it. The pad's axes saturate
+    // at +/-32767, so this is roughly a fifth of the way across in a single
+    // report — well past a fast flick at any report rate either transport
+    // uses, and nowhere near the pad-width gap a missed lift produces.
+    static constexpr double JUMP_REPORT_UNITS = 6000.0;
+    // A pad that jumps once jumps often. A handful of examples says everything
+    // a flood would, so the rest are dropped.
+    static constexpr double JUMP_LOG_GAP_S = 3.0;
+
+    std::chrono::steady_clock::time_point m_lastFrameAt{};
+    std::chrono::steady_clock::time_point m_lastJumpLogAt{};
+    bool m_haveFrameTime  = false;
+    bool m_haveLoggedJump = false;
 };
