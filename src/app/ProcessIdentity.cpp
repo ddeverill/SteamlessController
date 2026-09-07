@@ -74,6 +74,7 @@ ForegroundIdentity ForProcess(DWORD pid) {
 
     id.exePath = ImagePathOf(proc);
     id.aumid   = AumidOf(proc);
+    id.pid     = pid;
     CloseHandle(proc);
     return id;
 }

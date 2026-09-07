@@ -6,6 +6,7 @@
 #include <vector>
 #include "DeviceRestart.h"
 #include "ForegroundWatcher.h"
+#include "GameLiveness.h"
 #include "GameProfiles.h"
 #include "RemapWindow.h"
 #include "SteamAppLocator.h"
@@ -107,6 +108,19 @@ private:
     bool SelectProfile(const std::wstring& gameId);
     // The selected profile — a game's if one is selected, else the default.
     const ControllerProfile& ActiveProfile() const;
+    // What to actually apply: the selected profile, but wearing the pad type
+    // of whichever game is still running. Returned by value because it is a
+    // blend of two profiles rather than either of them, and every caller wants
+    // the blend — ActiveProfile stays the answer to "which profile did the
+    // user's foreground select", which is a different question.
+    ControllerProfile EffectiveProfile() const;
+    // Start or stop holding the pad type for whatever the foreground matched,
+    // and keep the liveness timer running only while there is something to
+    // watch.
+    void UpdatePlatformHold(const ForegroundIdentity& id);
+    // Drop the hold and re-apply, so the pad type follows the profile again.
+    // The one moment the rebuild is free: the game that needed it has gone.
+    void ReleasePlatformHold(const wchar_t* why);
     // Push the selected profile's bindings into ControllerManager. Safe while
     // the controller is not ours, and called before acquiring rather than
     // after so the pad comes up already carrying the right bindings.
@@ -253,6 +267,23 @@ private:
     // out of one game does not raise it over and over.
     std::wstring                       m_toastedGameId;
 
+    // Which game's profile decides the kind of virtual pad, for as long as
+    // that game is running. Set when a profile matches the foreground and kept
+    // across alt-tabs, because a platform change rebuilds the pad and a
+    // running game reads that as its controller being unplugged.
+    //
+    // Only the platform is held. Bindings still follow the foreground, so
+    // alt-tabbing to the desktop still hands the desktop its own controls —
+    // which matters, since the default profile is the one that makes the pads
+    // a mouse and a scroll wheel.
+    //
+    // Nothing here helps AutoMode::OffUnlessProfile, whose whole design is to
+    // release the physical controller the moment a profiled game is not in
+    // front. That destroys the virtual pad outright, so there is no pad left
+    // to hold a type for. Left that way on purpose: it is the most restrictive
+    // mode and being restrictive is what it is for.
+    GameLiveness                       m_platformHold;
+
     static constexpr UINT IDM_TOGGLE        = 1001;
     static constexpr UINT IDM_EXIT          = 1002;
     // 1003 and 1005 were the retired "Enable Trackpad Mouse" and "Use Left
@@ -281,6 +312,7 @@ private:
     static constexpr UINT_PTR IDT_RELEASE_GRACE   = 5;
     static constexpr UINT_PTR IDT_STEAM_RECONCILE = 6;
     static constexpr UINT_PTR IDT_CYCLE_WATCHDOG  = 7;
+    static constexpr UINT_PTR IDT_GAME_LIVENESS   = 8;
     // Long enough that idling for a month costs a fraction of the log's 512 KB,
     // short enough to bound when the app stopped responding to within a
     // quarter hour. Resolution only has to beat "somewhere in the last 33
@@ -321,6 +353,11 @@ private:
     // that doing it immediately would read as a bug. Steam turning up is the
     // one release that skips this; see EvaluateControl.
     static constexpr UINT RELEASE_GRACE_MS = 5000;
+    // How often to ask whether the game holding the pad type is still there.
+    // Deliberately lazy: nothing is watching the pad in the moment a game
+    // exits, so noticing a second or two late costs nothing, and the check is
+    // one wait on a handle we already hold.
+    static constexpr UINT LIVENESS_POLL_MS = 2000;
     // Minimum spacing between device cycles. A cycle is asynchronous, so
     // without this the arrivals it generates re-enter the acquire path and
     // fire another one on top of it.

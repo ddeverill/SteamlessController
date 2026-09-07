@@ -13,6 +13,16 @@ struct ForegroundIdentity {
     std::wstring exePath;
     std::wstring aumid;
 
+    // The process this identity was read from, so a caller can go back and
+    // ask whether it is still running. Zero when nothing was resolved.
+    //
+    // Deliberately absent from operator== below: it identifies one run of an
+    // application, while the rest of this identifies the application. The
+    // foreground watcher compares identities to suppress repeat notifications,
+    // and a game relaunched is still the same game to every profile that
+    // matches it.
+    DWORD pid = 0;
+
     bool Empty() const { return exePath.empty() && aumid.empty(); }
     bool operator==(const ForegroundIdentity& o) const {
         return _wcsicmp(exePath.c_str(), o.exePath.c_str()) == 0
