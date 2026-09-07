@@ -17,7 +17,7 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 
 <img width="478" height="373" alt="image" src="https://github.com/user-attachments/assets/171522c4-71a3-46ff-bfa1-d7c5d4b845c6" />
 
-<img width="878" height="753" alt="image" src="https://github.com/user-attachments/assets/72b0e77b-8928-4e51-842f-0b2c854dd298" />
+<img width="770" height="780" alt="image" src="https://github.com/user-attachments/assets/0c4da5c6-6c9f-4748-a8b8-7552e90ad6d9" />
 
 ## Requirements
 
