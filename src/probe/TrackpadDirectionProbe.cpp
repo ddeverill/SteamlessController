@@ -32,12 +32,14 @@
 // what users will feel.
 
 #include "app/TrackpadInput.h"
+#include "app/InputInjection.h"
 #include "hid/HidDevice.h"
 #include "steam/SteamController.h"
 #include <algorithm>
 #include <atomic>
 #include <conio.h>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -769,6 +771,40 @@ int RunChecks() {
         Check(pad.Directions() == DirNone, "29 bytes or fewer resolves nothing");
     }
 
+
+    // Scroll normalisation (#95). A machine's lines-per-notch setting
+    // multiplies every wheel event we send, so identical injection scrolls a
+    // different distance on two machines — which is how a scroll-is-far-too-
+    // fast report can be real and still not reproduce. The correction divides
+    // it back out.
+    //
+    // The property worth guarding is the first one: at the Windows default the
+    // correction is exactly 1.0, so turning normalisation on changed nothing
+    // for the machines that were already fine.
+    printf("\nScroll normalisation against the wheel-lines setting\n");
+    {
+        // Not "near" — windows.h defines that as a macro.
+        auto approx = [](float a, float b) { return std::fabs(a - b) < 0.0005f; };
+        Check(approx(InputInjection::WheelCorrection(3.0f), 1.0f),
+              "the Windows default is left exactly alone");
+        Check(approx(InputInjection::WheelCorrection(10.0f), 0.3f),
+              "10 lines per notch scrolls at 30%, undoing the 3.3x");
+        Check(approx(InputInjection::WheelCorrection(1.0f), 3.0f),
+              "1 line per notch is scaled up, not only down");
+        Check(approx(InputInjection::WheelCorrection(20.0f), 0.15f),
+              "a page-per-notch machine is damped hard");
+        // Guards the divide rather than the arithmetic: a system that reports
+        // nothing usable must leave the scale where it was, not send it to
+        // infinity.
+        Check(approx(InputInjection::WheelCorrection(0.0f), 1.0f),
+              "an unreadable setting corrects by 1.0");
+        Check(approx(InputInjection::WheelCorrection(-5.0f), 1.0f),
+              "a negative setting corrects by 1.0");
+        // The live reader feeds that function, so it must never hand it a
+        // value the guard has to catch.
+        Check(InputInjection::WheelLinesPerNotch() > 0.0f,
+              "this machine reports a usable lines-per-notch");
+    }
     printf("\n%s (%d failure(s))\n", g_failures ? "FAILED" : "All checks passed", g_failures);
     return g_failures ? 1 : 0;
 }

@@ -97,6 +97,26 @@ void TrackpadInput::UpdatePointer(int dx, int dy) {
     }
 }
 
+// The wheel units one frame of movement is worth.
+//
+// Two corrections sit on top of the built-in scale, and they answer different
+// questions. The first is not a preference at all: Windows multiplies every
+// notch we send by the machine's lines-per-notch setting before anything
+// moves, so the same swipe scrolls three times as far on a machine set to 10
+// as on one left at the default 3. Dividing it back out is what makes the pad
+// behave the same everywhere, and it is why a scroll-is-far-too-fast report
+// can be true on one machine and not reproduce on another with identical code.
+//
+// The second is the user's own scroll speed, which is taste and nothing else.
+// It is applied after the correction so the percentage means the same thing on
+// every machine: 100% is the calibrated feel, not "whatever this machine does".
+float TrackpadInput::ScrollScale() const {
+    const float correction =
+        InputInjection::WheelCorrection(InputInjection::WheelLinesPerNotch());
+    return SCROLL_SENSITIVITY * correction
+         * (static_cast<float>(m_scrollSpeed) / 100.0f);
+}
+
 // Wheel events are quantised to WHEEL_DELTA notches, which is much coarser
 // than a pad frame's movement — so the same remainder-carry the pointer path
 // uses is what makes slow scrolling work at all here.
@@ -108,8 +128,12 @@ void TrackpadInput::UpdatePointer(int dx, int dy) {
 void TrackpadInput::UpdateScroll(int dx, int dy) {
     if (m_scrollDir == ScrollDirection::Natural) { dx = -dx; dy = -dy; }
 
-    const float fy = static_cast<float>(dy) * SCROLL_SENSITIVITY + m_scrollRemY;
-    const float fx = static_cast<float>(dx) * SCROLL_SENSITIVITY + m_scrollRemX;
+    // The remainder carries in wheel units, which is what lets the scale change
+    // underneath it — a slider moved mid-swipe, or the system setting changing
+    // — without the part already banked meaning something different.
+    const float scale = ScrollScale();
+    const float fy = static_cast<float>(dy) * scale + m_scrollRemY;
+    const float fx = static_cast<float>(dx) * scale + m_scrollRemX;
     const LONG  iy = static_cast<LONG>(fy);
     const LONG  ix = static_cast<LONG>(fx);
     m_scrollRemY = fy - static_cast<float>(iy);

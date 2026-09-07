@@ -25,6 +25,9 @@ public:
     void SetPad(bool isLeftPad) { m_isLeftPad = isLeftPad; }
     void SetMode(TrackpadMode mode);
     void SetScrollDirection(ScrollDirection dir) { m_scrollDir = dir; }
+    // Percent of the calibrated scroll scale — see kScrollSpeedDefault.
+    // Clamped here rather than trusted, since it arrives from the registry.
+    void SetScrollSpeed(uint32_t percent) { m_scrollSpeed = ClampScrollSpeed(percent); }
     void SetDiagonals(DiagonalMode d);
 
     // `pressed` is whether the pad is being pressed, worked out from contact
@@ -48,6 +51,7 @@ public:
 
 private:
     void UpdatePointer(int dx, int dy);
+    float ScrollScale() const;
     void UpdateScroll(int dx, int dy);
     void NoteMovementSent(long px, bool haveCursor, long cursorX, long cursorY);
     // Resolves the eight- or four-way sector a press at this angle belongs to,
@@ -64,6 +68,7 @@ private:
     bool            m_isLeftPad = false;
     TrackpadMode    m_mode      = TrackpadMode::None;
     ScrollDirection m_scrollDir = ScrollDirection::Natural;
+    uint32_t        m_scrollSpeed = kScrollSpeedDefault;
     DiagonalMode    m_diagonals = DiagonalMode::EightWay;
 
     bool     m_touching  = false;

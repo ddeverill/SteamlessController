@@ -45,6 +45,39 @@ void SetAlertCallback(AlertFn fn);
 // the same as the event arriving; see above.
 bool Send(const INPUT& input, const char* what);
 
+// Lines per wheel notch that the injected scroll scale is calibrated against,
+// which is the Windows default. A machine set to anything else has every wheel
+// event we send multiplied by a different number on arrival, so identical
+// injection scrolls a different distance there; dividing the scale by
+// WheelLinesPerNotch() below is what makes one swipe of a trackpad cover the
+// same ground everywhere. See TrackpadInput::UpdateScroll.
+//
+// Anchoring at the default rather than at 1 is deliberate: the correction is
+// then exactly 1.0 on a machine nobody has touched, so normalising changes
+// nothing for the great majority of installs and only moves the ones that were
+// already out of step.
+inline constexpr float kCalibratedWheelLines = 3.0f;
+
+// The factor the scroll scale is multiplied by on a machine reporting `lines`
+// lines per notch. Pure and separated from the setting it is normally fed so
+// the property that matters can be checked rather than argued about: it is
+// exactly 1.0 at the default, which is what makes normalising safe to turn on
+// for every install at once.
+//
+// Zero guards a divide against a system that reports nothing usable. It does
+// not happen today, and a scroll that silently becomes infinite is not the way
+// to discover that it started.
+inline constexpr float WheelCorrection(float lines) {
+    return lines > 0.0f ? kCalibratedWheelLines / lines : 1.0f;
+}
+
+// The system's "roll the mouse wheel to scroll N lines" setting, resolved to a
+// number that scale can divide by. WHEEL_PAGESCROLL becomes an estimated
+// page's worth of lines, and a setting that cannot be read at all becomes
+// kCalibratedWheelLines, which corrects by exactly 1.0 and so leaves the scale
+// where it was. Cached internally; cheap enough to call once per report.
+float WheelLinesPerNotch();
+
 // Everything that decides whether injection can land: the foreground window's
 // process and integrity level, ours, any cursor clip, and whether the cursor
 // can be read at all. Logged when game mode is taken, and whenever injection
