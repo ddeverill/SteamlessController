@@ -21,6 +21,21 @@
 //
 // Non-invasive by construction: opens the device shared, only ever reads, and
 // never sends a report or touches lizard mode. Steam can keep running.
+//
+// This tool deliberately does NOT calibrate kPadPressArea, the contact area
+// above which a thumb counts as pressing. It used to, in a two-stage mode that
+// sampled a resting thumb and then swept a threshold across the gap, and the
+// number it produced was wrong: its resting stage only recorded frames where
+// the touch bit was set, which does not reliably catch a thumb that is truly
+// resting, and the run that set the constant reported a median of 0 against a
+// real resting level of 259..381. The threshold landed inside the resting band,
+// so a pad with a thumb lying on it read as a held press and consecutive
+// presses merged into one.
+//
+// Use TrackpadDirectionProbe --live instead. It correlates detection against
+// the firmware's own haptic notification, which is a per-event ground truth
+// rather than a distribution to reason about, and it reports directly the two
+// numbers a threshold has to live between.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -462,31 +477,6 @@ std::mutex g_tapMutex;
 TapTracker g_tap;
 std::atomic<bool> g_tapMode{false};
 
-// ---------------------------------------------------------------------------
-// Press calibration — where "resting" ends and "pressing" begins
-// ---------------------------------------------------------------------------
-//
-// The firmware's click bit misses roughly half of a thumb's presses when the
-// thumb stays on the pad, but the presses are in the report: contact area
-// spikes for every one of them, because a press flattens the fingertip. So a
-// press can be detected from area instead — which needs one number, the area
-// above which a thumb is pressing rather than resting.
-//
-// Both halves of that are measured rather than assumed, in two stages: rest
-// without pressing, then press a known number of times. A threshold is then
-// swept across the gap and the one that recovers exactly the presses made is
-// the answer. Guessing it is how you get a pad that fires a direction because
-// a thumb is lying on it.
-enum class PressCal { Off = 0, Resting = 1, Pressing = 2 };
-std::atomic<int> g_pressCal{static_cast<int>(PressCal::Off)};
-std::mutex g_calMutex;
-std::vector<uint16_t> g_restAreas;   // touched-but-not-pressing samples
-std::vector<uint16_t> g_pressAreas;  // the whole series, 0 while untouched
-int g_calExpectedPresses = 15;
-
-// Five seconds of contact is plenty to characterise a resting thumb, and short
-// enough that nobody has to hold still for long.
-constexpr size_t kRestSamples = 1250;
 
 // What the reader did with every report that arrived, so a session can prove
 // it is not the one losing presses.
@@ -497,118 +487,6 @@ std::atomic<long long> g_clicksDiscarded{0};
 std::atomic<long long> g_readTimeouts{0};
 std::atomic<int>       g_lastWrongId{-1};
 
-// Counts presses in an area series against ONE threshold: above it is pressed,
-// below it is not. No second "backed off" level, which would be a per-person
-// number with nothing behind it — thumbs differ enormously in how heavily they
-// rest, and a release level guessed too high latches the detector and swallows
-// every press after the first.
-//
-// `confirmFrames` is how many consecutive frames a side must hold before the
-// state changes. Not a per-person number: it describes the sensor's noise, not
-// anyone's grip. Without it a single threshold chatters, because the area
-// passes through the line on the way up and again on the way down, and a few
-// counts of noise while it sits there reads as several presses.
-int CountCrossings(const std::vector<uint16_t>& series, int threshold,
-                   int confirmFrames) {
-    int  count = 0, above = 0, below = 0;
-    bool high = false;
-    for (uint16_t a : series) {
-        if (a >= threshold) { ++above; below = 0; }
-        else                { ++below; above = 0; }
-        if (!high && above >= confirmFrames)      { high = true;  ++count; }
-        else if (high && below >= confirmFrames)  { high = false; }
-    }
-    return count;
-}
-
-void PrintPressCal() {
-    std::lock_guard<std::mutex> lk(g_calMutex);
-
-    if (g_restAreas.size() < kRestSamples / 4) {
-        printf("\nNot enough resting samples yet — keep a thumb on the pad,\n"
-               "without pressing, until the second stage is announced.\n");
-        return;
-    }
-    if (g_pressAreas.empty()) {
-        puts("\nNo pressing stage recorded yet.");
-        return;
-    }
-
-    std::vector<double> rest(g_restAreas.begin(), g_restAreas.end());
-    const double restP50 = Percentile(rest, 0.50);
-    const double restP95 = Percentile(rest, 0.95);
-    const double restMax = Percentile(rest, 1.0);
-
-    uint16_t peak = 0;
-    for (uint16_t a : g_pressAreas) if (a > peak) peak = a;
-
-    printf("\n===========================================================\n");
-    printf("  Press detection calibration — %s pad\n",
-           g_useLeftPad.load() ? "LEFT" : "RIGHT");
-    printf("===========================================================\n\n");
-    // Reported to say how much headroom the chosen threshold has, not to
-    // derive a release level from — everything below the one threshold counts
-    // as backed off, whatever a particular thumb rests at.
-    printf("RESTING (n=%zu)   p50 %.0f   p95 %.0f   max %.0f\n",
-           g_restAreas.size(), restP50, restP95, restMax);
-    printf("PRESSING          peak %u   over %zu frames\n\n",
-           peak, g_pressAreas.size());
-
-    if (static_cast<double>(peak) <= restMax) {
-        printf("A press never rose above the highest resting sample. Area cannot\n"
-               "separate them at this grip, and detecting presses this way will\n"
-               "not work.\n\n");
-        return;
-    }
-
-    // One threshold, swept. The three columns are the same threshold with
-    // different amounts of noise rejection, which is what says whether a bare
-    // single threshold is enough or whether crossings need confirming.
-    printf("You said %d presses. One threshold, no second release level.\n\n",
-           g_calExpectedPresses);
-    printf("  %-10s %-12s %-12s %s\n",
-           "threshold", "no confirm", "2 frames", "3 frames");
-
-    int bestT = 0;
-    const int from = static_cast<int>(restP95);
-    const int to   = static_cast<int>(peak);
-    const int step = std::max(50, (to - from) / 24);
-    for (int t = from; t <= to; t += step) {
-        const int c1 = CountCrossings(g_pressAreas, t, 1);
-        const int c2 = CountCrossings(g_pressAreas, t, 2);
-        const int c3 = CountCrossings(g_pressAreas, t, 3);
-        // The highest threshold that lands on the count with confirmation is
-        // the pick: furthest from resting, so a heavy thumb has the most room
-        // before it reads as a press.
-        if (c3 == g_calExpectedPresses) bestT = t;
-        printf("  %-10d %-12d %-12d %d%s\n", t, c1, c2, c3,
-               c3 == g_calExpectedPresses ? "   <-- matches" : "");
-    }
-
-    printf("\n");
-    if (bestT > 0) {
-        printf("RECOMMENDED PRESS THRESHOLD: %d\n", bestT);
-        printf("  %.0f above the highest resting sample, so a thumb lying on the\n"
-               "  pad has that much headroom before it reads as a press.\n",
-               bestT - restMax);
-        const int bare = CountCrossings(g_pressAreas, bestT, 1);
-        if (bare > g_calExpectedPresses) {
-            printf("  At that threshold a bare crossing test reports %d rather than\n"
-                   "  %d, so the area does chatter across the line and crossings\n"
-                   "  need confirming. Three frames is 12ms.\n",
-                   bare, g_calExpectedPresses);
-        } else {
-            printf("  A bare crossing test reports %d there too, so the signal is\n"
-                   "  clean enough at this threshold that confirmation only costs\n"
-                   "  latency. The simpler rule wins.\n", bare);
-        }
-    } else {
-        printf("No threshold recovered exactly %d presses. The closest counts are\n"
-               "in the table; if none is near, area and resting overlap at this\n"
-               "grip and this approach will not work.\n", g_calExpectedPresses);
-    }
-    printf("\n");
-}
 
 void PrintTapSummary() {
     std::lock_guard<std::mutex> lk(g_tapMutex);
@@ -913,26 +791,6 @@ void ReaderThread(HidDevice* dev) {
         const bool rightClick = (b2 & SteamController::BTN_TP_RT_CLICK) != 0;
         const bool wantLeft   = g_useLeftPad.load();
 
-        const int cal = g_pressCal.load();
-        if (cal != static_cast<int>(PressCal::Off)) {
-            const bool touching = wantLeft ? lf.touching : rf.touching;
-            const uint16_t area = wantLeft ? lf.area : rf.area;
-            std::lock_guard<std::mutex> lk(g_calMutex);
-            if (cal == static_cast<int>(PressCal::Resting)) {
-                if (touching) g_restAreas.push_back(area);
-                if (g_restAreas.size() >= kRestSamples) {
-                    g_pressCal.store(static_cast<int>(PressCal::Pressing));
-                    printf("\n  Resting captured. Now press %d times, the way you\n"
-                           "  actually play. Then 'sum'.\n> ", g_calExpectedPresses);
-                    fflush(stdout);
-                }
-            } else {
-                // Untouched frames go in as zero so the detector below sees a
-                // thumb leaving the pad as the release it is.
-                g_pressAreas.push_back(touching ? area : 0);
-            }
-        }
-
         // Tap mode replays the latch frame by frame, so it needs every frame,
         // not just the click edges the zone recorder cares about.
         if (g_tapMode.load()) {
@@ -967,9 +825,6 @@ void PrintHelp() {
         "  cal          start the guided calibration (%d stages)\n"
         "  tap          record rapid presses and replay the haptic latch over\n"
         "               them, to show which presses would fire a haptic\n"
-        "  presscal [n] find the contact area that separates a resting thumb\n"
-        "               from a pressing one, since the firmware's click bit\n"
-        "               misses about half of them (default 15 presses)\n"
         "  stop         abandon a calibration in progress\n"
         "  pad l|r      choose which pad to watch (currently %s)\n"
         "  sum          print the summary for what has been collected so far\n"
@@ -1050,7 +905,6 @@ int main() {
             g_stage.store(-1);
             g_stageDone.store(0);
             g_tapMode.store(false);
-            g_pressCal.store(static_cast<int>(PressCal::Off));
             puts("Stopped. Samples so far are kept — 'sum' to see them.");
             continue;
         }
@@ -1084,28 +938,9 @@ int main() {
             continue;
         }
 
-        if (cmd == "presscal") {
-            if (toks.size() >= 2) {
-                const int want = std::atoi(toks[1].c_str());
-                if (want > 0) g_calExpectedPresses = want;
-            }
-            {
-                std::lock_guard<std::mutex> lk(g_calMutex);
-                g_restAreas.clear();
-                g_pressAreas.clear();
-            }
-            g_tapMode.store(false);
-            g_pressCal.store(static_cast<int>(PressCal::Resting));
-            printf("\nStage 1 of 2. Rest your thumb on the pad WITHOUT pressing,\n"
-                   "the way it sits between presses. Hold for about five seconds;\n"
-                   "the next stage announces itself.\n");
-            continue;
-        }
-
         if (cmd == "sum" || cmd == "summary") {
-            if (g_pressCal.load() != static_cast<int>(PressCal::Off)) PrintPressCal();
-            else if (g_tapMode.load())                                PrintTapSummary();
-            else                                                      PrintSummary();
+            if (g_tapMode.load()) PrintTapSummary();
+            else                  PrintSummary();
             continue;
         }
 
