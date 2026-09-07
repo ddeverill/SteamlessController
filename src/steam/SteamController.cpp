@@ -383,12 +383,28 @@ SteamController::RumbleFrame SteamController::CurrentRumbleFrameLocked(
 // commands arrive faster — a drained backlog feels like a crunchy burst.
 static constexpr auto kTrackpadHapticMinGap = std::chrono::milliseconds(50);
 
-// Side byte on the haptic output reports: 1 = right pad, 2 = left pad —
-// confirmed on hardware. (The 1-based form of the original controller's
-// 0 = right / 1 = left channel ordering; it was assumed reversed until a
-// two-thumb test made the swap audible.)
+// Side byte on the haptic output reports. Each value fired on hardware with
+// HapticTester and reported by where it was felt, rather than derived from the
+// original controller's ordering:
+//
+//   0  left pad only
+//   1  right pad only
+//   2  BOTH pads
+//   3  nothing at all
+//
+// The same for every command — a tick on side 2 buzzes both pads exactly as a
+// click does — so this indexes the actuator and is not a per-command quirk or
+// a bitmask.
+//
+// Left was 2 until this was measured, which asked for both actuators every
+// time, so every left-pad haptic also buzzed the right one. The value came
+// from reading this as "the 1-based form of the original controller's
+// 0 = right / 1 = left". The reversal was real but it is not a shift: this
+// firmware is 0 = left / 1 = right. That put right on 1 by luck and left on
+// the both-pads value, and a two-thumb test confirming the right pad would
+// never have isolated it.
+static constexpr uint8_t HAPTIC_SIDE_LEFT  = 0x00;
 static constexpr uint8_t HAPTIC_SIDE_RIGHT = 0x01;
-static constexpr uint8_t HAPTIC_SIDE_LEFT  = 0x02;
 
 void SteamController::PulseTrackpadHaptic(bool left, bool strongClick) {
     const uint8_t side    = left ? HAPTIC_SIDE_LEFT : HAPTIC_SIDE_RIGHT;
