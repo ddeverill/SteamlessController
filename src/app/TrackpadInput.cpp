@@ -1,7 +1,10 @@
 #include "TrackpadInput.h"
+#include "EventLog.h"
 #include "InputInjection.h"
 #include "steam/SteamController.h"
 #include <Windows.h>
+#include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
@@ -229,6 +232,57 @@ void TrackpadInput::UpdateDirections(bool clicked, int16_t x, int16_t y) {
     m_dirs = SectorDirs(m_sector, m_diagonals);
 }
 
+// Reports a single frame that moved further than a finger plausibly can, which
+// is what "I barely touch the pad and it scrolls a whole page" would look like
+// from in here.
+//
+// Movement is integrated from position deltas, so dropped reports are harmless
+// on their own: the displacement still adds up to the same total whether it
+// arrives in ten frames or one. The case that is NOT harmless is a lift and a
+// re-placement that we never saw the touch bit go false across — then the gap
+// between two unrelated points is applied as one enormous swipe.
+//
+// The two are told apart by the time attached to each line rather than by the
+// distance. Milliseconds since the previous touched frame at the report rate
+// means the sensor really did jump that far in one frame, and the touch bit is
+// lying about a finger that left. A long gap means reports went missing during
+// a real movement, which is the benign kind and the reason there is no clamp
+// here yet: a threshold picked without knowing which of these is happening
+// would clip fast flicks on a transport that simply reports less often.
+//
+// The haptic tick path already distrusts jumps like this — see
+// TRACKPAD_TICK_MAX_STEP in ControllerManager — but movement never learned to.
+void TrackpadInput::NoteJump(const uint8_t* buf, size_t n, int dx, int dy) {
+    const double dist = std::hypot(static_cast<double>(dx), static_cast<double>(dy));
+    if (dist < JUMP_REPORT_UNITS) {
+        m_lastFrameAt = std::chrono::steady_clock::now();
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const double sinceFrameMs = m_haveFrameTime
+        ? std::chrono::duration<double, std::milli>(now - m_lastFrameAt).count()
+        : -1.0;
+    m_lastFrameAt   = now;
+    m_haveFrameTime = true;
+
+    // One line every few seconds. A pad that jumps once jumps often, and the
+    // interesting part is the shape of a handful of them, not a flood.
+    if (m_haveLoggedJump
+            && std::chrono::duration<double>(now - m_lastJumpLogAt).count() < JUMP_LOG_GAP_S)
+        return;
+    m_lastJumpLogAt  = now;
+    m_haveLoggedJump = true;
+
+    uint16_t area = 0;
+    if (n >= 30) std::memcpy(&area, buf + (m_isLeftPad ? 22 : 28), 2);
+
+    EventLog::Write("TRACKPAD: %s pad moved %.0f units in one frame "
+                    "(dx=%d dy=%d, %.1fms since the last touched frame, area=%u, mode=%s)",
+                    m_isLeftPad ? "left" : "right", dist, dx, dy,
+                    sinceFrameMs, area, TrackpadModeId(m_mode));
+}
+
 void TrackpadInput::Update(const uint8_t* buf, size_t n, bool pressed) {
     // Only three modes read the pad's position at all. A pad set to None or
     // feeding the DS4 touchpad has nothing for this class to work out, and a
@@ -263,6 +317,7 @@ void TrackpadInput::Update(const uint8_t* buf, size_t n, bool pressed) {
     if (touching && m_touching) {
         const int dxRaw = static_cast<int>(x - m_prevX);
         const int dyRaw = static_cast<int>(y - m_prevY);
+        NoteJump(buf, n, dxRaw, dyRaw);
         if (dxRaw != 0 || dyRaw != 0) {
             if (m_mode == TrackpadMode::MousePointer) {
                 // Pad Y grows upward, screen Y grows downward.
