@@ -426,10 +426,8 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
             SetDs4DPad(r.wButtons, hat);
 
             // Touchpad — right SC pad → DS4 contact 1, left SC pad → DS4 contact 2
-            const bool rawRightTouching = (b2 & SteamController::BTN_TP_RT)       != 0;
-            const bool rawLeftTouching  = (b3 & SteamController::BTN_TP_LT)       != 0;
-            const bool rawRightClick    = (b2 & SteamController::BTN_TP_RT_CLICK) != 0;
-            const bool rawLeftClick     = (b3 & SteamController::BTN_TP_LT_CLICK) != 0;
+            const bool rawRightTouching = (b2 & SteamController::BTN_TP_RT) != 0;
+            const bool rawLeftTouching  = (b3 & SteamController::BTN_TP_LT) != 0;
 
             const bool rightTouching = rawRightTouching && rightToTouchpad;
             const bool leftTouching  = rawLeftTouching  && leftToTouchpad;
@@ -437,7 +435,15 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
             // The click travels with the pad: a pad feeding the touchpad
             // reports its press as the touchpad press, and a pad doing
             // anything else has already dispatched that press as a binding.
-            if ((rawRightClick && rightToTouchpad) || (rawLeftClick && leftToTouchpad))
+            //
+            // From the same resolved press every other binding uses, not the
+            // firmware's click bit. That bit reports fewer than half of a
+            // thumb's presses, and how much force it wants varies with thumb
+            // size and how heavily the pad is already being rested on — which
+            // is why a touchpad that took a firm press to activate for one
+            // person felt fine to another (#96).
+            if ((resolved.rightPressed && rightToTouchpad)
+                    || (resolved.leftPressed && leftToTouchpad))
                 r.bSpecial |= DS4_SPECIAL_BUTTON_TOUCHPAD;
 
             if (rightTouching && !m_wasRightTouching)

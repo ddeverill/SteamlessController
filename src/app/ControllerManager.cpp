@@ -1112,12 +1112,16 @@ void ControllerManager::ReadLoop(Slot* slot) {
             slot->rightPad.Directions(),
             slot->leftPad.ClickInCentre(),
             slot->rightPad.ClickInCentre(),
+            // A tap is a contact that never became a press, and "became a
+            // press" has to mean the same thing here as everywhere else. Asked
+            // of the firmware's click bit instead, a gentle press it failed to
+            // report would leave the contact looking like a tap, and firing
+            // the tap binding on lift on top of the direction the press had
+            // already sent.
             slot->leftTap.Update((tb3 & SteamController::BTN_TP_LT) != 0,
-                                 (tb3 & SteamController::BTN_TP_LT_CLICK) != 0,
-                                 tlx, tly),
+                                 slot->leftPress.pressed, tlx, tly),
             slot->rightTap.Update((tb2 & SteamController::BTN_TP_RT) != 0,
-                                  (tb2 & SteamController::BTN_TP_RT_CLICK) != 0,
-                                  trx, try_),
+                                  slot->rightPress.pressed, trx, try_),
             slot->leftPress.pressed,
             slot->rightPress.pressed,
         };
