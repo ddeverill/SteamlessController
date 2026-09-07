@@ -47,14 +47,17 @@ public:
     // Anti-cheat and elevated games routinely refuse an unelevated process the
     // SYNCHRONIZE right, so a handle is not always available and its absence
     // says nothing about whether the game is running. The fallback re-opens by
-    // pid and reads the failure rather than the success: a pid that no longer
-    // exists fails differently from one we are merely not allowed to touch, and
-    // being denied access to a process is proof it is there.
+    // pid and asks for the exit code, because opening it only proves the
+    // process OBJECT exists: a pid stays valid for as long as anything holds a
+    // handle to the process, which a launcher or an anti-cheat service
+    // generally does. Where it cannot be opened at all, being DENIED access is
+    // itself proof the process is there.
     //
-    // That fallback can be fooled by pid reuse, which needs the game to exit
-    // and the id to be handed to something new between two checks seconds
-    // apart. The cost if it happens is one virtual pad rebuild that should not
-    // have been deferred, at a moment when no game is running to notice.
+    // The fallback can be fooled two ways, both benign. A game exiting with
+    // code 259 reads as STILL_ACTIVE forever, and pid reuse needs the id to be
+    // handed to something new between two checks seconds apart. Either leaves a
+    // hold standing too long, costing the pad rebuild it was deferring — which
+    // is the behaviour this class was added to improve on, not worse than it.
     bool StillRunning() const;
 
 private:
