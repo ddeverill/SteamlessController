@@ -385,6 +385,12 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // so the answer can change while it runs, and coming back to the
             // game is the case it is here for.
             if (!WantControlNow()) ReleaseControl();
+        } else if (wp == IDT_GAME_LIVENESS) {
+            // The game holding the pad type has gone, so the type can follow
+            // the selected profile again — and the rebuild that costs is free
+            // now in a way it never is while the game is up.
+            if (!m_platformHold.StillRunning())
+                ReleasePlatformHold(L"the game exited");
         } else if (wp == IDT_STEAM_RECONCILE) {
             // The watcher announces an edge exactly once, through one
             // PostMessage. If that message is lost the app keeps a stale view
@@ -584,6 +590,58 @@ const ControllerProfile& TrayApp::ActiveProfile() const {
     return m_defaultProfile;
 }
 
+ControllerProfile TrayApp::EffectiveProfile() const {
+    ControllerProfile profile = ActiveProfile();
+
+    // A held pad type outranks the selected profile's, and only the pad type.
+    // Everything else — every binding, every pad mode — is the foreground's to
+    // decide, so alt-tabbing to the desktop still gets the desktop's controls.
+    if (m_platformHold.IsHeld()) {
+        auto it = m_gameProfiles.find(m_platformHold.ProfileId());
+        if (it != m_gameProfiles.end()) {
+            // A profile that follows the default has no platform of its own,
+            // exactly as ActiveProfile resolves it.
+            profile.platform = it->second.useDefaultMappings
+                             ? m_defaultProfile.platform
+                             : it->second.platform;
+        }
+    }
+    return profile;
+}
+
+void TrayApp::UpdatePlatformHold(const ForegroundIdentity& id) {
+    // Only a matched game holds anything. Landing on the desktop deliberately
+    // leaves the previous hold alone — that is the whole point, and what makes
+    // alt-tabbing free.
+    if (m_activeGameId.empty() || id.pid == 0) return;
+    // Same game AND the same run of it. The pid is part of the test because a
+    // game closed and reopened inside the poll interval is the same profile
+    // wearing a new process, and a hold left pinned to the old one would be
+    // dropped by the next liveness check for a game that is plainly running.
+    if (m_platformHold.IsHeld()
+            && m_platformHold.ProfileId() == m_activeGameId
+            && m_platformHold.Pid() == id.pid)
+        return;
+
+    // A different game takes over, and its pad type applies immediately. That
+    // rebuild is not one to defer: the user has just switched to the game that
+    // wants it.
+    m_platformHold.Hold(m_activeGameId, id.pid);
+    SetTimer(m_hwnd, IDT_GAME_LIVENESS, LIVENESS_POLL_MS, nullptr);
+}
+
+void TrayApp::ReleasePlatformHold(const wchar_t* why) {
+    if (!m_platformHold.IsHeld()) return;
+    EventLog::Write("PROFILE: released the pad type held for %ls (%ls)",
+                    m_platformHold.ProfileId().c_str(), why);
+    m_platformHold.Clear();
+    KillTimer(m_hwnd, IDT_GAME_LIVENESS);
+    // Re-apply so the pad type goes back to following the selected profile.
+    // Safe here in a way it never is mid-session: whatever needed the old type
+    // is gone, so nothing is watching the pad it rebuilds.
+    if (WantControlNow()) PushActiveProfile();
+}
+
 bool TrayApp::SelectProfile(const std::wstring& gameId) {
     if (gameId == m_activeGameId) return false;
 
@@ -600,7 +658,9 @@ bool TrayApp::SelectProfile(const std::wstring& gameId) {
 
 void TrayApp::PushActiveProfile() {
     const ControllerProfile& profile = ActiveProfile();
-    m_controller->SetProfile(profile);
+    // The blend, not the selection: bindings from whatever is in front, pad
+    // type from whatever game is still running. See EffectiveProfile.
+    m_controller->SetProfile(EffectiveProfile());
 
     if (m_activeGameId.empty()) return;  // returning to the default is not news
 
@@ -640,6 +700,11 @@ void TrayApp::OnForegroundChanged(const ForegroundIdentity& id) {
     if (m_remapWindow.IsOpen()) return;
 
     if (!SelectProfile(MatchProfile(id))) return;
+    // Before pushing: a game coming to the front claims the pad type, and
+    // keeps it until it exits. Landing on the desktop claims nothing and
+    // leaves the previous claim standing, which is what stops an alt-tab
+    // rebuilding the pad under a game that is still running.
+    UpdatePlatformHold(id);
     // Only push a profile we are actually going to run. Applying one changes
     // the pad in place, but a profile whose platform differs rebuilds the
     // virtual controller outright — so pushing the default on the way out of
@@ -653,7 +718,13 @@ void TrayApp::OnForegroundChanged(const ForegroundIdentity& id) {
 
 void TrayApp::RefreshActiveProfile() {
     if (m_remapWindow.IsOpen()) return;
-    SelectProfile(MatchProfile(ForegroundWatcher::Current()));
+    const ForegroundIdentity id = ForegroundWatcher::Current();
+    SelectProfile(MatchProfile(id));
+    // Catching up on the hold too. This runs at the moments nobody was
+    // listening — taking the controller back, closing the window that
+    // suppresses switching — and a game that has been in front the whole time
+    // should be holding the pad type by the end of it.
+    UpdatePlatformHold(id);
     if (WantControlNow()) PushActiveProfile();  // see OnForegroundChanged
     EvaluateControl();
 }
@@ -1377,6 +1448,11 @@ void TrayApp::OpenRemapWindow() {
             m_gameProfiles.erase(gameId);
             GameProfiles::Save(m_gameProfiles);
             EventLog::Write("PROFILE: deleted %ls", gameId.c_str());
+            // A deleted profile stops deciding anything, including the pad
+            // type it was holding — which would otherwise outlive it for as
+            // long as its game kept running, with nothing left to explain it.
+            if (m_platformHold.IsHeld() && m_platformHold.ProfileId() == gameId)
+                ReleasePlatformHold(L"its profile was deleted");
             // No control decision here, for the same reason applying makes
             // none: the window is open and may have a row listening for a
             // button, and dropping the controller under it would end that
