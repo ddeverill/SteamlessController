@@ -23,7 +23,7 @@
       "name": "release",
       "configurePreset": "release",
       "configuration": "Release",
-      "targets": ["SteamlessController"]
+      "targets": ["SteamlessController", "SteamlessDeviceCycle", "ViGEmBusProbe"]
     },
     {
       "name": "debug",
