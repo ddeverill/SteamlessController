@@ -9,6 +9,36 @@
 #define MyAppURL "https://github.com/ddeverill/SteamlessController"
 #define MyAppExeName "SteamlessController.exe"
 
+; Where the packaged binaries come from, spelled once so the version check
+; below and the [Files] entries cannot drift apart.
+#define BuildDir "build\release\Release\"
+
+; Refuse to build an installer around a stale executable.
+;
+; The trap this exists for: the Visual Studio generator is multi-config, so
+; CMAKE_BUILD_TYPE does nothing and "cmake --build build/release" quietly
+; produces DEBUG. The Release directory packaged here keeps whatever was in it
+; from the last correct build, which can be weeks old. Setup then stamps
+; MyAppVersion on the metadata and installs an executable that reports its own
+; older version — an installer that says one thing while Add/Remove Programs,
+; the log banner and the features present all say another.
+;
+; That shipped once, to the #95 reporter, and cost a round trip to work out.
+; Nothing about it was visible: setup succeeded, the version in Add/Remove
+; Programs was right, and only the app's own log gave it away.
+;
+; Build it properly with:  cmake --build --preset release
+; (the preset carries "configuration": "Release"; the bare path form does not)
+; Note the "../": [Files] resolves against SourceDir, but the preprocessor
+; resolves against this script's own directory.
+#define ExeVersion GetStringFileInfo("../" + BuildDir + MyAppExeName, "FileVersion")
+#if ExeVersion != MyAppVersion
+  ; #error takes its line literally and evaluates nothing, so the versions
+  ; are printed by #pragma message, which does.
+  #pragma message "Packaged " + MyAppExeName + " is version " + ExeVersion + " but this script builds " + MyAppVersion
+  #error The packaged executable is stale - see the message above. Run: cmake --build --preset release
+#endif
+
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
 ; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
@@ -46,11 +76,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "build\release\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "build\release\Release\SteamlessDeviceCycle.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}SteamlessDeviceCycle.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; Setup's driver check, and the thing to ask a user to run when a controller
 ; never reaches a game. Installed rather than temporary for the second reason.
-Source: "build\release\Release\ViGEmBusProbe.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}ViGEmBusProbe.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "resources\{#ViGEmSetup}"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
