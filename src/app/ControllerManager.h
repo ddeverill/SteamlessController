@@ -150,6 +150,16 @@ private:
     // its virtual controller. Shared by SetProfile and slot creation.
     void ApplyPadSettings(Slot& slot);
 
+    // Records what the pads are set to, once per change.
+    //
+    // The enable-time environment line cannot answer this. It fires from
+    // EnableGameMode and describes the moment control was taken, so a pad
+    // configured afterwards — the ordinary order, since the settings window is
+    // how you configure one — is never described at all. Two rounds of #95
+    // diagnostics went by on logs that could not say whether the pad under
+    // test was even in scroll mode.
+    void LogPadSettings();
+
     StateChangedFn                     m_onStateChanged;
     AlertFn                            m_alertFn;
     std::vector<std::unique_ptr<Slot>> m_slots;
@@ -167,6 +177,9 @@ private:
     Pounce                             m_pounce;
     bool                               m_lastPadDriverMissing = false;
     std::wstring                       m_lastBusReport;
+    // The last line LogPadSettings wrote, so a setting that did not change
+    // does not write one. SetProfile runs on every foreground switch.
+    std::string                        m_lastPadDescription;
     ControllerProfile                  m_profile;
 
     std::atomic<bool>                            m_capturing{false};

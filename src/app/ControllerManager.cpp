@@ -472,6 +472,62 @@ void ControllerManager::ReleaseDevices() {
     NotifyStateChanged();
 }
 
+
+// One pad, in the terms a bug report is written in.
+//
+// Scroll carries more than the others because a scroll-feels-wrong report has
+// two independent multipliers behind it, and neither alone explains the feel:
+// the user's own speed setting, and the machine's lines-per-notch, which
+// Windows applies to every wheel event after we send it. The net figure is
+// what the pad actually does relative to the calibrated feel, and it is the
+// number worth comparing between two machines.
+static std::string DescribePad(const TrackpadSettings& pad) {
+    switch (pad.mode) {
+    case TrackpadMode::MousePointer:   return "pointer";
+    case TrackpadMode::DS4Touchpad:    return "ds4 touchpad";
+    case TrackpadMode::SingleButton:   return "single button";
+    case TrackpadMode::DirectionalPad:
+        return std::string("dpad (")
+             + (pad.diagonals == DiagonalMode::FourWay ? "4-way" : "8-way") + ")";
+    case TrackpadMode::ScrollWheel: {
+        const float correction =
+            InputInjection::WheelCorrection(InputInjection::WheelLinesPerNotch());
+        const char* dir = pad.scrollDir == ScrollDirection::Reversed ? "reversed"
+                                                                    : "natural";
+        char buf[160];
+        // The correction is 1.0 on a machine left at the Windows default, where
+        // repeating it and the net figure would say the same thing three times.
+        if (std::fabs(correction - 1.0f) < 0.005f)
+            snprintf(buf, sizeof(buf), "scroll (%s, speed %u%%)", dir, pad.scrollSpeed);
+        else
+            snprintf(buf, sizeof(buf),
+                     "scroll (%s, speed %u%%, wheel correction x%.2f, net %.0f%% of "
+                     "calibrated)",
+                     dir, pad.scrollSpeed, static_cast<double>(correction),
+                     static_cast<double>(pad.scrollSpeed) * correction);
+        return buf;
+    }
+    default: return "none";
+    }
+}
+
+void ControllerManager::LogPadSettings() {
+    std::string line = "PADS: left=" + DescribePad(m_profile.leftPad)
+                     + " right="     + DescribePad(m_profile.rightPad);
+
+    // The failure this exists to make visible: settings changed with game mode
+    // off do nothing at all, and until now nothing said so. Two #95 sessions
+    // were spent that way — one where the pad was never claimed, one where it
+    // was configured after the claim.
+    if (!IsGameModeActive())
+        line += " — game mode is off, so these are not driving anything yet";
+
+    if (line == m_lastPadDescription) return;
+    m_lastPadDescription = line;
+    // %s rather than the line as a format: it contains per-cent signs.
+    EventLog::Write("%s", line.c_str());
+}
+
 void ControllerManager::ApplyPadSettings(Slot& slot) {
     slot.leftPad.SetPad(true);
     slot.rightPad.SetPad(false);
@@ -513,6 +569,9 @@ void ControllerManager::SetProfile(const ControllerProfile& profile) {
     // live inside the per-slot TrackpadInput objects, so those are pushed.
     for (auto& slot : m_slots)
         ApplyPadSettings(*slot);
+
+    // After the push, so what is logged is what the pads are now set to.
+    LogPadSettings();
 }
 
 // Sends the key or mouse event a binding stands for. Gamepad actions reach the
@@ -932,19 +991,30 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut, bool 
     // Takeover is the moment users report the trackpad arriving dead, and what
     // decides whether injection can land is whatever window happens to be in
     // front right then — so record it here rather than reconstructing it later.
-    if (m_profile.leftPad.ClaimedForDesktop() || m_profile.rightPad.ClaimedForDesktop())
-        InputInjection::LogEnvironment("game mode taken");
+    //
+    // Unconditional. It used to fire only when a pad was already claimed for
+    // the desktop, which quietly withheld it from the two reports most likely
+    // to need it: a pad configured after enabling, and a trackpad that does
+    // nothing because no pad is claimed at all. The second is worth a line
+    // saying so, not silence.
+    InputInjection::LogEnvironment("game mode taken");
     slot.gameModeActive = true;
     slot.leftPad.Reset();
     slot.rightPad.Reset();
     ReleaseHeldPaddleInputs(slot);
     ApplyPadSettings(slot);
+    // After gameModeActive, so the line does not claim the pads are inert.
+    LogPadSettings();
     StartReadLoop(slot);
     return GameModeOutcome::Enabled;
 }
 
 void ControllerManager::DisableGameModeSlot(Slot& slot) {
     if (!slot.gameModeActive) return;
+    // Forget what was last logged, so the next enable states the pad setup
+    // again rather than deduplicating against a previous session's line. Each
+    // enable in the log should be readable without scrolling back past it.
+    m_lastPadDescription.clear();
     EventLog::Write("GAMEMODE: disabled %ls", slot.path.c_str());
     StopReadLoop(slot);
     if (slot.sc->IsOpen())
