@@ -832,6 +832,21 @@ int RunChecks() {
         // value the guard has to catch.
         Check(InputInjection::WheelLinesPerNotch() > 0.0f,
               "this machine reports a usable lines-per-notch");
+        // The property the PADS log line depends on: correcting by
+        // 3/linesPerNotch and then having the machine multiply by
+        // linesPerNotch leaves kCalibratedWheelLines, whatever the machine is
+        // set to. That cancellation is why the speed setting alone says how
+        // fast a pad scrolls, and why reporting speed x correction as a "net"
+        // figure was wrong — it described the wheel units we send, not the
+        // distance anything moves.
+        for (float lines : {1.0f, 3.0f, 10.0f, 20.0f, 100.0f}) {
+            char label[96];
+            snprintf(label, sizeof(label),
+                     "at %.0f lines per notch the machine's own scaling cancels",
+                     static_cast<double>(lines));
+            Check(approx(InputInjection::WheelCorrection(lines) * lines,
+                         InputInjection::kCalibratedWheelLines), label);
+        }
     }
     printf("\n%s (%d failure(s))\n", g_failures ? "FAILED" : "All checks passed", g_failures);
     return g_failures ? 1 : 0;

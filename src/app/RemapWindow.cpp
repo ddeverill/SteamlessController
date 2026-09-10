@@ -255,7 +255,7 @@ R"HTML(
         <div class="connector"></div>
         <div class="speed-wrap">
           <input type="range" id="speed-LPAD" class="speed-slider">
-          <span class="speed-val" id="speed-val-LPAD">100%</span>
+          <span class="speed-val" id="speed-val-LPAD">1x</span>
         </div>
       </div>
     </div>
@@ -296,7 +296,7 @@ R"HTML(
         <div class="connector"></div>
         <div class="speed-wrap">
           <input type="range" id="speed-RPAD" class="speed-slider">
-          <span class="speed-val" id="speed-val-RPAD">100%</span>
+          <span class="speed-val" id="speed-val-RPAD">1x</span>
         </div>
       </div>
     </div>
@@ -378,11 +378,25 @@ var DEFAULTS = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RP
 var DEFAULT_MODES = {LPAD:'scroll',RPAD:'pointer'};
 var DEFAULT_DIRS  = {LPAD:'natural',RPAD:'natural'};
 var DEFAULT_DIAGS = {LPAD:'eight',RPAD:'eight'};
-// Percent of the calibrated scroll scale. Keep the bounds in step with
-// kScrollSpeedMin/Max in TrackpadConfig.h — the C++ side clamps to them, so a
-// slider allowed to travel further would just snap back on apply.
+// Percent of the calibrated scroll scale. Keep in step with
+// kScrollSpeedDefault in TrackpadConfig.h.
 var DEFAULT_SPEEDS = {LPAD:100,RPAD:100};
-var SPEED_MIN = 25, SPEED_MAX = 400, SPEED_STEP = 5;
+// The stops the scroll speed slider offers, as percentages of the calibrated
+// feel. Stored and sent as those percentages, so the C++ side keeps taking any
+// value in kScrollSpeedMin..Max and nothing about persistence changes — these
+// are where the slider is willing to stop, not what the setting can hold.
+//
+// Discrete rather than continuous for two reasons. The spacing is roughly a
+// constant ratio (about 1.4x a step), which a linear slider cannot be: over
+// 10..400 linear, three quarters of the track sits above 1x where nobody has
+// asked to go, and the region people actually use is squeezed into the first
+// quarter. And a named stop can be said out loud — "set it to 0.5x" ends a
+// support round trip that "set it to 47%" starts another one of.
+//
+// 100 is here because it is the default, and 25 because that is where the #95
+// reporter settled; a list that rounded either of them away would move a
+// setting somebody had already chosen.
+var SPEED_STOPS = [10,15,25,35,50,75,100,150,200,300,400];
 var DEFAULT_PLATFORM = 'xbox';
 
 // ---- State ----
@@ -691,18 +705,32 @@ function setDir(padId,dirId){
 // and one arriving from the slider cannot disagree. Anything unparseable or
 // zero is "unset", which is what the registry writes for a profile saved
 // before this setting existed — see ScrollSpeedFromDword.
+//
+// Snaps to the nearest stop, so the slider position and the readout always
+// describe the same number. A value between stops can still be stored — an
+// older build wrote continuous ones, and C++ accepts anything in range — it
+// simply shows as the stop nearest it, and only becomes that value if the user
+// applies.
 function clampSpeed(padId,value){
   var v=parseInt(value,10);
   if(isNaN(v)||v===0) return DEFAULT_SPEEDS[padId];
-  return Math.min(SPEED_MAX,Math.max(SPEED_MIN,v));
+  var best=SPEED_STOPS[0];
+  for(var i=0;i<SPEED_STOPS.length;i++){
+    if(Math.abs(SPEED_STOPS[i]-v)<Math.abs(best-v)) best=SPEED_STOPS[i];
+  }
+  return best;
 }
-// Live while dragging, so the readout tracks the thumb. Stored as a number;
+// How a stop is written for a person: a multiplier, because that is what it is
+// and because "0.5x" survives being read aloud into a bug report.
+function speedLabel(value){ return String(value/100)+'x'; }
+// Live while dragging, so the readout tracks the thumb. Takes a percentage, not
+// a slider position — the listener converts. Stored as a number;
 // currentProfile stringifies it on the way out, matching every other value on
 // the wire.
 function setSpeed(padId,value){
   speeds[padId]=clampSpeed(padId,value);
   var out=document.getElementById('speed-val-'+padId);
-  if(out) out.textContent=speeds[padId]+'%';
+  if(out) out.textContent=speedLabel(speeds[padId]);
 }
 function setDiag(padId,diagId){
   diags[padId]=diagId;
@@ -1054,8 +1082,10 @@ function renderModeSelects(){
     fillSelect('diag-'+padId,DIAG_OPTIONS,diags[padId]);
     var speedSel=document.getElementById('speed-'+padId);
     if(speedSel){
-      speedSel.min=SPEED_MIN; speedSel.max=SPEED_MAX; speedSel.step=SPEED_STEP;
-      speedSel.value=speeds[padId];
+      // The slider travels over stop INDEXES, which is what makes the spacing
+      // ratio-even rather than linear in the percentage.
+      speedSel.min=0; speedSel.max=SPEED_STOPS.length-1; speedSel.step=1;
+      speedSel.value=SPEED_STOPS.indexOf(clampSpeed(padId,speeds[padId]));
     }
     // Goes through setSpeed so the readout beside the slider is written by the
     // one function that owns it, rather than by two that can drift apart.
@@ -1187,7 +1217,10 @@ PADS.forEach(function(padId){
   var speedSel=document.getElementById('speed-'+padId);
   // 'input' rather than 'change': the readout has to follow the thumb while it
   // is being dragged, not only when it is let go.
-  if(speedSel) speedSel.addEventListener('input',function(e){setSpeed(padId,e.target.value);});
+  // The slider's value is a stop index; setSpeed wants the percentage.
+  if(speedSel) speedSel.addEventListener('input',function(e){
+    setSpeed(padId,SPEED_STOPS[parseInt(e.target.value,10)]);
+  });
 });
 
 // mousedown as well as click: the document-level handler below closes the
