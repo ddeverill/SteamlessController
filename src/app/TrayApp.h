@@ -152,6 +152,7 @@ private:
     void EvaluateControl();
     void ApplySteamState(SteamState state);
     void TryAcquireController(uint32_t stateWaitMs = 250);
+    void EnableFromUser();
     void ReleaseControl();
     void RecoverStrandedDevices();
     void WriteHeartbeat();
@@ -307,6 +308,10 @@ private:
     static constexpr UINT WM_TRAY           = WM_APP + 1;
     static constexpr UINT WM_STEAMSTATE     = WM_APP + 2;
     static constexpr UINT WM_ALERT          = WM_APP + 3;
+    // Posted rather than acted on directly: the controller notifies from its
+    // read thread, and the remap window is WebView2, which must only be
+    // touched on the UI thread.
+    static constexpr UINT WM_CONTROLSTATE   = WM_APP + 4;
     static constexpr UINT TRAY_UID          = 1;
     static constexpr UINT_PTR IDT_ACQUIRE         = 1;
     static constexpr UINT_PTR IDT_ACQUIRE_VERDICT = 2;

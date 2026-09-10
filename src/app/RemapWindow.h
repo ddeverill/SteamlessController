@@ -62,6 +62,26 @@ public:
     // somebody has to re-evaluate once it comes down.
     void SetOnClose(std::function<void()> fn) { m_onClose = std::move(fn); }
 
+    // Whether the controller is actually being driven, and whether the tray
+    // toggle is the thing that decides it.
+    //
+    // Every setting in this window is inert while Steamless mode is off, and
+    // nothing on screen used to say so. That has now eaten three separate test
+    // sessions on #95 — settings changed, nothing happened, and the only place
+    // it was written down was the event log, which nobody reads while they are
+    // in the middle of testing.
+    //
+    // `manual` decides what can be offered about it: in manual mode the window
+    // can turn it on, and in the auto modes it is not the window's to change,
+    // so it says what does decide instead.
+    void SetControlState(bool enabled, bool manual);
+
+    // The user asked to turn Steamless mode on from inside the window. Routed
+    // back out rather than handled here: enabling means acquiring the device,
+    // which is the tray's business and carries the elevated-helper and retry
+    // handling with it.
+    void SetOnRequestEnable(std::function<void()> fn) { m_onRequestEnable = std::move(fn); }
+
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -150,6 +170,11 @@ private:
     std::function<void(const std::wstring&, const ControllerProfile&)> m_applyCallback;
     std::function<void(const std::wstring&)> m_deleteCallback;
     std::function<void()> m_onClose;
+    std::function<void()> m_onRequestEnable;
+    // Mirrored so the banner can be drawn as soon as the page is ready, which
+    // is not the moment the state was last known.
+    bool m_controlEnabled = false;
+    bool m_controlManual  = true;
 
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_env;
     Microsoft::WRL::ComPtr<ICoreWebView2Controller>  m_controller;

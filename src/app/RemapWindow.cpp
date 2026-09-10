@@ -133,6 +133,12 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 .speed-slider:hover::-webkit-slider-thumb{background:#8fd3ff;}
 .speed-slider:focus{outline:none;}
 .speed-val{font-family:'JetBrains Mono',monospace;font-size:12px;color:#8f98a0;font-weight:600;min-width:44px;text-align:right;}
+.offbar{display:none;margin:0 0 14px;padding:11px 13px;border-radius:8px;background:rgba(214,146,42,.13);border:1px solid rgba(214,146,42,.42);align-items:center;gap:12px;}
+.offbar.on{display:flex;}
+.offbar-text{flex:1;font-size:12.5px;color:#e8c07a;line-height:1.45;}
+.offbar-text b{color:#ffd699;font-weight:700;}
+.offbar-btn{padding:7px 14px;border-radius:3px;border:1px solid #4c7a1d;background:linear-gradient(to bottom,#94c63d,#5d8a1f);color:#13260a;font-weight:700;font-size:12.5px;white-space:nowrap;}
+.offbar-btn:hover{opacity:.9;}
 .picker{margin-top:12px;background:#101925;border:1px solid rgba(102,192,244,.2);border-radius:8px;padding:12px 13px;}
 .picker-label{font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:1px;color:#5c6b78;font-weight:600;}
 .picker-rows{display:flex;flex-direction:column;gap:7px;margin-top:10px;}
@@ -195,6 +201,10 @@ R"HTML(
   <div>
     <h2>Customize Controls</h2>
     <p class="instr">Click <b>Rebind</b> on any button, then press any gamepad button on your controller &#8212; or any key on your keyboard, or your mouse's middle or thumb buttons. The new binding shows up here instantly. Pick <b>Off</b> to stop a button doing anything at all.</p>
+  </div>
+  <div class="offbar" id="offbar">
+    <div class="offbar-text" id="offbar-text"></div>
+    <button class="offbar-btn" id="offbar-btn">Enable</button>
   </div>
   <div class="group">
     <div class="group-label">APPLY TO</div>
@@ -619,6 +629,10 @@ if(window.chrome&&window.chrome.webview){
       renderComboLabel();
       renderModeSelects();
       renderAll();
+    } else if(msg.type==='controlState'){
+      controlOn     = msg.enabled==='1';
+      controlManual = msg.manual==='1';
+      renderOffbar();
     } else if(msg.type==='games'){
       // Finding every installed app takes a second or more, so it lands after
       // the window is already up — and possibly after the user has started
@@ -1052,6 +1066,39 @@ function setPlatform(value){
 // The checkbox belongs to a game, never to the default profile, and while it
 // is ticked everything below it describes controls this game is not using —
 // so the settings are dimmed and inert, and "reset this profile" with them.
+// Whether the controller is actually being driven, and whether this window is
+// allowed to change that. Both arrive from the app; assume off until told, so
+// a page that somehow never hears warns rather than staying quiet about it.
+var controlOn = false, controlManual = true;
+// Every setting in this window does nothing while Steamless mode is off. The
+// event log has said so for a while, which turned out to be no use at all —
+// people are looking at this window, not at a log, and three separate test
+// sessions were spent changing settings that were never connected to anything.
+function renderOffbar(){
+  var bar=document.getElementById('offbar');
+  if(!bar) return;
+  bar.className = controlOn ? 'offbar' : 'offbar on';
+  if(controlOn) return;
+  var text=document.getElementById('offbar-text');
+  var btn=document.getElementById('offbar-btn');
+  // Deliberately says nothing about whether the settings are saved. An earlier
+  // draft ended "they are saved either way", which reads as though the page
+  // saves on its own — and it does not; Apply does. A banner about one thing
+  // being off is the wrong place to imply something else is automatic.
+  if(controlManual){
+    text.innerHTML='<b>Steamless mode is off.</b> Nothing on this page is '+
+                   'driving your controller yet - the trackpads, paddles '+
+                   'and buttons below take effect once it is on.';
+    if(btn) btn.style.display='';
+  }else{
+    // Not ours to switch on: an auto mode owns the decision, and a button here
+    // would either lie or fight it a moment later.
+    text.innerHTML='<b>Steamless mode is off right now.</b> Control Mode is set '+
+                   'to one of the automatic options, so it turns on by itself '+
+                   'when the conditions are met. Settings below take effect then.';
+    if(btn) btn.style.display='none';
+  }
+}
 function renderInherit(){
   var group=document.getElementById('inherit-group');
   if(group) group.style.display=(currentGame==='')?'none':'';
@@ -1196,6 +1243,13 @@ document.getElementById('btn-min').onclick=function(){postMsg({type:'minimize'})
 document.getElementById('btn-close').onclick=function(){guard(function(){postMsg({type:'close'});});};
 document.getElementById('btn-reset').onclick=resetDefaults;
 document.getElementById('btn-apply').onclick=applyBindings;
+var offBtn=document.getElementById('offbar-btn');
+if(offBtn) offBtn.onclick=function(){
+  // No optimistic hiding: enabling can fail (no ViGEm, a device another
+  // process will not release) and a banner that vanished on click would claim
+  // a success nothing verified. The app pushes the real state when it knows.
+  postMsg({type:'requestEnable'});
+};
 
 document.getElementById('use-default').addEventListener('change',function(e){
   useDefault=e.target.checked;
@@ -2150,11 +2204,30 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
             break;
         }
 
+    } else if (type == "requestEnable") {
+        // Only ever offered in manual mode, but checked here too: the mode can
+        // change while the window is up, and a stale button must not reach
+        // past the tray's own rule about who decides.
+        if (m_controlManual && m_onRequestEnable) m_onRequestEnable();
+
     } else if (type == "browseExe") {
         BrowseForExe();
     }
 }
 
+
+// Pushed whenever the tray's view of the world changes, and again when the
+// page comes up — the window is usually opened while the state is already
+// settled, so waiting for the next change would leave the banner wrong until
+// something unrelated happened.
+void RemapWindow::SetControlState(bool enabled, bool manual) {
+    m_controlEnabled = enabled;
+    m_controlManual  = manual;
+    if (!m_webview) return;
+    PostToWebView(std::wstring(L"{\"type\":\"controlState\",\"enabled\":\"")
+                  + (enabled ? L"1" : L"0")
+                  + L"\",\"manual\":\"" + (manual ? L"1" : L"0") + L"\"}");
+}
 void RemapWindow::PostToWebView(const std::wstring& jsonStr) {
     if (m_webview) m_webview->PostWebMessageAsString(jsonStr.c_str());
 }
@@ -2261,6 +2334,11 @@ void RemapWindow::SendInitState() {
         L",\"games\":[" + GamesJson() + L"]"
         L",\"profiles\":{" + ProfilesJson() + L"}}";
     PostToWebView(json);
+
+    // Sent separately rather than folded into the init message: the same state
+    // arrives later whenever it changes, so the page needs one handler for it
+    // either way, and having two ways to learn it is how they drift.
+    SetControlState(m_controlEnabled, m_controlManual);
 }
 
 // Token-based picker ids so the raw game id — possibly non-ASCII, sometimes
