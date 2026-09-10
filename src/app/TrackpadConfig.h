@@ -83,7 +83,7 @@ inline ScrollDirection ScrollDirectionFromDword(uint32_t v) {
 // reads back as — which has to mean "unset", not "do not scroll at all".
 // ScrollSpeedFromDword maps it to the default rather than clamping it up.
 inline constexpr uint32_t kScrollSpeedDefault = 100;
-inline constexpr uint32_t kScrollSpeedMin     = 25;
+inline constexpr uint32_t kScrollSpeedMin     = 10;
 inline constexpr uint32_t kScrollSpeedMax     = 400;
 
 inline constexpr uint32_t ClampScrollSpeed(uint32_t v) {

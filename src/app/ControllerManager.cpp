@@ -475,12 +475,24 @@ void ControllerManager::ReleaseDevices() {
 
 // One pad, in the terms a bug report is written in.
 //
-// Scroll carries more than the others because a scroll-feels-wrong report has
-// two independent multipliers behind it, and neither alone explains the feel:
-// the user's own speed setting, and the machine's lines-per-notch, which
-// Windows applies to every wheel event after we send it. The net figure is
-// what the pad actually does relative to the calibrated feel, and it is the
-// number worth comparing between two machines.
+// Scroll reports its speed as a fraction of the calibrated feel, because that
+// is exactly what it is. The correction and the machine's lines-per-notch
+// cancel:
+//
+//   wheel units  W = D x SCROLL_SENSITIVITY x correction x speed/100
+//   lines        L = W / WHEEL_DELTA x linesPerNotch
+//   correction     = kCalibratedWheelLines / linesPerNotch
+//   so           L = D x SCROLL_SENSITIVITY x kCalibratedWheelLines x speed/100
+//                    / WHEEL_DELTA
+//
+// linesPerNotch is gone, which is the whole point of correcting for it — the
+// same swipe covers the same ground everywhere, and the speed setting alone
+// says how far. This line used to also report speed x correction as a "net"
+// figure, which is the multiplier on the wheel units we send and NOT what the
+// scroll feels like; it read as 8% for a pad that was in fact scrolling at 25%
+// of calibrated. The correction is still worth printing, since it explains why
+// two machines showing the same speed send different wheel numbers, but it is
+// not a second thing to multiply by.
 static std::string DescribePad(const TrackpadSettings& pad) {
     switch (pad.mode) {
     case TrackpadMode::MousePointer:   return "pointer";
@@ -495,16 +507,16 @@ static std::string DescribePad(const TrackpadSettings& pad) {
         const char* dir = pad.scrollDir == ScrollDirection::Reversed ? "reversed"
                                                                     : "natural";
         char buf[160];
-        // The correction is 1.0 on a machine left at the Windows default, where
-        // repeating it and the net figure would say the same thing three times.
+        // Nothing to explain on a machine left at the Windows default, where
+        // the correction is 1.0 and printing it only invites the question of
+        // what to multiply by.
         if (std::fabs(correction - 1.0f) < 0.005f)
-            snprintf(buf, sizeof(buf), "scroll (%s, speed %u%%)", dir, pad.scrollSpeed);
+            snprintf(buf, sizeof(buf), "scroll (%s, speed %u%% of calibrated)",
+                     dir, pad.scrollSpeed);
         else
             snprintf(buf, sizeof(buf),
-                     "scroll (%s, speed %u%%, wheel correction x%.2f, net %.0f%% of "
-                     "calibrated)",
-                     dir, pad.scrollSpeed, static_cast<double>(correction),
-                     static_cast<double>(pad.scrollSpeed) * correction);
+                     "scroll (%s, speed %u%% of calibrated, wheel correction x%.2f)",
+                     dir, pad.scrollSpeed, static_cast<double>(correction));
         return buf;
     }
     default: return "none";
