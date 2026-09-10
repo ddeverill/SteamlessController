@@ -280,20 +280,8 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // is the sole source of intent — record it and take the same
             // acquire/release path the auto modes use. A second click while an
             // acquisition is still cycling cancels it rather than restarting.
-            if (m_wantControl) {
-                ReleaseControl();
-            } else {
-                // Taking the device back from a running Steam needs the
-                // elevated helper. Settle the one-time UAC prompt on this
-                // click instead of letting it ambush the first cycle.
-                // Registered even when already elevated: every cycle goes
-                // through the helper now, so an elevated run needs the task
-                // just as much.
-                EnsureCycleTaskRegistered();
-                m_wantControl    = true;
-                m_acquireRetries = 0;
-                TryAcquireController();
-            }
+            if (m_wantControl) ReleaseControl();
+            else               EnableFromUser();
             break;
         case IDM_REMAP_BACK:
             OpenRemapWindow();
@@ -354,6 +342,14 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         ApplySteamState(steamState);
         return 0;
     }
+
+    case WM_CONTROLSTATE:
+        // Read here rather than carried in the message: by the time this
+        // arrives the state may have moved again, and the window wants the
+        // current answer, not the one that prompted the post.
+        m_remapWindow.SetControlState(m_controller->IsGameModeActive(),
+                                      m_autoMode == AutoMode::Manual);
+        return 0;
 
     case WM_ALERT: {
         if (!m_notificationsEnabled)
@@ -492,6 +488,23 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+
+// Turning Steamless mode on at the user's request, from the tray toggle or
+// from the remap window's banner. Both are the same intent and must take the
+// same path — the window offering a shortcut that skipped the helper
+// registration would move the UAC prompt to the first cycle, which is exactly
+// where it ambushes people.
+void TrayApp::EnableFromUser() {
+    // Taking the device back from a running Steam needs the elevated helper.
+    // Settle the one-time UAC prompt on this click instead of letting it
+    // ambush the first cycle. Registered even when already elevated: every
+    // cycle goes through the helper now, so an elevated run needs the task
+    // just as much.
+    EnsureCycleTaskRegistered();
+    m_wantControl    = true;
+    m_acquireRetries = 0;
+    TryAcquireController();
+}
 void TrayApp::SetAutoMode(AutoMode mode) {
     EventLog::Write("MODE: control mode set to %d "
                     "(0=manual 1=offWhileSteam 2=offOnlyInGame 3=offUnlessProfile)",
@@ -1453,6 +1466,12 @@ void TrayApp::OpenRemapWindow() {
     // foreground changes — so moving it would trade an unnoticeable delay for
     // a data race.
     RefreshSteamApps();
+    // The banner's enable button. Same path as the tray toggle, deliberately.
+    m_remapWindow.SetOnRequestEnable([this] { EnableFromUser(); });
+    // Whatever the state is right now, so the window does not open showing the
+    // last thing that happened to change.
+    m_remapWindow.SetControlState(m_controller->IsGameModeActive(),
+                                  m_autoMode == AutoMode::Manual);
 
     // The window fills its own picker, on a background thread: finding every
     // installed application runs to well over a second on an ordinary machine
@@ -1521,6 +1540,10 @@ void TrayApp::RemoveTrayIcon() {
 
 void TrayApp::UpdateTrayIcon(bool connected, bool gameModeActive, bool sharedHandle,
                              bool padUnavailable) {
+    // The remap window dims and explains itself when nothing is being driven,
+    // so it has to hear about this from wherever the state actually changes.
+    PostMessageW(m_hwnd, WM_CONTROLSTATE, 0, 0);
+
     if (padUnavailable) ShowViGEmBalloon();
     // Cleared only by a pad that actually came up, not by any notification
     // that happens to carry false. The acquire path notifies repeatedly within
