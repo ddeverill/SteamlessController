@@ -14,5 +14,5 @@
 // Keep in step with MyAppVersion in resources/InnoInstallerScript.iss.
 #define APP_VERSION_MAJOR 1
 #define APP_VERSION_MINOR 21
-#define APP_VERSION_PATCH 3
-#define APP_VERSION_STR   "1.21.3"
+#define APP_VERSION_PATCH 4
+#define APP_VERSION_STR   "1.21.4"
