@@ -481,8 +481,8 @@ bool ControllerManager::ClaimDocks() {
                         [&](const DockHandle& d) { return d.path == path; }))
             continue;
         // Write access with write sharing refused, exactly as a slot is
-        // claimed. Steam opens read-write, falls back to a handle with no
-        // access at all when that is refused, and reads nothing through it.
+        // claimed. Steam asks for write access too, so it is refused, and its
+        // log shows every read it then attempts on the dock failing.
         HANDLE h = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
                                nullptr, OPEN_EXISTING, 0, nullptr);
         if (h == INVALID_HANDLE_VALUE) {
@@ -754,20 +754,26 @@ void ControllerManager::StopButtonCapture() {
 // ---------------------------------------------------------------------------
 
 void ControllerManager::BeginPounce() {
+    std::vector<std::wstring> slotPaths;
+    for (auto& slot : m_slots)
+        slotPaths.push_back(slot->path);
+    StartPounce(std::move(slotPaths), {});
+}
+
+void ControllerManager::BeginDockPounce() {
+    auto docks = UnheldDockPaths();
+    StartPounce(docks, docks);
+}
+
+void ControllerManager::StartPounce(std::vector<std::wstring> watchPaths,
+                                    std::vector<std::wstring> watchDocks) {
     StopPounce();
 
     {
         std::lock_guard<std::mutex> lk(m_pounce.mutex);
-        m_pounce.paths.clear();
+        m_pounce.paths     = std::move(watchPaths);
+        m_pounce.dockPaths = std::move(watchDocks);
         m_pounce.caught.clear();
-        for (auto& slot : m_slots)
-            m_pounce.paths.push_back(slot->path);
-        // The docks ride along: the cycle that frees a slot from Steam frees
-        // the dock interface with it, and it has to be taken back the same way
-        // or Steam reopens it first. See ClaimDocks.
-        m_pounce.dockPaths = UnheldDockPaths();
-        m_pounce.paths.insert(m_pounce.paths.end(),
-                              m_pounce.dockPaths.begin(), m_pounce.dockPaths.end());
     }
     if (m_pounce.paths.empty()) return;
 

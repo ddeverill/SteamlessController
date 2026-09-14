@@ -152,6 +152,8 @@ private:
     void EvaluateControl();
     void ApplySteamState(SteamState state);
     void TryAcquireController(uint32_t stateWaitMs = 250);
+    // Take a dock Steam still holds, once the controller is ours.
+    void CycleUnheldDocks();
     void EnableFromUser();
     void ReleaseControl();
     void RecoverStrandedDevices();
@@ -190,6 +192,8 @@ private:
     // toggle, which is otherwise nowhere on record.
     bool                               m_wantControl    = false;
     int                                m_acquireRetries = 0;
+    // Dock-only cycles spent on the current takeover; see CycleUnheldDocks.
+    int                                m_dockCycles     = 0;
     ULONGLONG                          m_lastCycleTick  = 0;
     // Verdict of the most recent device cycle, read back from the helper.
     DeviceRestart::CycleResult         m_lastCycleStatus;
@@ -321,6 +325,7 @@ private:
     static constexpr UINT_PTR IDT_STEAM_RECONCILE = 6;
     static constexpr UINT_PTR IDT_CYCLE_WATCHDOG  = 7;
     static constexpr UINT_PTR IDT_GAME_LIVENESS   = 8;
+    static constexpr UINT_PTR IDT_DOCK_CYCLE      = 9;
     // Long enough that idling for a month costs a fraction of the log's 512 KB,
     // short enough to bound when the app stopped responding to within a
     // quarter hour. Resolution only has to beat "somewhere in the last 33
@@ -339,6 +344,12 @@ private:
     // continuously and answers within a few reports.
     static constexpr UINT WAKE_POLL_MS  = 2000;
     static constexpr UINT WAKE_PROBE_MS = 80;
+    // A dock that could not be claimed is cycled on its own shortly after the
+    // takeover — late enough for the helper run that won the slot to have
+    // exited, since the task drops a second run while one is going — and at
+    // most this many times per takeover before leaving Steam holding it.
+    static constexpr UINT DOCK_CYCLE_DELAY_MS = 500;
+    static constexpr int  MAX_DOCK_CYCLES     = 2;
     static constexpr int  MAX_ACQUIRE_CYCLES = 3;
     // Must outlast a full device cycle: the helper waits a second between
     // disable and enable, then a multi-slot receiver re-enumerates every

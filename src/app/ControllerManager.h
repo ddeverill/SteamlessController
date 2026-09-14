@@ -57,8 +57,8 @@ public:
     // Disables game mode then closes all device handles so another process
     // (e.g. Steam) can claim the controller. Safe to call when already disabled.
     // keepDocks is for the acquire path, which releases only to cycle the slot
-    // and wants the controller straight back: a held dock stays held, and is
-    // left out of the cycle because of it.
+    // and wants the controller straight back: a held dock stays held, since the
+    // slot's cycle does not touch it.
     void ReleaseDevices(bool keepDocks = false);
 
     // A puck reports a controller set down on it through a dock interface of
@@ -124,6 +124,9 @@ public:
     // off the UI thread, and takes the device exclusively the instant it comes
     // back. AdoptPounced then hands that live handle to a slot.
     void BeginPounce();
+    // The same for the dock interfaces we do not hold, alone. Their cycle runs
+    // once the controller is already ours, so the slots are not watched.
+    void BeginDockPounce();
     void StopPounce();
     // Adopt anything the pounce thread caught. Call on the UI thread before
     // trying to acquire; returns true when at least one slot came from it.
@@ -161,6 +164,8 @@ private:
     void ReadLoop(Slot* slot);
     void NotifyStateChanged(bool padUnavailable = false);
     void AdoptDock(const std::wstring& path, void* handle);
+    void StartPounce(std::vector<std::wstring> watchPaths,
+                     std::vector<std::wstring> watchDocks);
 
     // Pushes the current profile's pad settings into one slot's trackpads and
     // its virtual controller. Shared by SetProfile and slot creation.
