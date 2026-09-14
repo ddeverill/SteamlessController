@@ -56,7 +56,22 @@ public:
     void DisableGameMode();
     // Disables game mode then closes all device handles so another process
     // (e.g. Steam) can claim the controller. Safe to call when already disabled.
-    void ReleaseDevices();
+    // keepDocks is for the acquire path, which releases only to cycle the slot
+    // and wants the controller straight back: a held dock stays held, and is
+    // left out of the cycle because of it.
+    void ReleaseDevices(bool keepDocks = false);
+
+    // A puck reports a controller set down on it through a dock interface of
+    // its own, and Steam answers a docked controller it does not know to be
+    // paired with the "pair to your Puck" prompt — which it cannot know while
+    // we hold the slot. Holding the dock the same way keeps Steam from hearing
+    // about the dock at all. Returns whether every dock is now held.
+    // ReleaseDevices lets go of them; nothing else does.
+    bool ClaimDocks();
+    void ReleaseDocks();
+    std::vector<std::wstring> HeldDockPaths() const;
+    // Present docks we do not hold — what a cycle has to free for ClaimDocks.
+    std::vector<std::wstring> UnheldDockPaths() const;
 
     // Best-effort lizard restore for crash paths — called from the unhandled-
     // exception filter installed by the constructor. Takes no locks and joins
@@ -145,6 +160,7 @@ private:
     void StopReadLoop(Slot& slot);
     void ReadLoop(Slot* slot);
     void NotifyStateChanged(bool padUnavailable = false);
+    void AdoptDock(const std::wstring& path, void* handle);
 
     // Pushes the current profile's pad settings into one slot's trackpads and
     // its virtual controller. Shared by SetProfile and slot creation.
@@ -173,8 +189,15 @@ private:
         std::mutex               mutex;
         std::vector<std::wstring> paths;                 // what to watch for
         std::vector<std::pair<std::wstring, void*>> caught;  // path + HANDLE
+        std::vector<std::wstring> dockPaths;             // which of paths are docks
     };
     Pounce                             m_pounce;
+    // Held dock interfaces — see ClaimDocks. HANDLE as void*, as above.
+    struct DockHandle { std::wstring path; void* handle = nullptr; };
+    std::vector<DockHandle>            m_docks;
+    // Docks already reported as unobtainable, so a claim retried on every
+    // acquire says so once rather than on each pass.
+    std::vector<std::wstring>          m_dockClaimFailed;
     bool                               m_lastPadDriverMissing = false;
     std::wstring                       m_lastBusReport;
     // The last line LogPadSettings wrote, so a setting that did not change

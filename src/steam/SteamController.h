@@ -23,6 +23,9 @@ public:
     // HID Usage Page for the vendor collection that carries all game input.
     static constexpr uint16_t VENDOR_USAGE_PAGE = 0xFF00;
     static constexpr uint16_t CONTROLLER_USAGE  = 0x0001;
+    // Same page, different usage: a receiver's dock interface, which reports a
+    // controller set down on the puck. Carries no game input.
+    static constexpr uint16_t DOCK_USAGE        = 0x0002;
 
     enum class AccessClaim {
         Failed,
@@ -150,6 +153,9 @@ public:
 
     // Returns paths for all live Steam Controller interfaces (probes each one).
     static std::vector<std::wstring> EnumerateAll();
+    // Paths of every receiver's dock interface (DOCK_USAGE). Not a controller
+    // slot, so EnumerateAll leaves them out.
+    static std::vector<std::wstring> EnumerateDocks();
 
     // Find and open the first live vendor HID interface.
     bool Open();

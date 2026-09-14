@@ -219,16 +219,16 @@ private:
     bool                               m_cycleInFlight = false;
     bool                               m_inFlightLogged = false;  // one line per cycle
     // The interfaces the running cycle has to bring back before it counts as
-    // finished, and whether any of them has been seen to go yet. Presence alone
+    // finished, and which of them has been seen to go yet. Presence alone
     // proves nothing: a receiver publishes four interfaces and a narrowed cycle
     // takes down one, so the other three enumerate for the whole cycle. Only
-    // gone-and-back is honest — see TrackCycleProgress.
+    // gone-and-back is honest, per interface — see TrackCycleProgress.
     std::vector<std::wstring>          m_cyclePaths;
-    bool                               m_cycleSawRemoval = false;
+    std::vector<bool>                  m_cycleGone;
     // Narrowing request for the next cycle, consumed by RestartControllerDevices.
     // Empty means cycle everything, which is what a caller that never sets it
     // gets — so one path's narrowing cannot leak into another path's cycle.
-    std::wstring                       m_cycleRequestPath;
+    std::vector<std::wstring>          m_cycleRequestPaths;
     // Devnode found disabled when the menu was last built, so the command
     // handler and the menu agree on what "re-enable" refers to.
     std::wstring                       m_disabledDeviceNode;
