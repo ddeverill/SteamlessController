@@ -429,6 +429,9 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             "assuming the cycle is over and reopening the device",
                             CYCLE_MAX_MS);
             EndCycle("watchdog expired");
+        } else if (wp == IDT_DOCK_CYCLE) {
+            KillTimer(m_hwnd, IDT_DOCK_CYCLE);
+            CycleUnheldDocks();
         } else if (wp == IDT_HEARTBEAT) {
             // Periodic, so not killed — its absence is the signal.
             WriteHeartbeat();
@@ -893,8 +896,10 @@ void TrayApp::ReleaseControl() {
     KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
     KillTimer(m_hwnd, IDT_WAKE_POLL);
     KillTimer(m_hwnd, IDT_RELEASE_GRACE);
+    KillTimer(m_hwnd, IDT_DOCK_CYCLE);
     m_wantControl    = false;
     m_acquireRetries = 0;
+    m_dockCycles     = 0;
     EndCycle("control was dropped", /*resync=*/false);  // a release follows
     m_lastCycleTick  = 0;
     // One driver notice per attempt, and letting go ends the attempt. Turning
@@ -1032,9 +1037,12 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
         // paired while we hold the slot, with a "pair to your Puck" prompt —
         // and accepting it re-pairs the controller out from under us. Holding
         // the dock interface keeps Steam from hearing about the dock at all.
-        // After StopPounce: a dock the pounce caught is adopted by then, and
-        // one it did not is no longer being watched.
-        m_controller->ClaimDocks();
+        // A dock Steam still holds is cycled away from it, shortly and on its
+        // own — see CycleUnheldDocks.
+        if (m_controller->ClaimDocks())
+            m_dockCycles = 0;
+        else if (m_dockCycles < MAX_DOCK_CYCLES)
+            SetTimer(m_hwnd, IDT_DOCK_CYCLE, DOCK_CYCLE_DELAY_MS, nullptr);
         KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
         KillTimer(m_hwnd, IDT_WAKE_POLL);
         m_acquireRetries = 0;
@@ -1096,7 +1104,8 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     if (m_acquireRetries > 0 && RefreshCycleStatus() && m_lastCycleStatus.selfHeld) {
         EventLog::Write("ACQUIRE: the last cycle was vetoed by this app's own handle — "
                         "releasing it instead of cycling again");
-        m_controller->ReleaseDevices();
+        // Docks are never in a slot's cycle, so none of that veto was theirs.
+        m_controller->ReleaseDevices(/*keepDocks=*/true);
         SetTimer(m_hwnd, IDT_ACQUIRE, ACQUIRE_RETRY_MS, nullptr);
         return;
     }
@@ -1131,22 +1140,11 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     // First attempt narrows the cycle to the occupied slot; later ones do not,
     // so a wrong guess cannot keep costing us.
     //
-    // A receiver's dock interfaces ride along, first — those we do not already
-    // hold. Steam holds them exactly as it holds the slot and only a cycle
-    // frees them (see ClaimDocks). First because the slot coming back is what
-    // ends the attempt — adopting it stops the pounce and claims the docks,
-    // which must not happen while a dock is still waiting for its turn.
-    // Listing docks means spelling the slots out too: an empty request is the
-    // helper's own enumeration, which has none.
-    const auto docks = m_controller->UnheldDockPaths();
-    std::vector<std::wstring> request = docks;
-    if (m_acquireRetries == 1 && !m_controller->LastLivePath().empty()) {
-        request.push_back(m_controller->LastLivePath());
-    } else if (!docks.empty()) {
-        const auto slots = SteamController::EnumerateAll();
-        request.insert(request.end(), slots.begin(), slots.end());
-    }
-    m_cycleRequestPaths = std::move(request);
+    // Slots only. Docks are taken in a cycle of their own once the controller
+    // is ours — see CycleUnheldDocks.
+    m_cycleRequestPaths.clear();
+    if (m_acquireRetries == 1 && !m_controller->LastLivePath().empty())
+        m_cycleRequestPaths.push_back(m_controller->LastLivePath());
     RequestNarrowCycle(m_cycleRequestPaths);
     // Armed before the release so the paths are still known, and before the
     // cycle so the thread is already spinning when the device comes back.
@@ -1163,6 +1161,38 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     // outlast a cycle: the helper waits a second between disable and enable,
     // then a multi-slot receiver has to re-enumerate every interface.
     SetTimer(m_hwnd, IDT_ACQUIRE, ACQUIRE_RETRY_MS, nullptr);
+}
+
+// Steam keeps its dock handle for as long as it runs, so a dock that could not
+// be claimed outright is taken the way a slot is: cycle it and pounce.
+//
+// In a cycle of its own, after the controller is ours, rather than inside the
+// acquire cycle. The helper reports one verdict per run, and a dock that
+// cycled cleanly would stand in for a slot that did not — blinding the checks
+// that stop us cycling against our own handle. It also keeps the acquire
+// cycle as short as it was. Cycling a dock does not interrupt the controller,
+// which carries on streaming on its slot.
+void TrayApp::CycleUnheldDocks() {
+    if (!m_wantControl || !m_controller->IsGameModeActive()) return;
+    if (m_cycleInFlight) {
+        SetTimer(m_hwnd, IDT_DOCK_CYCLE, DOCK_CYCLE_DELAY_MS, nullptr);
+        return;
+    }
+    // Steam may have let go by now, and a cycle is not free.
+    if (m_controller->ClaimDocks()) {
+        m_dockCycles = 0;
+        return;
+    }
+    const auto docks = m_controller->UnheldDockPaths();
+    if (docks.empty() || m_dockCycles >= MAX_DOCK_CYCLES) return;
+
+    ++m_dockCycles;
+    EventLog::Write("DOCK: held by another process — cycling it (attempt %d)", m_dockCycles);
+    m_cycleRequestPaths = docks;
+    RequestNarrowCycle(m_cycleRequestPaths);
+    m_controller->BeginDockPounce();
+    if (!RestartControllerDevices())
+        m_controller->StopPounce();
 }
 
 // Pick up the verdict of the cycle we last started. It runs in the elevated
