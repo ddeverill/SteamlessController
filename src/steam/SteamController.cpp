@@ -61,6 +61,15 @@ std::vector<std::wstring> SteamController::EnumerateAll() {
     return result;
 }
 
+std::vector<std::wstring> SteamController::EnumerateDocks() {
+    std::vector<std::wstring> result;
+    for (uint16_t pid : { SC2026_DONGLE_PID, SC2026_NEREID_PID })
+        for (auto const& path : HidDevice::Enumerate(
+                 VALVE_VID, pid, VENDOR_USAGE_PAGE, DOCK_USAGE))
+            result.push_back(path);
+    return result;
+}
+
 SteamController::Transport SteamController::TransportFromPath(const std::wstring& path) {
     std::wstring p = path;
     for (auto& c : p) c = static_cast<wchar_t>(towlower(c));

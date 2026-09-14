@@ -58,16 +58,20 @@ static bool RunToolHidden(std::wstring cmdline) {
 // assumption behind it may be wrong — the controller could have moved slots —
 // so later attempts write nothing and the helper falls back to cycling
 // everything.
-static void RequestNarrowCycle(const std::wstring& path) {
+//
+// One path per line, cycled in that order — the helper has always read the
+// request that way.
+static void RequestNarrowCycle(const std::vector<std::wstring>& paths) {
     wchar_t local[MAX_PATH];
     if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH)) return;
     const std::wstring file =
         std::wstring(local) + L"\\SteamlessController\\cycle.request";
-    if (path.empty()) { DeleteFileW(file.c_str()); return; }
+    if (paths.empty()) { DeleteFileW(file.c_str()); return; }
 
     FILE* f = nullptr;
     if (_wfopen_s(&f, file.c_str(), L"w, ccs=UTF-8") != 0 || !f) return;
-    fwprintf(f, L"%ls\n", path.c_str());
+    for (const auto& path : paths)
+        fwprintf(f, L"%ls\n", path.c_str());
     fclose(f);
 }
 static bool LaunchToolDetached(std::wstring cmdline) {
@@ -329,11 +333,24 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case IDM_ENABLE_DEVICE:
             EnableDisabledControllerDevice();
             break;
-        case IDM_EXIT:
+        case IDM_EXIT: {
             EventLog::Write("=== SteamlessController exiting (user request) ===");
             m_controller->DisableGameMode();
+            // A held dock goes with the process, but Steam reopens one only on
+            // arrival — so without a cycle it would not hear about a controller
+            // set on the puck again until the puck was replugged.
+            const auto heldDocks = m_controller->HeldDockPaths();
+            if (!heldDocks.empty()) {
+                m_controller->ReleaseDocks();
+                if (m_steamWatcher.GetState() != SteamState::NoSteam) {
+                    m_cycleRequestPaths = heldDocks;
+                    RequestNarrowCycle(m_cycleRequestPaths);
+                    RestartControllerDevices();
+                }
+            }
             PostQuitMessage(0);
             break;
+        }
         }
         return 0;
 
@@ -895,13 +912,20 @@ void TrayApp::ReleaseControl() {
     // outlives them either way — it is only ever assigned — but taking it here
     // keeps the two paths asking the same question at the same point.
     const std::wstring livePath = m_controller->LastLivePath();
+    // Released below with everything else, and Steam reopens a dock interface
+    // only on arrival, just as it does a slot — so a held dock is cycled too, or
+    // Steam would not hear about a controller set on the puck again until the
+    // puck was replugged. Docks can be held with no game mode: an acquire that
+    // cycles the slot lets go of the slot but keeps them.
+    const std::vector<std::wstring> heldDocks = m_controller->HeldDockPaths();
     // Good citizen: restore lizard mode and close our HID handles so
     // Steam can claim the controller without contention.
     m_controller->ReleaseDevices();
     // Steam only (re)opens controllers on device-arrival events. If it is
     // already running and we held the device, it never saw one — cycle
     // the device so Steam adopts it immediately.
-    if (hadControl && m_steamWatcher.GetState() != SteamState::NoSteam) {
+    if ((hadControl || !heldDocks.empty())
+            && m_steamWatcher.GetState() != SteamState::NoSteam) {
         // Logged because this cycle is otherwise invisible. The acquire path
         // announces itself; this one used to not, which made a device left
         // disabled by an interrupted release look like it came from nowhere.
@@ -917,8 +941,14 @@ void TrayApp::ReleaseControl() {
         // first attempt so a wrong guess cannot keep costing it. A release has
         // no second attempt to protect, and an empty path already falls back
         // to cycling everything.
-        m_cycleRequestPath = livePath;
-        RequestNarrowCycle(m_cycleRequestPath);
+        std::vector<std::wstring> request;
+        if (hadControl)
+            request = livePath.empty() ? SteamController::EnumerateAll()
+                                       : std::vector<std::wstring>{ livePath };
+        // After the slot: the controller is what Steam is waiting on.
+        request.insert(request.end(), heldDocks.begin(), heldDocks.end());
+        m_cycleRequestPaths = std::move(request);
+        RequestNarrowCycle(m_cycleRequestPaths);
         RestartControllerDevices();
     }
 }
@@ -998,6 +1028,13 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     }
     if (m_controller->IsGameModeActive()) {
         m_controller->StopPounce();
+        // Steam answers a controller set on the puck, which it cannot see is
+        // paired while we hold the slot, with a "pair to your Puck" prompt —
+        // and accepting it re-pairs the controller out from under us. Holding
+        // the dock interface keeps Steam from hearing about the dock at all.
+        // After StopPounce: a dock the pounce caught is adopted by then, and
+        // one it did not is no longer being watched.
+        m_controller->ClaimDocks();
         KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
         KillTimer(m_hwnd, IDT_WAKE_POLL);
         m_acquireRetries = 0;
@@ -1093,13 +1130,30 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     EventLog::Write("ACQUIRE: exclusive claim blocked — cycling device (attempt %d)", m_acquireRetries);
     // First attempt narrows the cycle to the occupied slot; later ones do not,
     // so a wrong guess cannot keep costing us.
-    m_cycleRequestPath = m_acquireRetries == 1 ? m_controller->LastLivePath()
-                                               : std::wstring();
-    RequestNarrowCycle(m_cycleRequestPath);
+    //
+    // A receiver's dock interfaces ride along, first — those we do not already
+    // hold. Steam holds them exactly as it holds the slot and only a cycle
+    // frees them (see ClaimDocks). First because the slot coming back is what
+    // ends the attempt — adopting it stops the pounce and claims the docks,
+    // which must not happen while a dock is still waiting for its turn.
+    // Listing docks means spelling the slots out too: an empty request is the
+    // helper's own enumeration, which has none.
+    const auto docks = m_controller->UnheldDockPaths();
+    std::vector<std::wstring> request = docks;
+    if (m_acquireRetries == 1 && !m_controller->LastLivePath().empty()) {
+        request.push_back(m_controller->LastLivePath());
+    } else if (!docks.empty()) {
+        const auto slots = SteamController::EnumerateAll();
+        request.insert(request.end(), slots.begin(), slots.end());
+    }
+    m_cycleRequestPaths = std::move(request);
+    RequestNarrowCycle(m_cycleRequestPaths);
     // Armed before the release so the paths are still known, and before the
     // cycle so the thread is already spinning when the device comes back.
     m_controller->BeginPounce();
-    m_controller->ReleaseDevices();
+    // Docks we hold are not in this cycle, so holding on to them vetoes
+    // nothing — and letting go would hand Steam the chance to reopen them.
+    m_controller->ReleaseDevices(/*keepDocks=*/true);
     if (!RestartControllerDevices()) {
         m_controller->StopPounce();
         return;
@@ -1345,10 +1399,10 @@ bool TrayApp::RestartControllerDevices() {
     // names the one occupied interface; without one the helper takes down
     // everything, so everything has to come back. Consumed here, so a caller
     // that sets nothing gets a full cycle rather than the last caller's guess.
-    m_cyclePaths      = m_cycleRequestPath.empty() ? SteamController::EnumerateAll()
-                                                   : std::vector<std::wstring>{ m_cycleRequestPath };
-    m_cycleRequestPath.clear();
-    m_cycleSawRemoval = false;
+    m_cyclePaths = m_cycleRequestPaths.empty() ? SteamController::EnumerateAll()
+                                               : m_cycleRequestPaths;
+    m_cycleRequestPaths.clear();
+    m_cycleGone.assign(m_cyclePaths.size(), false);
     // Backstop. Everything that ends a cycle normally is an event that might not
     // arrive, and the flag staying up means the controller is never opened again.
     SetTimer(m_hwnd, IDT_CYCLE_WATCHDOG, CYCLE_MAX_MS, nullptr);
@@ -1402,18 +1456,24 @@ void TrayApp::TrackCycleProgress() {
         EndCycle("no interfaces were recorded to wait for");
         return;
     }
-    const auto live    = SteamController::EnumerateAll();
-    const bool allBack = std::all_of(m_cyclePaths.begin(), m_cyclePaths.end(),
-        [&](const std::wstring& p) {
-            return std::find(live.begin(), live.end(), p) != live.end();
-        });
-    if (!allBack) {
-        m_cycleSawRemoval = true;  // the helper has started taking them down
-        return;
-    }
+    auto live = SteamController::EnumerateAll();
+    const auto docks = SteamController::EnumerateDocks();
+    live.insert(live.end(), docks.begin(), docks.end());
     // Present having never gone is some other device's arrival landing before
-    // ours went down. Present having gone is the cycle completing.
-    if (m_cycleSawRemoval)
+    // ours went down. Present having gone is that interface done.
+    //
+    // Per interface rather than for the set: the helper cycles them one after
+    // another, so the set reads as all back in the gap between the first
+    // returning and the next going down — and the resync that ends the cycle
+    // would then reopen the next one ahead of its turn and veto it.
+    bool done = true;
+    for (size_t i = 0; i < m_cyclePaths.size(); ++i) {
+        const bool present =
+            std::find(live.begin(), live.end(), m_cyclePaths[i]) != live.end();
+        if (!present) m_cycleGone[i] = true;  // the helper has taken this one down
+        if (!present || !m_cycleGone[i]) done = false;
+    }
+    if (done)
         EndCycle("cycled interfaces are back");
 }
 
@@ -1427,7 +1487,7 @@ void TrayApp::EndCycle(const char* why, bool resync) {
     KillTimer(m_hwnd, IDT_CYCLE_WATCHDOG);
     if (!m_cycleInFlight) return;
     m_cycleInFlight   = false;
-    m_cycleSawRemoval = false;
+    m_cycleGone.clear();
     m_cyclePaths.clear();
     if (m_lastCycleTick != 0)
         EventLog::Write("CYCLE: done after %llu ms (%s)",

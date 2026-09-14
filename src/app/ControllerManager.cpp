@@ -350,6 +350,7 @@ ControllerManager::~ControllerManager() {
         }
         slot->sc->EnableLizardMode(); // always restore, even if game mode was never active
     }
+    ReleaseDocks();
 }
 
 // ---------------------------------------------------------------------------
@@ -458,7 +459,7 @@ void ControllerManager::DisableGameMode() {
     NotifyStateChanged();
 }
 
-void ControllerManager::ReleaseDevices() {
+void ControllerManager::ReleaseDevices(bool keepDocks) {
     // Not StopPounce(): a release is exactly what precedes a cycle, and the
     // pounce is armed to survive it. TrayApp stops it when the acquire ends.
     if (!m_slots.empty())
@@ -469,7 +470,73 @@ void ControllerManager::ReleaseDevices() {
     // Close all device handles. Slot destructors call SteamController::Close()
     // which closes the HID handle, allowing another process to open it.
     m_slots.clear();
+    if (!keepDocks) ReleaseDocks();
     NotifyStateChanged();
+}
+
+bool ControllerManager::ClaimDocks() {
+    bool allHeld = true;
+    for (const auto& path : SteamController::EnumerateDocks()) {
+        if (std::any_of(m_docks.begin(), m_docks.end(),
+                        [&](const DockHandle& d) { return d.path == path; }))
+            continue;
+        // Write access with write sharing refused, exactly as a slot is
+        // claimed. Steam opens read-write, falls back to a handle with no
+        // access at all when that is refused, and reads nothing through it.
+        HANDLE h = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
+                               nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            const DWORD err = GetLastError();
+            if (std::find(m_dockClaimFailed.begin(), m_dockClaimFailed.end(), path)
+                    == m_dockClaimFailed.end()) {
+                m_dockClaimFailed.push_back(path);
+                EventLog::Write("DOCK: could not hold the dock interface (err=%lu) — Steam "
+                                "still sees a controller set on the puck and can offer to "
+                                "pair it %ls", err, path.c_str());
+            }
+            allHeld = false;
+            continue;
+        }
+        AdoptDock(path, h);
+    }
+    return allHeld;
+}
+
+void ControllerManager::AdoptDock(const std::wstring& path, void* handle) {
+    if (std::any_of(m_docks.begin(), m_docks.end(),
+                    [&](const DockHandle& d) { return d.path == path; })) {
+        CloseHandle(static_cast<HANDLE>(handle));
+        return;
+    }
+    m_dockClaimFailed.erase(std::remove(m_dockClaimFailed.begin(), m_dockClaimFailed.end(), path),
+                            m_dockClaimFailed.end());
+    m_docks.push_back(DockHandle{ path, handle });
+    EventLog::Write("DOCK: holding %ls", path.c_str());
+}
+
+void ControllerManager::ReleaseDocks() {
+    for (auto& d : m_docks) {
+        EventLog::Write("DOCK: released %ls", d.path.c_str());
+        CloseHandle(static_cast<HANDLE>(d.handle));
+    }
+    m_docks.clear();
+    m_dockClaimFailed.clear();
+}
+
+std::vector<std::wstring> ControllerManager::HeldDockPaths() const {
+    std::vector<std::wstring> paths;
+    for (const auto& d : m_docks) paths.push_back(d.path);
+    return paths;
+}
+
+std::vector<std::wstring> ControllerManager::UnheldDockPaths() const {
+    auto paths = SteamController::EnumerateDocks();
+    paths.erase(std::remove_if(paths.begin(), paths.end(), [&](const std::wstring& p) {
+                    return std::any_of(m_docks.begin(), m_docks.end(),
+                                       [&](const DockHandle& d) { return d.path == p; });
+                }),
+                paths.end());
+    return paths;
 }
 
 
@@ -695,6 +762,12 @@ void ControllerManager::BeginPounce() {
         m_pounce.caught.clear();
         for (auto& slot : m_slots)
             m_pounce.paths.push_back(slot->path);
+        // The docks ride along: the cycle that frees a slot from Steam frees
+        // the dock interface with it, and it has to be taken back the same way
+        // or Steam reopens it first. See ClaimDocks.
+        m_pounce.dockPaths = UnheldDockPaths();
+        m_pounce.paths.insert(m_pounce.paths.end(),
+                              m_pounce.dockPaths.begin(), m_pounce.dockPaths.end());
     }
     if (m_pounce.paths.empty()) return;
 
@@ -766,14 +839,22 @@ void ControllerManager::StopPounce() {
 
 bool ControllerManager::AdoptPounced() {
     std::vector<std::pair<std::wstring, void*>> caught;
+    std::vector<std::wstring> dockPaths;
     {
         std::lock_guard<std::mutex> lk(m_pounce.mutex);
         caught.swap(m_pounce.caught);
+        dockPaths = m_pounce.dockPaths;
     }
     if (caught.empty()) return false;
 
     bool any = false;
     for (auto& [path, h] : caught) {
+        // Not a controller, and not what the caller is waiting on, so it does
+        // not count towards the answer.
+        if (std::find(dockPaths.begin(), dockPaths.end(), path) != dockPaths.end()) {
+            AdoptDock(path, h);
+            continue;
+        }
         // Already have it? Then the ordinary path got there first; drop ours.
         if (std::any_of(m_slots.begin(), m_slots.end(),
                         [&](const auto& s) { return s->path == path; })) {
@@ -833,6 +914,21 @@ void ControllerManager::SyncDevices() {
             it = m_slots.erase(it);
         } else {
             ++it;
+        }
+    }
+
+    // A dock handle whose interface has gone holds nothing: what comes back is
+    // a new devnode, and the stale handle would only stop us claiming it.
+    if (!m_docks.empty()) {
+        const auto docks = SteamController::EnumerateDocks();
+        for (auto d = m_docks.begin(); d != m_docks.end();) {
+            if (std::find(docks.begin(), docks.end(), d->path) != docks.end()) {
+                ++d;
+                continue;
+            }
+            EventLog::Write("DOCK: interface went away %ls", d->path.c_str());
+            CloseHandle(static_cast<HANDLE>(d->handle));
+            d = m_docks.erase(d);
         }
     }
 
