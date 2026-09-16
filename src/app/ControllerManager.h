@@ -164,6 +164,11 @@ private:
     void ReadLoop(Slot* slot);
     void NotifyStateChanged(bool padUnavailable = false);
     void AdoptDock(const std::wstring& path, void* handle);
+    // Whether path is one of the docks we already hold — shared by ClaimDocks,
+    // AdoptDock and UnheldDockPaths so the three can't drift on what "held"
+    // means (e.g. if dock-path comparison ever needs to become
+    // case-insensitive, the way TransportFromPath's already is).
+    bool IsDockHeld(const std::wstring& path) const;
     void StartPounce(std::vector<std::wstring> watchPaths,
                      std::vector<std::wstring> watchDocks);
 

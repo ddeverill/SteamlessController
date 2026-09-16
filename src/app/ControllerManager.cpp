@@ -474,12 +474,15 @@ void ControllerManager::ReleaseDevices(bool keepDocks) {
     NotifyStateChanged();
 }
 
+bool ControllerManager::IsDockHeld(const std::wstring& path) const {
+    return std::any_of(m_docks.begin(), m_docks.end(),
+                        [&](const DockHandle& d) { return d.path == path; });
+}
+
 bool ControllerManager::ClaimDocks() {
     bool allHeld = true;
     for (const auto& path : SteamController::EnumerateDocks()) {
-        if (std::any_of(m_docks.begin(), m_docks.end(),
-                        [&](const DockHandle& d) { return d.path == path; }))
-            continue;
+        if (IsDockHeld(path)) continue;
         // Write access with write sharing refused, exactly as a slot is
         // claimed. Steam asks for write access too, so it is refused, and its
         // log shows every read it then attempts on the dock failing.
@@ -503,8 +506,7 @@ bool ControllerManager::ClaimDocks() {
 }
 
 void ControllerManager::AdoptDock(const std::wstring& path, void* handle) {
-    if (std::any_of(m_docks.begin(), m_docks.end(),
-                    [&](const DockHandle& d) { return d.path == path; })) {
+    if (IsDockHeld(path)) {
         CloseHandle(static_cast<HANDLE>(handle));
         return;
     }
@@ -531,10 +533,8 @@ std::vector<std::wstring> ControllerManager::HeldDockPaths() const {
 
 std::vector<std::wstring> ControllerManager::UnheldDockPaths() const {
     auto paths = SteamController::EnumerateDocks();
-    paths.erase(std::remove_if(paths.begin(), paths.end(), [&](const std::wstring& p) {
-                    return std::any_of(m_docks.begin(), m_docks.end(),
-                                       [&](const DockHandle& d) { return d.path == p; });
-                }),
+    paths.erase(std::remove_if(paths.begin(), paths.end(),
+                               [&](const std::wstring& p) { return IsDockHeld(p); }),
                 paths.end());
     return paths;
 }
