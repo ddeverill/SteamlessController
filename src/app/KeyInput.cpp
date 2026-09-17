@@ -8,8 +8,7 @@ namespace {
 struct JsCodeToVk { const char* code; uint16_t vk; };
 
 // KeyboardEvent.code values are physical positions, so a binding made on one
-// keyboard layout means the same physical key on another. Escape is absent on
-// purpose — the remap window uses it to cancel listening.
+// keyboard layout means the same physical key on another.
 const JsCodeToVk kCodeMap[] = {
     // Letters
     {"KeyA",'A'},{"KeyB",'B'},{"KeyC",'C'},{"KeyD",'D'},{"KeyE",'E'},{"KeyF",'F'},
@@ -29,6 +28,7 @@ const JsCodeToVk kCodeMap[] = {
     {"Backspace",   VK_BACK},
     {"Delete",      VK_DELETE},
     {"Insert",      VK_INSERT},
+    {"Escape",      VK_ESCAPE},
 
     // Navigation
     {"ArrowUp",     VK_UP},

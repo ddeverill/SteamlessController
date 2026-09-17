@@ -1336,18 +1336,20 @@ document.addEventListener('auxclick',function(e){
 });
 
 document.addEventListener('keydown',function(e){
-  // Escape stays the cancel affordance, so it is deliberately not bindable.
-  // Innermost dismissable thing first: the modal is the only one that can sit
-  // on top of the others.
+  // Escape closes whichever overlay sits on top of the page — innermost
+  // first, and the modal is the only one that can sit on top of the other.
+  // Neither overlay is up while a row is listening, so in that case Escape
+  // falls through to the capture logic below and binds like any other key
+  // (issue #105) — the row's own Cancel button is how listening is aborted.
   if(e.key==='Escape'){
     if(pendingAction!==null||document.getElementById('modal-backdrop').style.display==='flex'){
       resolveModal('cancel');
-    } else if(comboOpen){
-      closeCombo();
-    } else {
-      cancelListening();
+      return;
     }
-    return;
+    if(comboOpen){
+      closeCombo();
+      return;
+    }
   }
   // The search box is a real text field — typing in it must not be swallowed
   // by the binding-capture handler below.
