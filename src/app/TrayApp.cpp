@@ -236,6 +236,13 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     SelectProfile(MatchProfile(ForegroundWatcher::Current()));
     PushActiveProfile();
 
+    // Manual mode only — the auto modes decide for themselves once the Steam
+    // watcher's first callback lands. Last, so the profile above is already
+    // pushed and the acquire that follows carries the right bindings from the
+    // first frame.
+    if (m_autoMode == AutoMode::Manual && m_enableOnLaunch)
+        EnableFromUser();
+
     return true;
 }
 
@@ -320,6 +327,10 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case IDM_STARTUP:
             m_startupEnabled = !m_startupEnabled;
             UpdateStartupRegistration();
+            break;
+        case IDM_ENABLE_ON_LAUNCH:
+            m_enableOnLaunch = !m_enableOnLaunch;
+            SaveSettings();
             break;
         case IDM_OPENLOG:
             OpenEventLog();
@@ -2009,6 +2020,13 @@ void TrayApp::LoadSettings() {
                                                  RunKeyExists() ? 1 : 0));
     m_startupEnabled   = m_startupMechanism != 0;
 
+    // Default false here, not true: this branch only runs once the registry
+    // key already exists, i.e. the app has run before — including on builds
+    // that predate this setting, which never wrote it. Only a fresh install
+    // (LoadSettings returning above before this line is reached) gets the
+    // in-class default of true.
+    m_enableOnLaunch = readDw(L"EnableOnLaunch", 0) != 0;
+
     RegCloseKey(key);
 
     m_gameProfiles = GameProfiles::Load();
@@ -2045,6 +2063,7 @@ void TrayApp::SaveSettings() {
     writeDw(L"AutoSteamMode",       static_cast<DWORD>(m_autoMode));
     writeDw(L"StartupMechanism",    static_cast<DWORD>(m_startupMechanism));
     writeDw(L"ShowNotifications",   m_notificationsEnabled ? 1 : 0);
+    writeDw(L"EnableOnLaunch",      m_enableOnLaunch ? 1 : 0);
 
     // Always the default profile, never ControllerManager's live one: a game
     // profile can be active here, and persisting that would overwrite the
@@ -2149,6 +2168,14 @@ void TrayApp::ShowContextMenu() {
 
     AppendMenuW(menu, MF_STRING | (startupOn ? MF_CHECKED : MF_UNCHECKED),
                 IDM_STARTUP, L"Start with Windows");
+
+    // Meaningless outside Manual mode — the auto modes never make an "at
+    // launch" decision, they resolve control from Steam/game state on every
+    // evaluation — so it stays off the menu entirely there rather than
+    // sitting grayed out with nothing to explain.
+    if (manual)
+        AppendMenuW(menu, MF_STRING | (m_enableOnLaunch ? MF_CHECKED : MF_UNCHECKED),
+                    IDM_ENABLE_ON_LAUNCH, L"Enable on Launch");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_OPENLOG, L"Open Event Log");

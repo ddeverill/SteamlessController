@@ -206,6 +206,12 @@ private:
     bool                               m_vigemBalloonShown     = false;
     bool                               m_startupEnabled   = false;
     int                                m_startupMechanism = 0;  // 0 none, 1 Run key, 2 elevated task
+    // Manual mode only: acquire the controller automatically at startup rather
+    // than waiting for the tray toggle. Defaults on so a fresh install lands
+    // enabled; LoadSettings reads a different default once the registry key
+    // exists at all, so an upgrade keeps today's off-until-toggled behaviour
+    // unless the user opts in.
+    bool                               m_enableOnLaunch = true;
     // Every balloon this app raises, not just the disconnect and stall ones
     // it started out covering — a per-game profile loading is announced
     // through it too.
@@ -309,6 +315,7 @@ private:
     static constexpr UINT IDM_NOTIFICATIONS = 1014;
     static constexpr UINT IDM_ENABLE_DEVICE = 1015;
     static constexpr UINT IDM_MODE_PROFILE  = 1016;
+    static constexpr UINT IDM_ENABLE_ON_LAUNCH = 1017;
     static constexpr UINT WM_TRAY           = WM_APP + 1;
     static constexpr UINT WM_STEAMSTATE     = WM_APP + 2;
     static constexpr UINT WM_ALERT          = WM_APP + 3;
