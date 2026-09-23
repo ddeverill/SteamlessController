@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Round one of a release: the three executables the installer packages.
+
+  The file of record is the copy pasted into SignPath's web UI under the
+  project's artifact configuration with slug "exes". This copy is here so the
+  configuration is reviewed and versioned alongside the workflow that submits
+  to it. Change both together.
+
+  The ViGEmBus installer is deliberately absent. It is nefarius's binary,
+  already signed by them, and never passes through SignPath.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="SteamlessController.exe">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="SteamlessDeviceCycle.exe">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="ViGEmBusProbe.exe">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
