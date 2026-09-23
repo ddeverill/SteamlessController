@@ -1,0 +1,188 @@
+# Builds, signs and packages a release.
+#
+# SignPath Foundation signs only what a trusted build system built from this
+# repository, so this workflow is the only way a signed build can exist. A
+# local `cmake --build --preset release` + Inno compile still works for
+# testing, but what it produces cannot be signed.
+#
+# Signing happens in two rounds, because the installer contains the
+# executables and so has to be compiled around the signed copies:
+#
+#   1. build -> sign the three .exes (artifact configuration "exes")
+#   2. compile the installer around them -> sign Setup.exe ("installer")
+#
+# Under release-signing, each round waits for a manual approval in SignPath,
+# so a release takes two approvals. test-signing needs none.
+#
+# Triggers:
+#   * a pushed tag vX.Y       -> release-signing, then a DRAFT GitHub release
+#                                with the signed installer attached
+#   * Run workflow (manual)   -> test-signing by default; the installer is
+#                                left as a workflow artifact, no release made
+#
+# Configuration, under Settings > Secrets and variables > Actions:
+#   secret   SIGNPATH_API_TOKEN       API token of the SignPath CI user
+#   variable SIGNPATH_ORGANIZATION_ID
+#   variable SIGNPATH_PROJECT_SLUG
+#
+# Artifact configurations must exist in SignPath with the slugs "exes" and
+# "installer"; their contents are versioned in .signpath/.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      signing-policy:
+        description: SignPath signing policy
+        type: choice
+        options: [test-signing, release-signing]
+        default: test-signing
+
+permissions:
+  contents: write   # create the draft release
+  actions: read     # lets SignPath fetch the uploaded artifacts
+
+env:
+  SIGNING_POLICY: ${{ startsWith(github.ref, 'refs/tags/') && 'release-signing' || inputs.signing-policy || 'test-signing' }}
+  BUILD_DIR: build\release\Release
+  VIGEM_FILE: ViGEmBus_1.22.0_x64_x86_arm64.exe
+  VIGEM_URL: https://github.com/nefarius/ViGEmBus/releases/download/v1.22.0/ViGEmBus_1.22.0_x64_x86_arm64.exe
+  VIGEM_SHA256: 89220a7865076b342892f98865f3499fb7c4cfd673159e89d352c360fd014c6a
+
+jobs:
+  release:
+    runs-on: windows-latest
+    # Covers two waits for a human to approve in SignPath.
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # A tag that disagrees with the script would publish an installer under
+      # one version that installs another. The script already refuses an exe
+      # whose version differs from its own; this closes the other side.
+      - name: Check tag matches installer version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          $iss = Get-Content resources\InnoInstallerScript.iss -Raw
+          if ($iss -notmatch '#define MyAppVersion "([^"]+)"') { throw 'MyAppVersion not found in the installer script' }
+          $scriptVersion = $Matches[1]
+          $tagVersion = '${{ github.ref_name }}'.TrimStart('v')
+          if ($tagVersion -ne $scriptVersion) {
+            throw "Tag ${{ github.ref_name }} does not match MyAppVersion $scriptVersion"
+          }
+
+      - name: Build
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+
+      # ---- Round one: the executables -------------------------------------
+
+      - name: Stage unsigned executables
+        run: |
+          New-Item -ItemType Directory staging\exes | Out-Null
+          foreach ($exe in 'SteamlessController.exe', 'SteamlessDeviceCycle.exe', 'ViGEmBusProbe.exe') {
+            Copy-Item "$env:BUILD_DIR\$exe" staging\exes\
+          }
+
+      - name: Upload unsigned executables
+        id: upload-exes
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-exes
+          path: staging\exes\
+
+      - name: Sign executables
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNING_POLICY }}
+          artifact-configuration-slug: exes
+          github-artifact-id: ${{ steps.upload-exes.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: signed\exes
+
+      # Inno reads from BUILD_DIR, so the signed copies replace the unsigned
+      # ones there rather than the script learning a second source directory.
+      - name: Put signed executables in place
+        run: Copy-Item signed\exes\*.exe $env:BUILD_DIR\ -Force
+
+      # ---- Round two: the installer ---------------------------------------
+
+      # Not in the repository (*.exe is gitignored). Pinned by hash so the
+      # installer can only ever carry the exact binary nefarius published.
+      - name: Fetch ViGEmBus installer
+        run: |
+          Invoke-WebRequest $env:VIGEM_URL -OutFile "resources\$env:VIGEM_FILE"
+          $hash = (Get-FileHash "resources\$env:VIGEM_FILE" -Algorithm SHA256).Hash
+          if ($hash -ne $env:VIGEM_SHA256) { throw "ViGEmBus hash mismatch: got $hash" }
+
+      - name: Compile installer
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+          }
+          & $iscc resources\InnoInstallerScript.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+
+      - name: Upload unsigned installer
+        id: upload-installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-installer
+          path: Output\SteamlessController-Setup.exe
+
+      - name: Sign installer
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNING_POLICY }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.upload-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: signed\installer
+
+      # Test certificates do not chain to a trusted root, so only a
+      # release-signed build can be held to this.
+      - name: Verify signatures
+        if: env.SIGNING_POLICY == 'release-signing'
+        run: |
+          $files = @(Get-ChildItem signed\exes\*.exe) + @(Get-Item signed\installer\SteamlessController-Setup.exe)
+          foreach ($file in $files) {
+            $sig = Get-AuthenticodeSignature $file.FullName
+            "{0}: {1} ({2})" -f $file.Name, $sig.Status, $sig.SignerCertificate.Subject
+            if ($sig.Status -ne 'Valid') { throw "$($file.Name) is not validly signed" }
+          }
+
+      - name: Upload signed installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: SteamlessController-Setup-${{ env.SIGNING_POLICY }}
+          path: signed\installer\SteamlessController-Setup.exe
+
+      # A draft, so the notes get written and the installer tried before
+      # anyone can download it.
+      - name: Create draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' signed\installer\SteamlessController-Setup.exe `
+            --draft --verify-tag `
+            --title 'SteamlessController-${{ github.ref_name }}' `
+            --notes 'Release notes to follow.'

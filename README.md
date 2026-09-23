@@ -113,3 +113,21 @@ saved identity can take.
 ## Third-party
 
 - [ViGEmClient](https://github.com/nefarius/ViGEmClient) — MIT License, built from source as a static library
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+Releases are built and signed by the [Release workflow](.github/workflows/release.yml) from this repository's source. Only this project's own executables and installer are signed. The bundled ViGEmBus installer is signed by its own publisher and passes through unchanged.
+
+Team roles:
+
+- Committers and reviewers: [Dylan Deverill](https://github.com/ddeverill)
+- Approvers: [Dylan Deverill](https://github.com/ddeverill)
+
+### Privacy
+
+SteamlessController sends no data about you or your system anywhere. It makes two kinds of network request:
+
+- The controller remapping window loads its fonts from Google Fonts, which receives the usual details of a web request, such as your IP address.
+- If the ViGEmBus driver is missing, clicking the notification that says so opens its download page in your browser.
