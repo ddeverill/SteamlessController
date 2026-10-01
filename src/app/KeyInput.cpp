@@ -52,6 +52,10 @@ const JsCodeToVk kCodeMap[] = {
     // Function row
     {"F1",VK_F1},{"F2",VK_F2},{"F3",VK_F3},{"F4",VK_F4},{"F5",VK_F5},{"F6",VK_F6},
     {"F7",VK_F7},{"F8",VK_F8},{"F9",VK_F9},{"F10",VK_F10},{"F11",VK_F11},{"F12",VK_F12},
+    // Few keyboards have these, but they are the usual choice for macro
+    // bindings precisely because nothing else in Windows claims them.
+    {"F13",VK_F13},{"F14",VK_F14},{"F15",VK_F15},{"F16",VK_F16},{"F17",VK_F17},{"F18",VK_F18},
+    {"F19",VK_F19},{"F20",VK_F20},{"F21",VK_F21},{"F22",VK_F22},{"F23",VK_F23},{"F24",VK_F24},
 
     // Punctuation (OEM codes are positional, which suits a physical binding)
     {"Minus",        VK_OEM_MINUS},
@@ -210,6 +214,11 @@ std::wstring KeyComboDisplayName(const BackButtonBinding& binding) {
 
 std::wstring KeyDisplayName(uint16_t vk) {
     if (vk == 0) return L"Key";
+
+    // GetKeyNameText has no name for the scan codes behind these, so asking it
+    // would label every one of them just "Key".
+    if (vk >= VK_F13 && vk <= VK_F24)
+        return L"F" + std::to_wstring(13 + (vk - VK_F13));
 
     const ScanCode sc = ScanCodeFor(vk);
     if (sc.scan == 0) return L"Key";
