@@ -85,6 +85,12 @@ public:
     // it rebuilds the virtual controller, see the definition.
     void SetProfile(const ControllerProfile& profile);
 
+    // Where each trigger is right now, raw 0..0x7FFF, for the settings window's
+    // live meter. The larger of every controller's, and 0 while game mode is
+    // off — nothing is reading the controller then. Safe to call from the UI
+    // thread while the read loops run.
+    void TriggerLevels(int& left, int& right) const;
+
     bool IsConnected()              const { return !m_slots.empty(); }
     bool IsGameModeActive()         const;
     // Whether any slot running game mode is doing so on a handle it shares with

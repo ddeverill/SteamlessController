@@ -288,7 +288,8 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
     const BackButtonConfig& backCfg = profile.back;
 
     // Calls `apply` once for every trackpad binding the pads are currently
-    // pressing, so the two report paths below only have to say how one binding
+    // pressing — and every dual-stage trigger's full press — so the two report
+    // paths below only have to say how one binding
     // reaches their own report format. Nothing here is read from the report:
     // the tap, the press and its zone, and the directions were all resolved by
     // ControllerManager and arrive in `resolved`, so both delivery paths and
@@ -315,6 +316,14 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
             for (uint8_t d : { DirUp, DirDown, DirLeft, DirRight })
                 if (p.dirs & d) apply(p.pad.EffectiveDirection(static_cast<PadDir>(d)));
         }
+
+        // A dual-stage trigger's full press rides the same path. It is added
+        // on top of the trigger's own analog value, which still passes through
+        // untouched, so a game sees the pull and the extra input together —
+        // and a full press bound to a trigger just pins that trigger at its
+        // maximum, which is where it already is.
+        if (resolved.leftTriggerFull)  apply(profile.leftTrigger.EffectiveFull());
+        if (resolved.rightTriggerFull) apply(profile.rightTrigger.EffectiveFull());
     };
 
     if (m_platform == ControllerPlatform::PlayStation) {

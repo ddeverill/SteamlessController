@@ -2008,6 +2008,17 @@ void TrayApp::LoadSettings() {
         readPad(L"RightPad", profile.rightPad);
     }
 
+    // Outside the migration branch above: the triggers have nothing to migrate,
+    // and an install that predates them has no such values, which reads back as
+    // Standard — analog only, as it always was.
+    {
+        auto readTriggerDw = [&](const wchar_t* name, uint32_t def) -> uint32_t {
+            return readDw(name, def);
+        };
+        profile.leftTrigger  = ReadTriggerSettings(L"LeftTrigger",  readTriggerDw);
+        profile.rightTrigger = ReadTriggerSettings(L"RightTrigger", readTriggerDw);
+    }
+
     m_defaultProfile = profile;
     m_activeGameId.clear();
     m_controller->SetProfile(m_defaultProfile);
@@ -2091,6 +2102,8 @@ void TrayApp::SaveSettings() {
     };
     writePad(L"LeftPad",  profile.leftPad);
     writePad(L"RightPad", profile.rightPad);
+    WriteTriggerSettings(L"LeftTrigger",  profile.leftTrigger,  writeDw);
+    WriteTriggerSettings(L"RightTrigger", profile.rightTrigger, writeDw);
     // Written last and unconditionally: its presence is what tells the next
     // launch the per-pad values above are authoritative.
     writeDw(L"PadsMigrated", 1);

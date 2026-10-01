@@ -180,6 +180,34 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 .btn-save:hover{opacity:.9;}
 </style>
 )HTML"
+// A second style block rather than more of the one above: that literal is within
+// a kilobyte of the compiler's limit on a single string. Rules here layer on the
+// same page exactly as if they were written up there.
+R"HTML(
+<style>
+/* The dual-stage trigger meter: a track showing where the trigger is right now,
+   with a bright marker where the press happens and a dim one where it lets go.
+   The band between them is the hysteresis, shaded so it reads as a zone rather
+   than as two unrelated numbers. */
+.meter-wrap{display:flex;align-items:center;gap:12px;flex:none;}
+.meter{position:relative;width:250px;height:12px;border-radius:6px;background:rgba(255,255,255,.1);cursor:pointer;touch-action:none;user-select:none;}
+.meter-band{position:absolute;top:0;bottom:0;background:rgba(102,192,244,.2);}
+.meter-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:6px 0 0 6px;background:#4a6a85;}
+.meter.down .meter-fill{background:#5ba32b;}
+.meter-mark{position:absolute;top:-6px;width:4px;height:24px;margin-left:-2px;border-radius:2px;cursor:ew-resize;}
+.meter-mark::after{content:'';position:absolute;top:-2px;bottom:-2px;left:-8px;right:-8px;}
+.meter-mark.press{background:#66c0f4;}
+.meter-mark.rel{background:#8f98a0;}
+.meter-mark:focus{outline:2px solid #fff;outline-offset:2px;}
+.meter-val{font-family:'JetBrains Mono',monospace;font-size:12px;color:#8f98a0;font-weight:600;min-width:84px;text-align:right;}
+/* The help line also holds Reset: in the meter row itself it pushed the row wider
+   than the window's minimum width and the page grew a horizontal scrollbar. */
+.meter-help{display:flex;align-items:flex-start;gap:14px;font-size:12px;color:#7d8b96;line-height:1.45;padding-top:11px;}
+.meter-help span{flex:1;}
+.meter-help .btn-row-reset{flex:none;}
+.meter-help b{color:#66c0f4;font-weight:700;}
+</style>
+)HTML"
 // Styles above, markup below.
 R"HTML(
 </head>
@@ -324,6 +352,74 @@ R"HTML(
     <div id="row-RPADright" class="row"></div>
     <div id="row-RPAD" class="row"></div>
     <div id="row-RPADtouch" class="row"></div>
+  </div>
+  <div class="group">
+    <div class="group-label">LEFT TRIGGER</div>
+    <div class="row mode-row">
+      <div class="row-top">
+        <span class="pos-label">Trigger Mode</span>
+        <div class="connector"></div>
+        <select id="tmode-LT" class="mode-select"></select>
+      </div>
+    </div>
+    <div class="row mode-row" id="meter-row-LT">
+      <div class="row-top">
+        <span class="pos-label">Full-Press Point</span>
+        <div class="connector"></div>
+        <div class="meter-wrap">
+          <div class="meter" id="meter-LT">
+            <div class="meter-band" id="band-LT"></div>
+            <div class="meter-fill" id="fill-LT"></div>
+            <div class="meter-mark press" id="mark-press-LT" tabindex="0" role="slider" aria-label="Left trigger full-press point"></div>
+            <div class="meter-mark rel" id="mark-rel-LT" tabindex="0" role="slider" aria-label="Left trigger release point"></div>
+          </div>
+          <span class="meter-val" id="meter-val-LT"></span>
+        </div>
+      </div>
+      <div class="meter-help" id="meter-help-LT"><span>Pull the trigger to watch it. Drag the <b>bright marker</b> to set where the full press happens and the dim one to set where it lets go. The analog pull still reaches the game while the full press is held.</span><button class="btn-row-reset" id="meter-reset-LT">Reset</button></div>
+    </div>
+    <div id="row-LTfull" class="row"></div>
+    <div class="row mode-row" id="haptic-row-LT">
+      <div class="row-top">
+        <span class="pos-label">Click Feel</span>
+        <div class="connector"></div>
+        <select id="thaptic-LT" class="mode-select"></select>
+      </div>
+    </div>
+  </div>
+  <div class="group">
+    <div class="group-label">RIGHT TRIGGER</div>
+    <div class="row mode-row">
+      <div class="row-top">
+        <span class="pos-label">Trigger Mode</span>
+        <div class="connector"></div>
+        <select id="tmode-RT" class="mode-select"></select>
+      </div>
+    </div>
+    <div class="row mode-row" id="meter-row-RT">
+      <div class="row-top">
+        <span class="pos-label">Full-Press Point</span>
+        <div class="connector"></div>
+        <div class="meter-wrap">
+          <div class="meter" id="meter-RT">
+            <div class="meter-band" id="band-RT"></div>
+            <div class="meter-fill" id="fill-RT"></div>
+            <div class="meter-mark press" id="mark-press-RT" tabindex="0" role="slider" aria-label="Right trigger full-press point"></div>
+            <div class="meter-mark rel" id="mark-rel-RT" tabindex="0" role="slider" aria-label="Right trigger release point"></div>
+          </div>
+          <span class="meter-val" id="meter-val-RT"></span>
+        </div>
+      </div>
+      <div class="meter-help" id="meter-help-RT"><span>Pull the trigger to watch it. Drag the <b>bright marker</b> to set where the full press happens and the dim one to set where it lets go. The analog pull still reaches the game while the full press is held.</span><button class="btn-row-reset" id="meter-reset-RT">Reset</button></div>
+    </div>
+    <div id="row-RTfull" class="row"></div>
+    <div class="row mode-row" id="haptic-row-RT">
+      <div class="row-top">
+        <span class="pos-label">Click Feel</span>
+        <div class="connector"></div>
+        <select id="thaptic-RT" class="mode-select"></select>
+      </div>
+    </div>
   </div>
   <div class="group">
     <div class="group-label">LEFT GRIP</div>
@@ -761,6 +857,7 @@ function resetDefaults(){
     diags[p]=DEFAULT_DIAGS[p];
     speeds[p]=DEFAULT_SPEEDS[p];
   });
+  triggerReset();
   flash=null;
   clearTimeout(flashTimer);
   renderModeSelects();
@@ -784,6 +881,7 @@ function currentProfile(){
     p[x+'diag']=diags[x];
     p[x+'speed']=String(speeds[x]);
   });
+  triggerToProfile(p);
   return p;
 }
 // Inverse of currentProfile: adopt a stored profile as the live state, filling
@@ -813,6 +911,7 @@ function loadProfileInto(p){
     // hasOwnProperty guard of its own.
     speeds[x]=clampSpeed(x,p[x+'speed']);
   });
+  triggerFromProfile(p);
   savedProfile=currentProfile();
 }
 // Commit the current state to the selected profile. Split out from the
@@ -1139,6 +1238,7 @@ function renderModeSelects(){
     setSpeed(padId,speeds[padId]);
   });
   renderPadRows();
+  renderTriggerSelects();
 }
 // Show only the rows the current mode actually has settings for.
 function renderPadRows(){
@@ -1395,7 +1495,220 @@ document.addEventListener('keyup',function(e){
   e.stopPropagation();
   sendCapture(e.code, pendingMods&~bit);
 });
-
+)HTML"
+// Dual-stage triggers (#75), in a literal of their own: the ones either side are
+// each within reach of the compiler's single-string limit. It sits ahead of the
+// page's first render so the two Full Press rows are in ROWS by then. The hooks
+// that bring it into the profile cycle — triggerToProfile, triggerFromProfile,
+// triggerReset and renderTriggerSelects — are called from the functions above.
+R"HTML(
+// ---- Dual-stage triggers ----
+var TRIGGERS=['LT','RT'];
+var TRIGGER_RAW_MAX=32767;
+// The same defaults and bounds as TriggerConfig.h, because C++ clamps whatever
+// this sends: a marker that stopped somewhere C++ would not has shown a value
+// that was never saved.
+var TRIGGER_DEFAULT={mode:'standard',press:95,release:80,haptic:'both'};
+var TRIGGER_PRESS_MIN=20, TRIGGER_PRESS_MAX=100, TRIGGER_RELEASE_MIN=5, TRIGGER_GAP=3;
+var TRIGGER_MODE_OPTIONS=[
+  {id:'standard', label:'Standard (analog only)'},
+  {id:'dual',     label:'Dual Stage (adds a full-press button)'},
+];
+var TRIGGER_HAPTIC_OPTIONS=[
+  {id:'off',   label:'Off'},
+  {id:'press', label:'Click on press'},
+  {id:'both',  label:'Click on press and release'},
+];
+// The full press is an ordinary rebindable row, so it rides the same capture
+// flow, picker and profile plumbing as a paddle.
+ROWS.push({id:'LTfull',badge:'L',posTag:'FULL',posLabel:'Full Press'},
+          {id:'RTfull',badge:'R',posTag:'FULL',posLabel:'Full Press'});
+DEFAULTS.LTfull='none';
+DEFAULTS.RTfull='none';
+var tmodes={}, tpress={}, trelease={}, thaptic={};
+// Where each trigger is right now, and whether the meter should read it as past
+// its press point. The latter is the same hysteresis the app applies, so the
+// meter shows what the binding will do.
+var tlevel={LT:0,RT:0}, tdown={LT:false,RT:false};
+function trigEl(id){ return document.getElementById(id); }
+function trigNum(v,def){ var n=parseInt(v,10); return (isNaN(n)||n===0)?def:n; }
+function clampPress(v){
+  return Math.min(TRIGGER_PRESS_MAX,Math.max(TRIGGER_PRESS_MIN,v));
+}
+// Always strictly below the press point, as TriggerConfig.h does it.
+function clampRelease(v,press){
+  var ceil=Math.max(TRIGGER_RELEASE_MIN,press-TRIGGER_GAP);
+  return Math.min(ceil,Math.max(TRIGGER_RELEASE_MIN,v));
+}
+function triggerReset(){
+  TRIGGERS.forEach(function(t){
+    tmodes[t]=TRIGGER_DEFAULT.mode;
+    tpress[t]=TRIGGER_DEFAULT.press;
+    trelease[t]=TRIGGER_DEFAULT.release;
+    thaptic[t]=TRIGGER_DEFAULT.haptic;
+  });
+}
+function triggerToProfile(p){
+  TRIGGERS.forEach(function(t){
+    p[t+'mode']=tmodes[t];
+    p[t+'press']=String(tpress[t]);
+    p[t+'release']=String(trelease[t]);
+    p[t+'haptic']=thaptic[t];
+  });
+}
+// Anything missing or unrecognised lands on the default, which is what a profile
+// saved before these settings existed has to read as: a plain analog trigger.
+function triggerFromProfile(p){
+  TRIGGERS.forEach(function(t){
+    tmodes[t]=(p[t+'mode']==='dual')?'dual':'standard';
+    tpress[t]=clampPress(trigNum(p[t+'press'],TRIGGER_DEFAULT.press));
+    trelease[t]=clampRelease(trigNum(p[t+'release'],TRIGGER_DEFAULT.release),tpress[t]);
+    var h=p[t+'haptic'];
+    thaptic[t]=(h==='off'||h==='press')?h:'both';
+  });
+}
+// Rebuilds the dropdowns, which only needs doing when a profile is loaded —
+// doing it on every change would reset the control under the user's hand.
+function renderTriggerSelects(){
+  TRIGGERS.forEach(function(t){
+    fillSelect('tmode-'+t,TRIGGER_MODE_OPTIONS,tmodes[t]);
+    fillSelect('thaptic-'+t,TRIGGER_HAPTIC_OPTIONS,thaptic[t]);
+  });
+  renderTriggerRows();
+}
+// Everything below the mode dropdown is about the full press, so it only exists
+// in Dual Stage.
+function renderTriggerRows(){
+  TRIGGERS.forEach(function(t){
+    var dual=(tmodes[t]==='dual');
+    ['meter-row-'+t,'haptic-row-'+t,'row-'+t+'full'].forEach(function(id){
+      var el=trigEl(id);
+      if(el) el.style.display=dual?'':'none';
+    });
+    // A capture still running on a row that has just been hidden would bind
+    // something nobody can see.
+    if(!dual&&listening===t+'full') cancelListening();
+    renderMeter(t);
+  });
+}
+function renderMeter(t){
+  var press=tpress[t], rel=trelease[t];
+  var mp=trigEl('mark-press-'+t), mr=trigEl('mark-rel-'+t);
+  mp.style.left=press+'%';
+  mr.style.left=rel+'%';
+  var band=trigEl('band-'+t);
+  band.style.left=rel+'%';
+  band.style.width=(press-rel)+'%';
+  trigEl('meter-val-'+t).textContent=press+'% / '+rel+'%';
+  mp.setAttribute('aria-valuemin',TRIGGER_PRESS_MIN);
+  mp.setAttribute('aria-valuemax',TRIGGER_PRESS_MAX);
+  mp.setAttribute('aria-valuenow',press);
+  mr.setAttribute('aria-valuemin',TRIGGER_RELEASE_MIN);
+  mr.setAttribute('aria-valuemax',press-TRIGGER_GAP);
+  mr.setAttribute('aria-valuenow',rel);
+  renderLevel(t);
+}
+function renderLevel(t){
+  var raw=tlevel[t];
+  // Rounded up like the app's own threshold, so the meter never reads as pressed
+  // a hair before the binding would.
+  var pressAt=Math.ceil(tpress[t]*TRIGGER_RAW_MAX/100);
+  var relAt=Math.ceil(trelease[t]*TRIGGER_RAW_MAX/100);
+  if(!tdown[t]&&raw>=pressAt) tdown[t]=true;
+  else if(tdown[t]&&raw<=relAt) tdown[t]=false;
+  trigEl('fill-'+t).style.width=(raw/TRIGGER_RAW_MAX*100)+'%';
+  trigEl('meter-'+t).className='meter'+(tdown[t]?' down':'');
+}
+function setTriggerLevel(t,raw){
+  tlevel[t]=Math.max(0,Math.min(TRIGGER_RAW_MAX,raw));
+  renderLevel(t);
+}
+// Moving the press point drags the release point down with it rather than
+// refusing to move, so the two can never cross; moving the release point stops
+// at the press point instead.
+function setTriggerPoint(t,which,pct){
+  if(which==='press'){
+    tpress[t]=clampPress(pct);
+    trelease[t]=clampRelease(trelease[t],tpress[t]);
+  }else{
+    trelease[t]=clampRelease(pct,tpress[t]);
+  }
+  renderMeter(t);
+}
+var tdrag=null;
+function pctFromPointer(t,e){
+  var r=trigEl('meter-'+t).getBoundingClientRect();
+  return Math.round((e.clientX-r.left)/r.width*100);
+}
+TRIGGERS.forEach(function(t){
+  var track=trigEl('meter-'+t);
+  // One set of pointer handlers on the track, captured to it, so a drag keeps
+  // working when the pointer wanders off the 12px bar. A press on a marker grabs
+  // that marker; a press anywhere else jumps the nearer one there and drags it.
+  track.addEventListener('pointerdown',function(e){
+    if(e.button!==0) return;
+    var which;
+    if(e.target.id==='mark-press-'+t) which='press';
+    else if(e.target.id==='mark-rel-'+t) which='rel';
+    else{
+      var pct=pctFromPointer(t,e);
+      which=(Math.abs(pct-tpress[t])<=Math.abs(pct-trelease[t]))?'press':'rel';
+      setTriggerPoint(t,which,pct);
+    }
+    tdrag={t:t,which:which};
+    track.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  track.addEventListener('pointermove',function(e){
+    if(tdrag&&tdrag.t===t) setTriggerPoint(t,tdrag.which,pctFromPointer(t,e));
+  });
+  function endDrag(e){
+    if(!tdrag||tdrag.t!==t) return;
+    tdrag=null;
+    try{ track.releasePointerCapture(e.pointerId); }catch(x){}
+  }
+  track.addEventListener('pointerup',endDrag);
+  track.addEventListener('pointercancel',endDrag);
+  [['press','mark-press-'],['rel','mark-rel-']].forEach(function(m){
+    trigEl(m[1]+t).addEventListener('keydown',function(e){
+      var step=e.shiftKey?5:1, d=0;
+      if(e.key==='ArrowLeft'||e.key==='ArrowDown') d=-step;
+      else if(e.key==='ArrowRight'||e.key==='ArrowUp') d=step;
+      else return;
+      e.preventDefault();
+      setTriggerPoint(t,m[0],(m[0]==='press'?tpress[t]:trelease[t])+d);
+    });
+  });
+  trigEl('tmode-'+t).addEventListener('change',function(e){
+    tmodes[t]=(e.target.value==='dual')?'dual':'standard';
+    renderTriggerRows();
+  });
+  trigEl('thaptic-'+t).addEventListener('change',function(e){
+    thaptic[t]=e.target.value;
+  });
+  trigEl('meter-reset-'+t).onclick=function(){
+    tpress[t]=TRIGGER_DEFAULT.press;
+    trelease[t]=TRIGGER_DEFAULT.release;
+    renderMeter(t);
+  };
+});
+// Live position from the app. A second listener rather than another branch in
+// the one above, which is in the literal that cannot take any more.
+if(window.chrome&&window.chrome.webview){
+  window.chrome.webview.addEventListener('message',function(e){
+    var msg;
+    try{ msg=JSON.parse(e.data); }catch(x){ return; }
+    if(msg.type!=='triggers') return;
+    setTriggerLevel('LT',parseInt(msg.l,10)||0);
+    setTriggerLevel('RT',parseInt(msg.r,10)||0);
+  });
+}
+triggerReset();
+// Hide the Dual Stage rows now rather than when the first profile arrives, so
+// they are never on screen for the moment before it does.
+renderTriggerRows();
+)HTML"
+R"HTML(
 renderAll();
 </script>
 </body>
@@ -1569,11 +1882,13 @@ LRESULT RemapWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         ShowWindow(hwnd, SW_HIDE);
+        KillTimer(hwnd, IDT_TRIGGER_LEVELS);
         if (m_onClose) m_onClose();
         return 0;
 
     case WM_CLOSE_CONFIRMED:
         ShowWindow(hwnd, SW_HIDE);
+        KillTimer(hwnd, IDT_TRIGGER_LEVELS);
         if (m_onClose) m_onClose();
         return 0;
 
@@ -1608,7 +1923,25 @@ LRESULT RemapWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
 
+    case WM_TIMER:
+        if (wp != IDT_TRIGGER_LEVELS) break;
+        // Pushed only when something moved. A trigger at rest is the usual
+        // state, and 30 identical messages a second to a page nobody is
+        // looking at is not free.
+        if (m_webview && m_mgr && IsWindowVisible(hwnd)) {
+            int l = 0, r = 0;
+            m_mgr->TriggerLevels(l, r);
+            if (l != m_lastLeftTrigger || r != m_lastRightTrigger) {
+                m_lastLeftTrigger  = l;
+                m_lastRightTrigger = r;
+                PostToWebView(L"{\"type\":\"triggers\",\"l\":\"" + std::to_wstring(l)
+                              + L"\",\"r\":\"" + std::to_wstring(r) + L"\"}");
+            }
+        }
+        return 0;
+
     case WM_DESTROY:
+        KillTimer(hwnd, IDT_TRIGGER_LEVELS);
         if (m_mgr) m_mgr->StopButtonCapture();
         m_webview.Reset();
         m_controller.Reset();
@@ -2166,6 +2499,23 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
         readPad("LPAD", cfg.leftPad);
         readPad("RPAD", cfg.rightPad);
 
+        // Same flat keys as the pads, under the trigger's own id. The bare id
+        // is never sent — only "LTmode", "LTfull" and the rest — so the reader's
+        // "key": match cannot confuse one trigger's values for another's.
+        auto readTrigger = [&](const std::string& id, TriggerSettings& t) {
+            auto num = [&](const std::string& key) {
+                return static_cast<uint32_t>(
+                    std::strtoul(JsonStr(msg, key).c_str(), nullptr, 10));
+            };
+            t.mode    = TriggerModeFromId(JsonStr(msg, id + "mode"));
+            t.press   = TriggerPressFromWire(num(id + "press"));
+            t.release = TriggerReleaseFromWire(num(id + "release"), t.press);
+            t.haptic  = TriggerHapticFromId(JsonStr(msg, id + "haptic"));
+            t.full    = BackButtonBinding::FromId(JsonStr(msg, id + "full"));
+        };
+        readTrigger("LT", cfg.leftTrigger);
+        readTrigger("RT", cfg.rightTrigger);
+
         const std::string token = JsonStr(msg, "game");
         if (PickerEntry* entry = EntryForToken(token)) {
             const std::wstring gameId = entry->game.id;
@@ -2274,6 +2624,16 @@ std::wstring RemapWindow::ProfileJson(const ControllerProfile& p) {
                L"\"" + k + L"left\":\"" + wid(s.left) + L"\","
                L"\"" + k + L"right\":\"" + wid(s.right) + L"\"";
     };
+    // One trigger's values under the id the page keys them by. Numbers go as
+    // strings like every other value on this channel.
+    auto trigger = [&](const wchar_t* id, const TriggerSettings& t) {
+        const std::wstring k = id;
+        return L"\"" + k + L"mode\":\"" + narrow(TriggerModeId(t.mode)) + L"\","
+               L"\"" + k + L"press\":\"" + std::to_wstring(t.press) + L"\","
+               L"\"" + k + L"release\":\"" + std::to_wstring(t.release) + L"\","
+               L"\"" + k + L"haptic\":\"" + narrow(TriggerHapticId(t.haptic)) + L"\","
+               L"\"" + k + L"full\":\"" + wid(t.full) + L"\"";
+    };
     return L"{\"useDefault\":\""
                + std::wstring(p.useDefaultMappings ? L"1" : L"0")
                + L"\","
@@ -2285,7 +2645,9 @@ std::wstring RemapWindow::ProfileJson(const ControllerProfile& p) {
                L"\"R4\":\"" + wid(p.back.r4) + L"\","
                L"\"R5\":\"" + wid(p.back.r5) + L"\","
              + pad(L"LPAD", p.leftPad) + L","
-             + pad(L"RPAD", p.rightPad) + L"}";
+             + pad(L"RPAD", p.rightPad) + L","
+             + trigger(L"LT", p.leftTrigger) + L","
+             + trigger(L"RT", p.rightTrigger) + L"}";
 }
 
 void RemapWindow::SendInitState() {
@@ -2318,6 +2680,10 @@ void RemapWindow::SendInitState() {
                 addLabel(*b);
         for (const auto* b : { &p.back.l4, &p.back.l5, &p.back.r4, &p.back.r5 })
             addLabel(*b);
+        // Stored under a trigger that is currently Standard still needs a name
+        // ready for when it is switched to Dual Stage.
+        addLabel(p.leftTrigger.full);
+        addLabel(p.rightTrigger.full);
     };
     addProfileLabels(m_config);
     for (const auto& [id, cfg] : m_gameProfiles)
@@ -2341,6 +2707,13 @@ void RemapWindow::SendInitState() {
     // arrives later whenever it changes, so the page needs one handler for it
     // either way, and having two ways to learn it is how they drift.
     SetControlState(m_controlEnabled, m_controlManual);
+
+    // The live trigger meters. Forgetting what was last sent makes the first
+    // tick send the current levels even if they have not moved, which is what
+    // a page that has just loaded needs. SetTimer on an existing id replaces
+    // it, so this is safe to run on every init.
+    m_lastLeftTrigger = m_lastRightTrigger = -1;
+    SetTimer(m_hwnd, IDT_TRIGGER_LEVELS, 33, nullptr);
 }
 
 // Token-based picker ids so the raw game id — possibly non-ASCII, sometimes

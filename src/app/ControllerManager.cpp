@@ -67,8 +67,9 @@ struct ControllerManager::Slot {
     // Indices 0-3 are the paddles (L4, L5, R4, R5); everything after them
     // belongs to the trackpads, which are ordinary bindings dispatched down
     // this same path. 4-5 are the pad clicks, 6-7 the pad touches, and 8-15
-    // the four directions of each pad in turn.
-    static constexpr size_t kBindableCount = 16;
+    // the four directions of each pad in turn. 16-17 are the full presses of
+    // the left and right triggers when they are dual-stage.
+    static constexpr size_t kBindableCount = 18;
     BackButtonBinding paddleHeld[kBindableCount];
 
     // What each pad's directions were last frame. Unlike every other edge
@@ -158,6 +159,20 @@ struct ControllerManager::Slot {
     PressState rightPress;
     bool prevLeftPressed  = false;
     bool prevRightPressed = false;
+
+    // Whether each trigger is past its full-press point (#75), with the
+    // hysteresis that keeps a finger resting near the point from chattering. The
+    // previous answer is carried here for the same reason as the pads' — it is
+    // resolved from an analog value, not a bit in the previous report — and
+    // doubles as the edge both the binding and the click haptic act on.
+    TriggerFullPress leftTrigger;
+    TriggerFullPress rightTrigger;
+    bool prevLeftTriggerFull  = false;
+    bool prevRightTriggerFull = false;
+    // Where each trigger is right now (raw 0..0x7FFF), published for the
+    // settings window's live meter. Per slot and combined by TriggerLevels, so
+    // a second controller sitting idle cannot overwrite the one being pulled.
+    std::atomic<int> triggerRaw[2] = { 0, 0 };
 
     // Auto-repeat for held key bindings. When the next repeat is due, and the
     // gap to use after that — both captured at press time from the user's
@@ -360,6 +375,14 @@ ControllerManager::~ControllerManager() {
 bool ControllerManager::IsGameModeActive() const {
     return std::any_of(m_slots.begin(), m_slots.end(),
         [](const auto& s) { return s->gameModeActive; });
+}
+
+void ControllerManager::TriggerLevels(int& left, int& right) const {
+    left = right = 0;
+    for (const auto& slot : m_slots) {
+        left  = (std::max)(left,  slot->triggerRaw[0].load(std::memory_order_relaxed));
+        right = (std::max)(right, slot->triggerRaw[1].load(std::memory_order_relaxed));
+    }
 }
 
 bool ControllerManager::IsGameModeShared() const {
@@ -590,9 +613,28 @@ static std::string DescribePad(const TrackpadSettings& pad) {
     }
 }
 
+// One trigger, in the terms a bug report is written in: where it presses, where
+// it lets go, what it holds and whether it clicks. A binding is its wire id
+// ("key:75", "leftMouse") because that is unambiguous and the log is read by
+// people comparing it against a profile.
+static std::string DescribeTrigger(const TriggerSettings& t) {
+    if (!t.IsDualStage()) return "standard";
+    const char* clicks = t.haptic == TriggerHaptic::Off   ? "no click"
+                       : t.haptic == TriggerHaptic::Press ? "click on press"
+                                                          : "click on press and release";
+    char buf[160];
+    snprintf(buf, sizeof(buf), "dual-stage (press %u%%, release %u%%, full=%s, %s)",
+             ClampTriggerPress(t.press),
+             ClampTriggerRelease(t.release, ClampTriggerPress(t.press)),
+             t.full.Id().c_str(), clicks);
+    return buf;
+}
+
 void ControllerManager::LogPadSettings() {
     std::string line = "PADS: left=" + DescribePad(m_profile.leftPad)
-                     + " right="     + DescribePad(m_profile.rightPad);
+                     + " right="     + DescribePad(m_profile.rightPad)
+                     + " | TRIGGERS: left="  + DescribeTrigger(m_profile.leftTrigger)
+                     + " right="             + DescribeTrigger(m_profile.rightTrigger);
 
     // The failure this exists to make visible: settings changed with game mode
     // off do nothing at all, and until now nothing said so. Two #95 sessions
@@ -730,6 +772,13 @@ void ControllerManager::ReleaseHeldPaddleInputs(Slot& slot) {
         SendPaddleInput(held, false);
         held = BackButtonBinding{};
     }
+    // The triggers' own state goes with what they were holding. Left set, a
+    // trigger already past its press point when the loop restarts would carry
+    // that into the first frame as if it had just been pressed.
+    slot.leftTrigger.Reset();
+    slot.rightTrigger.Reset();
+    slot.prevLeftTriggerFull  = false;
+    slot.prevRightTriggerFull = false;
 }
 
 void ControllerManager::StartButtonCapture(std::function<void(const BackButtonBinding&)> callback) {
@@ -1136,6 +1185,10 @@ void ControllerManager::DisableGameModeSlot(Slot& slot) {
     slot.leftPad.Reset();
     slot.rightPad.Reset();
     ReleaseHeldPaddleInputs(slot);
+    // Nothing is reading the triggers any more, and a meter left at its last
+    // value would show a pull that ended with the read loop.
+    slot.triggerRaw[0].store(0, std::memory_order_relaxed);
+    slot.triggerRaw[1].store(0, std::memory_order_relaxed);
     slot.vc.reset();
     slot.sc->EnableLizardMode();
     // Reopen shared so Steam can obtain write access — game mode is no longer active.
@@ -1293,6 +1346,20 @@ void ControllerManager::ReadLoop(Slot* slot) {
             memcpy(&try_, buf + 26, 2);
         }
 
+        // Where each trigger is, as a raw 0..0x7FFF. A report too short to carry
+        // them reads as released, which is also what a Standard trigger does
+        // with whatever it is given.
+        int leftTriggerRaw = 0, rightTriggerRaw = 0;
+        if (n >= 10) {
+            int16_t l = 0, r = 0;
+            memcpy(&l, buf + 6, 2);
+            memcpy(&r, buf + 8, 2);
+            leftTriggerRaw  = (std::max<int>)(l, 0);
+            rightTriggerRaw = (std::max<int>)(r, 0);
+        }
+        slot->triggerRaw[0].store(leftTriggerRaw,  std::memory_order_relaxed);
+        slot->triggerRaw[1].store(rightTriggerRaw, std::memory_order_relaxed);
+
         const PadDigital resolved{
             slot->leftPad.Directions(),
             slot->rightPad.Directions(),
@@ -1310,8 +1377,27 @@ void ControllerManager::ReadLoop(Slot* slot) {
                                   slot->rightPress.pressed, trx, try_),
             slot->leftPress.pressed,
             slot->rightPress.pressed,
+            slot->leftTrigger.Update(leftTriggerRaw,   m_profile.leftTrigger),
+            slot->rightTrigger.Update(rightTriggerRaw, m_profile.rightTrigger),
         };
         if (slot->vc) slot->vc->Update(buf, n, m_profile, resolved);
+
+        // The simulated click for a dual-stage trigger. Edge-triggered off the
+        // same answer the binding uses, so what is felt and what is sent cannot
+        // disagree about when the press happened. Nothing on the first frame:
+        // that one is a baseline, not an event. The send itself is queued to the
+        // rumble thread and never blocks here.
+        if (hasPrev) {
+            auto triggerClick = [&](bool left, const TriggerSettings& t, bool now, bool prev) {
+                if (now == prev) return;
+                if (now ? t.ClicksOnPress() : t.ClicksOnRelease())
+                    slot->sc->QueueTriggerClick(left);
+            };
+            triggerClick(true,  m_profile.leftTrigger,
+                         resolved.leftTriggerFull,  slot->prevLeftTriggerFull);
+            triggerClick(false, m_profile.rightTrigger,
+                         resolved.rightTriggerFull, slot->prevRightTriggerFull);
+        }
 
         // Trackpad haptics.
         {
@@ -1601,6 +1687,16 @@ void ControllerManager::ReadLoop(Slot* slot) {
                 { (rDirs&DirDown)!=0,  (rPrevDirs&DirDown)!=0,  rPad.EffectiveDirection(DirDown) },
                 { (rDirs&DirLeft)!=0,  (rPrevDirs&DirLeft)!=0,  rPad.EffectiveDirection(DirLeft) },
                 { (rDirs&DirRight)!=0, (rPrevDirs&DirRight)!=0, rPad.EffectiveDirection(DirRight) },
+                // A dual-stage trigger's full press. Resolved from the analog
+                // value with hysteresis, so like the directions its previous
+                // answer is carried on the slot. EffectiveFull is empty outside
+                // dual-stage mode, and the detector reports false there too,
+                // which is what releases a press still held when the mode is
+                // changed.
+                { resolved.leftTriggerFull,  slot->prevLeftTriggerFull,
+                  m_profile.leftTrigger.EffectiveFull() },
+                { resolved.rightTriggerFull, slot->prevRightTriggerFull,
+                  m_profile.rightTrigger.EffectiveFull() },
             };
             static_assert(std::size(edges) == Slot::kBindableCount,
                           "paddleHeld must have one entry per edge-dispatched binding");
@@ -1665,6 +1761,8 @@ void ControllerManager::ReadLoop(Slot* slot) {
         slot->prevRightTap = resolved.rightTap;
         slot->prevLeftPressed  = resolved.leftPressed;
         slot->prevRightPressed = resolved.rightPressed;
+        slot->prevLeftTriggerFull  = resolved.leftTriggerFull;
+        slot->prevRightTriggerFull = resolved.rightTriggerFull;
 
         memcpy(prevBuf, buf, n);
         hasPrev = true;

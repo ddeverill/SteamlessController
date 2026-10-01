@@ -2,6 +2,7 @@
 #include "hid/HidDevice.h"
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <thread>
@@ -113,7 +114,7 @@ public:
     static constexpr uint8_t BTN_LS_TOUCH    = 0x01;  // bit 0 — left stick capacitive touch
     static constexpr uint8_t BTN_TP_LT       = 0x02;  // bit 1 — left trackpad active (touch or click)
     static constexpr uint8_t BTN_TP_LT_CLICK = 0x04;  // bit 2 — left trackpad hard press
-    // bit 3 (0x08): TBD
+    static constexpr uint8_t BTN_LT_FULL     = 0x08;  // bit 3 — left trigger fully pressed (digital threshold)
     static constexpr uint8_t FLAG_GRIP_RT    = 0x10;  // bit 4 — right grip sensor active
     static constexpr uint8_t FLAG_GRIP_LT    = 0x20;  // bit 5 — left grip sensor active
     // other bits TBD
@@ -223,6 +224,28 @@ public:
     // strongClick = true → physical-click sensation; false → light touch-down tick.
     void PulseTrackpadHaptic(bool left, bool strongClick);
 
+    // The simulated click for a dual-stage trigger (#75): a firmware click on
+    // the pad under the thumb on that trigger's side, plus a short buzz in the
+    // grip on the same side. There is no actuator in a trigger, so this comes
+    // from the controller body — which hardware testing found the most
+    // click-like of the candidates, with the pad click and the buzz together
+    // the strongest.
+    //
+    // Never writes to the device itself: it queues the click for the rumble
+    // thread and returns. This is called from the read loop, and a write that
+    // blocks (a Bluetooth link in trouble can hold one for seconds) must not
+    // stall the loop that is reading the trigger.
+    //
+    // Dropped rather than queued when the previous click on that side is still
+    // playing, for the reason TickTrackpadMovement is rate limited: the firmware
+    // plays the waveform to its end, and a backlog of them is a crunchy burst.
+    //
+    // The buzz joins the rumble a game is already asking for rather than
+    // replacing it — the higher of the two is what the grip plays, and the game's
+    // level resumes when the buzz ends. Sending an explicit zero when it ended,
+    // as the probe does, would cut an explosion short on every trigger pull.
+    void QueueTriggerClick(bool left);
+
     // Fire a very light tick while the thumb moves on the trackpad.
     // Returns false when the tick was dropped by the send rate limiter.
     bool TickTrackpadMovement(bool left);
@@ -237,6 +260,9 @@ private:
     };
 
     void RumbleLoop();
+    // Stops and joins the rumble thread if it is running, waking it from its
+    // wait first and discarding any trigger click it had not yet played.
+    void StopRumbleThread();
     RumbleFrame CurrentRumbleFrameLocked(std::chrono::steady_clock::time_point now) const;
     bool SendRumbleOutput(uint16_t leftSpeed, uint16_t rightSpeed);
     bool SendTrackpadPulseOutput(uint8_t side, uint16_t onUs, uint16_t offUs,
@@ -252,6 +278,17 @@ private:
 
     // Rumble state — protect with m_rumbleMutex.
     std::mutex        m_rumbleMutex;
+    // Wakes RumbleLoop ahead of its 40 ms period, for a queued trigger click or
+    // for the moment a click's buzz is due to end. Waits on m_rumbleMutex.
+    std::condition_variable m_rumbleWake;
+
+    // One per trigger, indexed 0 = left, 1 = right. Protected by m_rumbleMutex.
+    struct TriggerClick {
+        bool pending = false;  // pad click not yet sent by the rumble thread
+        std::chrono::steady_clock::time_point lastAt{};     // last accepted click
+        std::chrono::steady_clock::time_point buzzUntil{};  // grip buzz ends here
+    };
+    TriggerClick      m_triggerClick[2];
     uint16_t          m_rumbleBaseLeft   = 0;
     uint16_t          m_rumbleBaseRight  = 0;
     uint16_t          m_rumbleBoostLeft  = 0;

@@ -120,6 +120,13 @@ std::map<std::wstring, ControllerProfile> Load() {
             // exactly how those profiles behaved.
             ReadPad(child, L"LeftPad",  p.leftPad);
             ReadPad(child, L"RightPad", p.rightPad);
+            // Absent before dual-stage triggers existed, which reads back as
+            // Standard: analog only, as those profiles always were.
+            auto readDw = [&](const wchar_t* name, uint32_t def) -> uint32_t {
+                return ReadDw(child, name, def);
+            };
+            p.leftTrigger  = ReadTriggerSettings(L"LeftTrigger",  readDw);
+            p.rightTrigger = ReadTriggerSettings(L"RightTrigger", readDw);
             profiles[id] = p;
         }
         RegCloseKey(child);
@@ -156,6 +163,9 @@ void Save(const std::map<std::wstring, ControllerProfile>& profiles) {
             WriteDw(child, L"R5", p.back.r5.Pack());
             WritePad(child, L"LeftPad",  p.leftPad);
             WritePad(child, L"RightPad", p.rightPad);
+            auto writeDw = [&](const wchar_t* name, uint32_t v) { WriteDw(child, name, v); };
+            WriteTriggerSettings(L"LeftTrigger",  p.leftTrigger,  writeDw);
+            WriteTriggerSettings(L"RightTrigger", p.rightTrigger, writeDw);
             RegCloseKey(child);
         }
         ++i;

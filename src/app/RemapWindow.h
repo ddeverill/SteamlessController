@@ -147,6 +147,11 @@ private:
     // The background enumeration finished. LPARAM owns a
     // std::vector<InstalledGame> the handler takes and deletes.
     static constexpr UINT WM_GAMES_READY = WM_APP + 3;
+    // Pushes the triggers' live position to the page's meters while the window
+    // is shown (~30 Hz, and only when a value changed).
+    static constexpr UINT_PTR IDT_TRIGGER_LEVELS = 1;
+    int m_lastLeftTrigger  = -1;
+    int m_lastRightTrigger = -1;
 
     HWND              m_hwnd     = nullptr;
     HINSTANCE         m_hInst   = nullptr;

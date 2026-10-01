@@ -48,6 +48,15 @@ static uint16_t UnitToHapticSpeed(double value, uint16_t minimumSpeed) {
 static constexpr uint8_t HAPTIC_COMMAND_TICK  = 1;
 static constexpr uint8_t HAPTIC_COMMAND_CLICK = 2;
 
+// The grip half of a trigger click. 0x5000 for 60 ms is candidate 4 in
+// TriggerProbe, rated among the most click-like and chosen together with the
+// pad click (candidate 6). The minimum gap is just under the pad's own
+// movement-tick spacing, which exists for the same reason: a waveform still
+// playing when the next arrives turns into a burst.
+static constexpr uint16_t kTriggerClickBuzzSpeed = 0x5000;
+static constexpr auto kTriggerClickBuzzDuration  = std::chrono::milliseconds(60);
+static constexpr auto kTriggerClickMinGap        = std::chrono::milliseconds(40);
+
 // ---------------------------------------------------------------------------
 // Open / Close
 // ---------------------------------------------------------------------------
@@ -132,9 +141,19 @@ bool SteamController::AdoptHandle(void* handle, const std::wstring& path) {
     return m_device.Adopt(static_cast<HANDLE>(handle), path);
 }
 
-void SteamController::Close() {
-    if (m_running.exchange(false) && m_rumbleThread.joinable())
+void SteamController::StopRumbleThread() {
+    if (m_running.exchange(false) && m_rumbleThread.joinable()) {
+        m_rumbleWake.notify_all();
         m_rumbleThread.join();
+    }
+    // A click queued but not yet played must not fire the next time the thread
+    // starts, long after the pull that asked for it.
+    std::lock_guard<std::mutex> lock(m_rumbleMutex);
+    for (TriggerClick& c : m_triggerClick) c = TriggerClick{};
+}
+
+void SteamController::Close() {
+    StopRumbleThread();
     ClearTrackpadHaptics();
     SetRumble(0, 0);
     m_device.Close();
@@ -260,8 +279,7 @@ void SteamController::EmergencyLizardRestore() noexcept {
 }
 
 bool SteamController::EnableLizardMode() {
-    if (m_running.exchange(false) && m_rumbleThread.joinable())
-        m_rumbleThread.join();
+    StopRumbleThread();
 
     ClearTrackpadHaptics();
     SetRumble(0, 0);
@@ -380,7 +398,28 @@ SteamController::RumbleFrame SteamController::CurrentRumbleFrameLocked(
         if (m_rumbleBoostLeft  > frame.left)  frame.left  = m_rumbleBoostLeft;
         if (m_rumbleBoostRight > frame.right) frame.right = m_rumbleBoostRight;
     }
+    // A trigger click's buzz, merged the same way as the attack boost: the
+    // higher of it and whatever the game is asking for wins, and the game's
+    // level is what is left when the buzz ends.
+    if (m_triggerClick[0].buzzUntil > now && kTriggerClickBuzzSpeed > frame.left)
+        frame.left = kTriggerClickBuzzSpeed;
+    if (m_triggerClick[1].buzzUntil > now && kTriggerClickBuzzSpeed > frame.right)
+        frame.right = kTriggerClickBuzzSpeed;
     return frame;
+}
+
+void SteamController::QueueTriggerClick(bool left) {
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(m_rumbleMutex);
+        TriggerClick& c = m_triggerClick[left ? 0 : 1];
+        if (now - c.lastAt < kTriggerClickMinGap)
+            return;  // the last one is still playing — drop, don't queue
+        c.lastAt    = now;
+        c.pending   = true;
+        c.buzzUntil = now + kTriggerClickBuzzDuration;
+    }
+    m_rumbleWake.notify_one();
 }
 
 // ---------------------------------------------------------------------------
@@ -496,15 +535,50 @@ bool SteamController::SendTrackpadCommandOutput(uint8_t side, uint8_t command, i
 // ---------------------------------------------------------------------------
 
 void SteamController::RumbleLoop() {
+    constexpr auto kPeriod = std::chrono::milliseconds(40);
+    // Whether the last thing sent was non-zero. The actuators play on until told
+    // otherwise, and a trigger click's buzz can end with nothing else driving
+    // them — so the loop has to be the one to send the zero, once, when the
+    // frame goes quiet.
+    bool driving = false;
+
     while (m_running.load()) {
         RumbleFrame frame{};
+        bool clickLeft = false, clickRight = false;
         {
-            std::lock_guard<std::mutex> lock(m_rumbleMutex);
+            std::unique_lock<std::mutex> lock(m_rumbleMutex);
+            // Normally one period. Sooner for a click that has just been
+            // queued, and sooner again for the moment a click's buzz is due to
+            // stop — otherwise it would run on for up to a whole period past its
+            // 60 ms and feel like a smear rather than a click.
+            const auto now0 = std::chrono::steady_clock::now();
+            auto wakeAt = now0 + kPeriod;
+            for (const TriggerClick& c : m_triggerClick)
+                if (c.buzzUntil > now0 && c.buzzUntil < wakeAt) wakeAt = c.buzzUntil;
+            m_rumbleWake.wait_until(lock, wakeAt, [this] {
+                return !m_running.load()
+                    || m_triggerClick[0].pending || m_triggerClick[1].pending;
+            });
+            if (!m_running.load()) break;
+
+            clickLeft  = m_triggerClick[0].pending;
+            clickRight = m_triggerClick[1].pending;
+            m_triggerClick[0].pending = false;
+            m_triggerClick[1].pending = false;
             frame = CurrentRumbleFrameLocked(std::chrono::steady_clock::now());
         }
-        if (frame.left || frame.right)
-            SendRumbleOutput(frame.left, frame.right);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        // The pad half of a click goes out before the buzz so the sharper of
+        // the two leads. Off the read loop, which is the point of queuing it.
+        if (clickLeft)  SendTrackpadCommandOutput(HAPTIC_SIDE_LEFT,  HAPTIC_COMMAND_CLICK, 0);
+        if (clickRight) SendTrackpadCommandOutput(HAPTIC_SIDE_RIGHT, HAPTIC_COMMAND_CLICK, 0);
+
+        if (frame.left || frame.right) {
+            SendRumbleOutput(frame.left, frame.right);
+            driving = true;
+        } else if (driving) {
+            SendRumbleOutput(0, 0);
+            driving = false;
+        }
     }
 }

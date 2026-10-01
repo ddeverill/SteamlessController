@@ -3,6 +3,7 @@
 #include <string>
 #include "BackButtonConfig.h"
 #include "ControllerPlatform.h"
+#include "TriggerConfig.h"
 
 // What a trackpad's finger movement drives.
 //
@@ -156,6 +157,14 @@ struct PadDigital {
     // See kPadPressArea.
     bool leftPressed  = false;
     bool rightPressed = false;
+    // Each trigger is past its full-press point, with hysteresis already
+    // applied (TriggerFullPress). Not a trackpad, but resolved by the same
+    // loop and delivered by the same two paths, for the same reason the pad
+    // state is: one answer shared by the virtual pad, SendInput and the
+    // haptic, rather than three derivations of it. False in any mode but
+    // dual-stage.
+    bool leftTriggerFull  = false;
+    bool rightTriggerFull = false;
 };
 
 // Where a click landed on a pad, which is what keeps a directional pad's three
@@ -357,12 +366,18 @@ struct ControllerProfile {
         .click     = BackButtonBinding::FromAction(BackButtonAction::LeftMouseButton),
     };
 
+    // Both default to Standard — analog passthrough and nothing else — which
+    // is what every profile written before dual-stage triggers existed did.
+    TriggerSettings leftTrigger;
+    TriggerSettings rightTrigger;
+
     bool operator==(const ControllerProfile& o) const {
         return useDefaultMappings == o.useDefaultMappings
             && platform == o.platform
             && back.l4 == o.back.l4 && back.l5 == o.back.l5
             && back.r4 == o.back.r4 && back.r5 == o.back.r5
-            && leftPad == o.leftPad && rightPad == o.rightPad;
+            && leftPad == o.leftPad && rightPad == o.rightPad
+            && leftTrigger == o.leftTrigger && rightTrigger == o.rightTrigger;
     }
     bool operator!=(const ControllerProfile& o) const { return !(*this == o); }
 };
