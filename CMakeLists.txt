@@ -98,6 +98,18 @@ if (MSVC)
     set_target_properties(BindingCodecProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
 endif()
 
+# Dual-stage trigger checks — the detector's hysteresis and mode changes, the
+# clamps on persisted thresholds, and that profiles written before the feature
+# read back as a plain analog trigger. No controller needed.
+add_executable(TriggerDetectorProbe
+    src/probe/TriggerDetectorProbe.cpp
+)
+target_include_directories(TriggerDetectorProbe PRIVATE src)
+if (MSVC)
+    target_compile_options(TriggerDetectorProbe PRIVATE /W4 /WX /utf-8)
+    set_target_properties(TriggerDetectorProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+endif()
+
 # Virtual gamepad bus probe — dumps every bus the ViGEm client can see, which
 # is the one question a "vigem_connect failed" report cannot answer on its own
 add_executable(ViGEmBusProbe
@@ -147,6 +159,18 @@ target_link_libraries(TrackpadZoneProbe PRIVATE SteamController)
 if (MSVC)
     target_compile_options(TrackpadZoneProbe PRIVATE /W4 /WX /utf-8)
     set_target_properties(TrackpadZoneProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+endif()
+
+# TriggerProbe — measures trigger rest/travel/speed/jitter and benches haptic
+# click candidates, so a simulated dual-stage trigger (issue #75) has real
+# numbers behind its threshold and its feedback.
+add_executable(TriggerProbe
+    src/probe/TriggerProbe.cpp
+)
+target_link_libraries(TriggerProbe PRIVATE SteamController)
+if (MSVC)
+    target_compile_options(TriggerProbe PRIVATE /W4 /WX /utf-8)
+    set_target_properties(TriggerProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
 endif()
 
 # HapticTester — local-only interactive haptic tuning tool (source is gitignored)
