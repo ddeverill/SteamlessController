@@ -29,6 +29,8 @@ const JsCodeToVk kCodeMap[] = {
     {"Delete",      VK_DELETE},
     {"Insert",      VK_INSERT},
     {"Escape",      VK_ESCAPE},
+    {"PrintScreen", VK_SNAPSHOT},
+    {"ContextMenu", VK_APPS},
 
     // Navigation
     {"ArrowUp",     VK_UP},
