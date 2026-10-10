@@ -1489,6 +1489,14 @@ document.addEventListener('keydown',function(e){
 // so holding Ctrl and tapping Shift binds Ctrl+Shift.
 document.addEventListener('keyup',function(e){
   if(!listening||captureSent) return;
+  // Windows reports Print Screen to the page on release only; no keydown ever
+  // arrives, so the capture handler above never sees it.
+  if(e.code==='PrintScreen'){
+    e.preventDefault();
+    e.stopPropagation();
+    sendCapture(e.code, pendingMods|liveMods(e));
+    return;
+  }
   var bit=MODIFIER_CODES[e.code];
   if(!bit||!(modsPressed&bit)) return;
   e.preventDefault();
