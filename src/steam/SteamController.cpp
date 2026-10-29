@@ -254,19 +254,26 @@ bool SteamController::DisableLizardMode() {
     return true;
 }
 
-bool SteamController::SendKeepalive() {
+bool SteamController::SendKeepalive(DWORD* error) {
     uint8_t buf[64];
     BuildCmd(buf, CMD_CLEAR_DIGITAL_MAPPINGS);
     std::lock_guard<std::mutex> lock(m_writeMutex);
-    if (!m_device.SendFeatureReport(buf, sizeof(buf)))
+    if (error) *error = ERROR_SUCCESS;
+    if (!m_device.SendFeatureReport(buf, sizeof(buf))) {
+        if (error) *error = m_device.LastWriteError();
         return false;
+    }
 
     const uint8_t settingsPayload[] = {
         SETTING_LEFT_TRACKPAD_MODE,  0x00, 0x00,
         SETTING_RIGHT_TRACKPAD_MODE, 0x00, 0x00,
     };
     BuildCmd(buf, CMD_SET_SETTINGS, settingsPayload, sizeof(settingsPayload));
-    return m_device.SendFeatureReport(buf, sizeof(buf));
+    if (!m_device.SendFeatureReport(buf, sizeof(buf))) {
+        if (error) *error = m_device.LastWriteError();
+        return false;
+    }
+    return true;
 }
 
 bool SteamController::PowerOff() {

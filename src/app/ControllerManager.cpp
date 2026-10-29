@@ -12,9 +12,11 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <memory>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -29,6 +31,21 @@ static double ElapsedMs(std::chrono::steady_clock::time_point since) {
     return std::chrono::duration<double, std::milli>(
                std::chrono::steady_clock::now() - since).count();
 }
+
+// A Win32 error as the system words it, for a log line that has to stand on its
+// own: "1167" says nothing to the person reading a report, "The device is not
+// connected." says what failed. Empty for a code the system has no text for.
+static std::wstring Win32ErrorText(DWORD error) {
+    wchar_t text[256] = {};
+    const DWORD len = FormatMessageW(
+        FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, error, 0,
+        text, static_cast<DWORD>(std::size(text)), nullptr);
+    std::wstring out(text, len);
+    while (!out.empty() && (out.back() == L'\r' || out.back() == L'\n' || out.back() == L' '))
+        out.pop_back();
+    return out;
+}
+
 struct ControllerManager::Slot {
     std::wstring                       path;
     SteamController::Transport         transport = SteamController::Transport::Unknown;
@@ -1223,6 +1240,83 @@ void ControllerManager::StopReadLoop(Slot& slot) {
         slot.readThread.join();
 }
 
+// Whether the input a controller reports is still live. A failing keepalive
+// with reports still arriving is two very different things: a pad whose frames
+// keep changing is working and merely deaf to commands, while one repeating the
+// same frame has stopped sampling — which, from the game's side, is a stick
+// stuck wherever it was last. The arrival rate cannot tell them apart (a frozen
+// stream arrives just as fast), so this compares what the reports say.
+//
+// Only buf[2..29] is compared: buttons, triggers, sticks and trackpads. Byte 1
+// is tracked separately because nothing documents it, and a counter there would
+// make every frame look new. The IMU fields beyond are off and would be noise.
+class ReportFreezeProbe {
+public:
+    // Every state report, in order. `failing` says the keepalive is failing now.
+    void Observe(const uint8_t* r, size_t n, bool failing) {
+        if (n < kEnd) return;
+        const bool changed      = m_have && std::memcmp(m_input, r + kFirst, kEnd - kFirst) != 0;
+        const bool byte1Changed = m_have && m_byte1 != r[1];
+        std::memcpy(m_input, r + kFirst, kEnd - kFirst);
+        m_byte1 = r[1];
+        std::memcpy(m_last, r, kEnd);
+        m_have = true;
+
+        if (failing) {
+            ++m_reports;
+            if (changed)      ++m_changed;
+            if (byte1Changed) ++m_byte1Changed;
+            return;
+        }
+        // Healthy: keep the last full second, so the one before a failure is known.
+        const auto now = std::chrono::steady_clock::now();
+        if (now - m_windowStart >= std::chrono::seconds(1)) {
+            m_priorReports   = m_windowReports;
+            m_priorChanged   = m_windowChanged;
+            m_windowReports  = 0;
+            m_windowChanged  = 0;
+            m_windowStart    = now;
+        }
+        ++m_windowReports;
+        if (changed) ++m_windowChanged;
+    }
+
+    // The first failed keepalive: count from here.
+    void BeginFailure() { m_reports = m_changed = m_byte1Changed = 0; }
+
+    // What normal looks like, for comparison with what follows.
+    std::string Before() const {
+        char text[96];
+        snprintf(text, sizeof(text), "in the last full second before it, %u of %u state "
+                 "report(s) carried changed input", m_priorChanged, m_priorReports);
+        return text;
+    }
+
+    // What the reports have said since, ending in the last frame in hex.
+    std::string Since() const {
+        char text[256];
+        int len = snprintf(text, sizeof(text), "%u of %u state report(s) carried changed input "
+                           "(byte 1 changed %u times); last frame:",
+                           m_changed, m_reports, m_byte1Changed);
+        for (size_t i = 0; i < kEnd && len > 0 && len + 3 < static_cast<int>(sizeof(text)); ++i)
+            len += snprintf(text + len, sizeof(text) - len, " %02X", m_last[i]);
+        return text;
+    }
+
+private:
+    static constexpr size_t kFirst = 2;
+    static constexpr size_t kEnd   = 30;
+
+    uint8_t  m_input[kEnd - kFirst] = {};
+    uint8_t  m_last[kEnd]           = {};
+    uint8_t  m_byte1                = 0;
+    bool     m_have                 = false;
+    uint32_t m_reports = 0, m_changed = 0, m_byte1Changed = 0;
+    uint32_t m_windowReports = 0, m_windowChanged = 0;
+    uint32_t m_priorReports  = 0, m_priorChanged  = 0;
+    std::chrono::steady_clock::time_point m_windowStart = std::chrono::steady_clock::now();
+};
+
 void ControllerManager::ReadLoop(Slot* slot) {
     uint8_t buf[64];
     uint8_t prevBuf[64] = {};
@@ -1232,6 +1326,19 @@ void ControllerManager::ReadLoop(Slot* slot) {
     auto    lastReport       = std::chrono::steady_clock::now();
     bool    stalled          = false;
     bool    keepaliveFailing = false;
+
+    // What a failing keepalive looks like from the read side. Two reports of a
+    // controller that "stops working" differ on exactly this: one logged a stall
+    // four seconds after the first failed write, the other never did — so reports
+    // kept arriving, and the stall check cannot tell a controller that is
+    // streaming but deaf to commands from a healthy one. Counting what arrives
+    // after the first failure, by kind, is what tells the two apart.
+    int      keepaliveFailures = 0;
+    uint32_t stateSinceFail    = 0;
+    uint32_t otherSinceFail    = 0;
+    auto     lastStateReport   = std::chrono::steady_clock::now();
+    uint32_t abandonedReads    = slot->sc->AbandonedReads();
+    ReportFreezeProbe freeze;
 
     // No reports for this long while the device is still enumerated means the
     // controller died silently: battery empty, auto-sleep, or wireless drop.
@@ -1246,23 +1353,61 @@ void ControllerManager::ReadLoop(Slot* slot) {
         const auto nowKa = std::chrono::steady_clock::now();
         if (nowKa - lastKeepalive >= std::chrono::seconds(2)) {
             lastKeepalive = nowKa;
-            const bool ok = slot->sc->SendKeepalive();
-            if (!ok && !keepaliveFailing) {
-                keepaliveFailing = true;
-                EventLog::Write("KEEPALIVE: send failed (device write error)");
-            } else if (ok && keepaliveFailing) {
-                keepaliveFailing = false;
-                EventLog::Write("KEEPALIVE: recovered");
+            DWORD writeError = ERROR_SUCCESS;
+            const bool ok = slot->sc->SendKeepalive(&writeError);
+            if (!ok) {
+                ++keepaliveFailures;
+                if (!keepaliveFailing) {
+                    keepaliveFailing = true;
+                    stateSinceFail   = 0;
+                    otherSinceFail   = 0;
+                    freeze.BeginFailure();
+                    EventLog::Write("KEEPALIVE: send failed (device write error %lu: %ls)",
+                                    writeError, Win32ErrorText(writeError).c_str());
+                    EventLog::Write("KEEPALIVE: for comparison, %s", freeze.Before().c_str());
+                } else if (keepaliveFailures == 3 || keepaliveFailures == 15
+                           || keepaliveFailures == 60) {
+                    // Six seconds in, thirty, then two minutes: long enough to be
+                    // the same failure rather than a blip, and early enough to
+                    // have been written before anyone gets as far as opening the
+                    // log.
+                    EventLog::Write("KEEPALIVE: still failing after %d tries (write error %lu: %ls; "
+                                    "read error %lu) — since the first failure %u state "
+                                    "report(s) and %u other report(s) arrived, the last state "
+                                    "report %.1fs ago",
+                                    keepaliveFailures, writeError,
+                                    Win32ErrorText(writeError).c_str(),
+                                    slot->sc->LastReadError(), stateSinceFail, otherSinceFail,
+                                    ElapsedMs(lastStateReport) / 1000.0);
+                    EventLog::Write("KEEPALIVE: since the first failure, %s", freeze.Since().c_str());
+                }
+            } else if (keepaliveFailing) {
+                EventLog::Write("KEEPALIVE: recovered after %d failed tries", keepaliveFailures);
+                keepaliveFailing  = false;
+                keepaliveFailures = 0;
             }
         }
 
         size_t n = slot->sc->ReadReport(buf, sizeof(buf), /*timeoutMs=*/32);
+
+        // A read that the driver would not let go of. The loop used to wait on it
+        // forever, which is how an app with a wedged dongle could not be quit.
+        if (const uint32_t abandoned = slot->sc->AbandonedReads(); abandoned != abandonedReads) {
+            abandonedReads = abandoned;
+            EventLog::Write("READ: the device stack did not complete a cancelled read within "
+                            "2s, so the read was abandoned (%u so far) — the device stack is "
+                            "wedged, not just quiet",
+                            abandoned);
+        }
+
         if (n == 0) {
             if (!stalled
                     && std::chrono::steady_clock::now() - lastReport > kStallThreshold) {
                 stalled = true;
-                EventLog::Write("STALL: no reports for 4s (lastBattery=%d%%) %ls",
-                                slot->lastBatteryPercent, slot->path.c_str());
+                EventLog::Write("STALL: no reports for 4s (lastBattery=%d%%, last state report "
+                                "%.1fs ago, read error %lu) %ls",
+                                slot->lastBatteryPercent, ElapsedMs(lastStateReport) / 1000.0,
+                                slot->sc->LastReadError(), slot->path.c_str());
                 // Silence after Steam + Y is the controller doing as it was told.
                 if (m_alertFn && !slot->powerOffRequested.load()) {
                     wchar_t text[256];
@@ -1283,6 +1428,13 @@ void ControllerManager::ReadLoop(Slot* slot) {
             continue;
         }
         lastReport = std::chrono::steady_clock::now();
+        if (SteamController::IsStateReportId(buf[0])) {
+            lastStateReport = lastReport;
+            freeze.Observe(buf, n, keepaliveFailing);
+            if (keepaliveFailing) ++stateSinceFail;
+        } else if (keepaliveFailing) {
+            ++otherSinceFail;
+        }
         if (stalled) {
             stalled = false;
             EventLog::Write("STALL: reports resumed");

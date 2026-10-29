@@ -3,6 +3,7 @@
 #include <hidsdi.h>
 #include <hidpi.h>
 #include <setupapi.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -81,7 +82,8 @@ std::vector<std::wstring> HidDevice::Enumerate(uint16_t vid, uint16_t pid,
 // ---------------------------------------------------------------------------
 
 HidDevice::HidDevice(HidDevice&& o) noexcept
-    : m_handle(o.m_handle), m_event(o.m_event), m_outputReportLen(o.m_outputReportLen) {
+    : m_handle(o.m_handle), m_event(o.m_event), m_outputReportLen(o.m_outputReportLen),
+      m_inputReportLen(o.m_inputReportLen), m_read(std::move(o.m_read)) {
     o.m_handle = INVALID_HANDLE_VALUE;
     o.m_event  = INVALID_HANDLE_VALUE;
 }
@@ -92,6 +94,8 @@ HidDevice& HidDevice::operator=(HidDevice&& o) noexcept {
         m_handle          = o.m_handle;
         m_event           = o.m_event;
         m_outputReportLen = o.m_outputReportLen;
+        m_inputReportLen  = o.m_inputReportLen;
+        m_read            = std::move(o.m_read);
         o.m_handle = INVALID_HANDLE_VALUE;
         o.m_event  = INVALID_HANDLE_VALUE;
     }
@@ -150,6 +154,7 @@ bool HidDevice::FinishOpen(const std::wstring& path) {
         if (HidP_GetCaps(preparsed, &caps) == HIDP_STATUS_SUCCESS) {
             if (caps.OutputReportByteLength  > 0) m_outputReportLen  = caps.OutputReportByteLength;
             if (caps.FeatureReportByteLength > 0) m_featureReportLen = caps.FeatureReportByteLength;
+            if (caps.InputReportByteLength   > 0) m_inputReportLen   = caps.InputReportByteLength;
         }
         HidD_FreePreparsedData(preparsed);
     }
@@ -166,6 +171,9 @@ void HidDevice::Close() {
         CloseHandle(m_event);
         m_event = INVALID_HANDLE_VALUE;
     }
+    // Nothing is pending by now: the handle is closed and a healthy read drains
+    // before it returns. One that did not was abandoned and is no longer ours.
+    m_read.reset();
     m_path.clear();
 }
 
@@ -271,32 +279,72 @@ bool HidDevice::SendFeatureReport(const uint8_t* data, size_t size) {
     size_t copyLen = size < m_featureReportLen ? size : m_featureReportLen;
     std::memcpy(buf.data(), data, copyLen);
     BOOLEAN ok = HidD_SetFeature(m_handle, buf.data(), m_featureReportLen);
+    const DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+    m_lastWriteError.store(err, std::memory_order_relaxed);
     if (!ok)
         printf("SendFeatureReport(reportId=0x%02X cmd=0x%02X) failed: error %lu\n",
-               buf[0], buf[1], GetLastError());
+               buf[0], buf[1], err);
     return ok == TRUE;
 }
 
 size_t HidDevice::ReadInputReport(uint8_t* buffer, size_t size, uint32_t timeoutMs) {
-    OVERLAPPED ov{};
-    ov.hEvent = m_event;
+    // How long a cancelled read gets to complete. A working driver does it in
+    // microseconds, so this is only ever spent on a device stack that is stuck.
+    static constexpr DWORD kCancelDrainMs = 2000;
+
+    // The kernel writes into the OVERLAPPED and the buffer whenever the request
+    // finally completes, which for a wedged device may be never — so both live
+    // on the heap, where giving up on them is safe, rather than on this stack.
+    if (!m_read)
+        m_read = std::make_unique<ReadState>();
+    ReadState& rs = *m_read;
+    const size_t need = (std::max)({ size, static_cast<size_t>(m_inputReportLen), size_t{ 64 } });
+    if (rs.data.size() < need)
+        rs.data.resize(need);
+    rs.ov = {};
+    rs.ov.hEvent = m_event;
     ResetEvent(m_event);
 
     DWORD bytesRead = 0;
-    if (!ReadFile(m_handle, buffer, static_cast<DWORD>(size), &bytesRead, &ov)) {
-        if (GetLastError() != ERROR_IO_PENDING)
+    if (!ReadFile(m_handle, rs.data.data(), static_cast<DWORD>(size), &bytesRead, &rs.ov)) {
+        const DWORD err = GetLastError();
+        if (err != ERROR_IO_PENDING) {
+            // Failed outright, as a device that has gone away does. Say so, and
+            // pace the caller as a timeout would: its loop treats 0 as "nothing
+            // yet" and would otherwise spin a core on a read that cannot succeed.
+            m_lastReadError.store(err, std::memory_order_relaxed);
+            Sleep((std::min)(timeoutMs, 50u));
             return 0;
+        }
 
         DWORD wait = WaitForSingleObject(m_event, timeoutMs);
         if (wait != WAIT_OBJECT_0) {
-            // CancelIo is asynchronous — drain before ov leaves scope.
+            // CancelIo is asynchronous: the request can still complete into rs
+            // afterwards, so it has to be drained before rs is reused.
             CancelIo(m_handle);
-            GetOverlappedResult(m_handle, &ov, &bytesRead, TRUE);
+            if (WaitForSingleObject(m_event, kCancelDrainMs) != WAIT_OBJECT_0) {
+                // The driver will not complete the cancel. Waiting longer is what
+                // used to hang the read thread, and with it the app's exit, until
+                // the dongle was replugged. Give up the request: the kernel still
+                // owns rs and the event, so neither may be freed.
+                (void)m_read.release();
+                m_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+                if (!m_event)
+                    m_event = INVALID_HANDLE_VALUE;
+                m_abandonedReads.fetch_add(1, std::memory_order_relaxed);
+                return 0;
+            }
+            GetOverlappedResult(m_handle, &rs.ov, &bytesRead, FALSE);
             return 0;
         }
-        if (!GetOverlappedResult(m_handle, &ov, &bytesRead, FALSE))
+        if (!GetOverlappedResult(m_handle, &rs.ov, &bytesRead, FALSE)) {
+            m_lastReadError.store(GetLastError(), std::memory_order_relaxed);
             return 0;
+        }
     }
 
-    return static_cast<size_t>(bytesRead);
+    m_lastReadError.store(ERROR_SUCCESS, std::memory_order_relaxed);
+    const size_t got = (std::min)(static_cast<size_t>(bytesRead), size);
+    std::memcpy(buffer, rs.data.data(), got);
+    return got;
 }

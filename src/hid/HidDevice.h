@@ -1,7 +1,9 @@
 #pragma once
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -55,11 +57,35 @@ public:
     // Returns bytes read, or 0 on timeout/error.
     size_t ReadInputReport(uint8_t* buffer, size_t size, uint32_t timeoutMs = 1000);
 
+    // Win32 error of the most recent feature-report write, or ERROR_SUCCESS if it
+    // went through. Only the event log can say why a write failed: the printf
+    // beside it goes to a console a tray app does not have.
+    DWORD LastWriteError() const { return m_lastWriteError.load(std::memory_order_relaxed); }
+    // The same for reads: the error that ended the last read that failed outright
+    // (not one that merely timed out).
+    DWORD LastReadError() const { return m_lastReadError.load(std::memory_order_relaxed); }
+    // How many reads were given up on because the driver would not complete the
+    // cancel. Nonzero means the device stack is wedged, not merely quiet.
+    uint32_t AbandonedReads() const { return m_abandonedReads.load(std::memory_order_relaxed); }
+
 private:
+    // What the kernel writes into when a read completes. On the heap, not the
+    // caller's stack, so a read the driver never completes can be abandoned —
+    // leaked, deliberately — instead of being waited on forever.
+    struct ReadState {
+        OVERLAPPED           ov{};
+        std::vector<uint8_t> data;
+    };
+
     bool FinishOpen(const std::wstring& path);
     HANDLE       m_handle           = INVALID_HANDLE_VALUE;
     HANDLE       m_event            = INVALID_HANDLE_VALUE;
     ULONG        m_outputReportLen  = 64;
     ULONG        m_featureReportLen = 64;
+    ULONG        m_inputReportLen   = 64;
     std::wstring m_path;
+    std::unique_ptr<ReadState> m_read;
+    std::atomic<DWORD>    m_lastWriteError{ ERROR_SUCCESS };
+    std::atomic<DWORD>    m_lastReadError{ ERROR_SUCCESS };
+    std::atomic<uint32_t> m_abandonedReads{ 0 };
 };
