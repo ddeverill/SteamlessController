@@ -211,7 +211,17 @@ public:
     // The firmware silently reverts to lizard mode — including its autonomous
     // click haptics — after a period without host feature reports. Call this
     // every couple of seconds while game mode is active, like hid-steam does.
-    bool SendKeepalive();
+    //
+    // `error` receives the Win32 error of the write that failed. It is taken
+    // while the write lock is still held: the rumble thread writes through the
+    // same device, and its next success would otherwise overwrite the evidence.
+    bool SendKeepalive(DWORD* error = nullptr);
+
+    // Why the last read failed outright, and how many reads were abandoned
+    // because the device stack would not complete the cancel. For the read loop
+    // to put in the event log; see HidDevice.
+    DWORD    LastReadError()  const { return m_device.LastReadError(); }
+    uint32_t AbandonedReads() const { return m_device.AbandonedReads(); }
 
     // Ask the firmware to power the controller off — what Steam does for
     // Steam + Y. Confirmed on a puck slot with payload "off!" (also accepted
