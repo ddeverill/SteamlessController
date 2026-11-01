@@ -10,7 +10,7 @@
 enum class SteamState {
     NoSteam   = 0,  // steam.exe not running
     SteamIdle = 1,  // Steam running, no game active (RunningAppID == 0)
-    InGame    = 2,  // Steam running a game
+    InGame    = 2,  // Steam running a game (RunningAppID set and Steam's Running flag agrees)
 };
 
 // Watches the Steam process and its RunningAppID registry value, reporting
