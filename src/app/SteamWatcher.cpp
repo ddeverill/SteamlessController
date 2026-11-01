@@ -1,6 +1,9 @@
 #include "SteamWatcher.h"
+#include "EventLog.h"
 #include <Windows.h>
 #include <TlHelp32.h>
+#include <cwchar>
+#include <string>
 
 static constexpr int POLL_INTERVAL_MS      = 2000;
 static constexpr int POLL_SLICE_MS         = 100;  // wake often for fast Stop()
@@ -25,17 +28,100 @@ static bool IsSteamProcessRunning() {
     return found;
 }
 
-// Steam publishes the app id of the running game here and resets it to 0 on
-// exit. Covers Steam games and non-Steam shortcuts launched through Steam;
-// games launched entirely outside Steam are invisible to it (acceptable — we
-// keep the controller, and the manual toggle remains the escape hatch).
+static bool ReadDword(const wchar_t* subKey, const wchar_t* name, DWORD& out) {
+    DWORD size = sizeof(out);
+    return RegGetValueW(HKEY_CURRENT_USER, subKey, name, RRF_RT_REG_DWORD,
+                        nullptr, &out, &size) == ERROR_SUCCESS;
+}
+
+static std::wstring ReadString(const wchar_t* subKey, const wchar_t* name) {
+    wchar_t buf[MAX_PATH]{};
+    DWORD   size = sizeof(buf) - sizeof(wchar_t);
+    if (RegGetValueW(HKEY_CURRENT_USER, subKey, name, RRF_RT_REG_SZ,
+                     nullptr, buf, &size) != ERROR_SUCCESS)
+        return L"absent";
+    return buf;
+}
+
+// Whether the process Steam names as the active one is actually running.
+static const wchar_t* ProcessState(DWORD pid) {
+    if (pid == 0) return L"none";
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return GetLastError() == ERROR_ACCESS_DENIED ? L"guarded" : L"gone";
+    DWORD      code = 0;
+    const bool read = GetExitCodeProcess(h, &code) != FALSE;
+    CloseHandle(h);
+    return read && code != STILL_ACTIVE ? L"gone" : L"alive";
+}
+
+// Steam publishes the app id of the running game in RunningAppID and resets it
+// to 0 on exit. Covers Steam games and non-Steam shortcuts launched through
+// Steam; games launched entirely outside Steam are invisible to it (acceptable
+// — we keep the controller, and the manual toggle remains the escape hatch).
+//
+// The value alone is not trusted. A cracked game's Steam emulator writes
+// RunningAppID itself, so Steam is not involved and has no Steam Input to
+// give the controller to (#124). A launch Steam really made also sets the
+// per-app Running flag, which the emulator's app has no entry for — so a
+// Steam game counts only when that flag is 1. Non-Steam shortcuts get an id
+// with the top bit set and no Apps entry, so for those the value stands.
 static bool IsGameRunning() {
+    static DWORD s_noted = 0;  // watcher thread only; keeps the log to one line per id
+
     DWORD appId = 0;
-    DWORD size  = sizeof(appId);
-    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"RunningAppID",
-                     RRF_RT_REG_DWORD, nullptr, &appId, &size) != ERROR_SUCCESS)
+    if (!ReadDword(L"Software\\Valve\\Steam", L"RunningAppID", appId) || appId == 0) {
+        s_noted = 0;
         return false;
-    return appId != 0;
+    }
+
+    if (appId & 0x80000000u) {
+        if (s_noted != appId)
+            EventLog::Write("STEAM: RunningAppID=%lu is a non-Steam shortcut — counting it as a game", appId);
+        s_noted = appId;
+        return true;
+    }
+
+    wchar_t appKey[96];
+    swprintf_s(appKey, L"Software\\Valve\\Steam\\Apps\\%lu", appId);
+    DWORD running = 0;
+    if (ReadDword(appKey, L"Running", running) && running == 1)
+        return true;
+
+    if (s_noted != appId)
+        EventLog::Write("STEAM: ignoring RunningAppID=%lu — Steam has no running flag for it, "
+                        "so Steam did not launch it", appId);
+    s_noted = appId;
+    return false;
+}
+
+// RunningAppID alone cannot tell a game Steam launched from a value something
+// else wrote there (a cracked game's emulator, a stale value after a crash).
+// Steam's own launch also sets the per-app Running flag and the ActiveProcess
+// pid, and an emulator may repoint SteamClientDll, so record all of them
+// whenever the state changes — the log is then enough to see which it was.
+static void LogSteamRegistry(SteamState state) {
+    static constexpr wchar_t kSteam[]  = L"Software\\Valve\\Steam";
+    static constexpr wchar_t kActive[] = L"Software\\Valve\\Steam\\ActiveProcess";
+
+    DWORD      appId   = 0;
+    const bool haveApp = ReadDword(kSteam, L"RunningAppID", appId);
+
+    std::wstring running = L"n/a";
+    if (haveApp && appId != 0) {
+        wchar_t appKey[96];
+        swprintf_s(appKey, L"Software\\Valve\\Steam\\Apps\\%lu", appId);
+        DWORD flag = 0;
+        running = ReadDword(appKey, L"Running", flag) ? std::to_wstring(flag) : L"absent";
+    }
+
+    DWORD pid = 0;
+    ReadDword(kActive, L"pid", pid);
+
+    const std::wstring appText = haveApp ? std::to_wstring(appId) : L"absent";
+    EventLog::Write("STEAM: state %d — RunningAppID=%ls ActiveProcess.pid=%lu (%ls) "
+                    "Apps\\<id>\\Running=%ls SteamClientDll64=%ls",
+                    static_cast<int>(state), appText.c_str(), pid, ProcessState(pid),
+                    running.c_str(), ReadString(kActive, L"SteamClientDll64").c_str());
 }
 
 SteamState SteamWatcher::Detect() {
@@ -58,9 +144,10 @@ void SteamWatcher::Stop() {
 void SteamWatcher::PollLoop() {
     SteamState reported = Detect();
     m_state = reported;
+    LogSteamRegistry(reported);
     if (m_onChange) m_onChange(reported);
 
-    SteamState pending      = reported;
+    SteamState pending     = reported;
     int        pendingPolls = 0;
 
     while (m_running.load()) {
@@ -81,6 +168,7 @@ void SteamWatcher::PollLoop() {
             reported     = now;
             pendingPolls = 0;
             m_state      = reported;
+            LogSteamRegistry(reported);
             if (m_onChange) m_onChange(reported);
         } else {
             // Less Steam activity (game quit / Steam gone) — must hold for
@@ -93,6 +181,7 @@ void SteamWatcher::PollLoop() {
                 reported     = now;
                 pendingPolls = 0;
                 m_state      = reported;
+                LogSteamRegistry(reported);
                 if (m_onChange) m_onChange(reported);
             }
         }
