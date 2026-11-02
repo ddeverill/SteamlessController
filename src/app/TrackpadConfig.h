@@ -3,6 +3,7 @@
 #include <string>
 #include "BackButtonConfig.h"
 #include "ControllerPlatform.h"
+#include "StickConfig.h"
 #include "TriggerConfig.h"
 
 // What a trackpad's finger movement drives.
@@ -389,6 +390,11 @@ struct ControllerProfile {
     // How much of the game's rumble reaches the controller — see kRumbleDefault.
     uint32_t rumble = kRumbleDefault;
 
+    // How each stick's deadzone is read (#131). Default — the 8% circle — is
+    // what every profile written before this existed gets.
+    StickSettings leftStick;
+    StickSettings rightStick;
+
     bool operator==(const ControllerProfile& o) const {
         return useDefaultMappings == o.useDefaultMappings
             && platform == o.platform
@@ -396,7 +402,8 @@ struct ControllerProfile {
             && back.r4 == o.back.r4 && back.r5 == o.back.r5
             && leftPad == o.leftPad && rightPad == o.rightPad
             && leftTrigger == o.leftTrigger && rightTrigger == o.rightTrigger
-            && rumble == o.rumble;
+            && rumble == o.rumble
+            && leftStick == o.leftStick && rightStick == o.rightStick;
     }
     bool operator!=(const ControllerProfile& o) const { return !(*this == o); }
 };

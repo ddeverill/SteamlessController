@@ -637,6 +637,20 @@ const ControllerProfile& TrayApp::ActiveProfile() const {
 ControllerProfile TrayApp::EffectiveProfile() const {
     ControllerProfile profile = ActiveProfile();
 
+    // Sticks are the one setting a game keeps when it follows the default
+    // (#131). Following is for bindings — it exists so a game that only turns
+    // the controller on does not carry a stale copy of them — and a deadzone is
+    // about the game, not about how someone likes their buttons. Without this,
+    // giving a game its own deadzone would mean unticking "use my default
+    // mappings", which forks every binding along with it.
+    if (!m_activeGameId.empty()) {
+        auto it = m_gameProfiles.find(m_activeGameId);
+        if (it != m_gameProfiles.end() && it->second.useDefaultMappings) {
+            profile.leftStick  = it->second.leftStick;
+            profile.rightStick = it->second.rightStick;
+        }
+    }
+
     // A held pad type outranks the selected profile's, and only the pad type.
     // Everything else — every binding, every pad mode — is the foreground's to
     // decide, so alt-tabbing to the desktop still gets the desktop's controls.
@@ -2020,6 +2034,10 @@ void TrayApp::LoadSettings() {
         // Absent reads as full strength, as it was before rumble was settable;
         // zero is a real value (muted).
         profile.rumble = ClampRumble(readDw(L"Rumble", kRumbleDefault));
+        // Same for the sticks: an install that predates them reads back as
+        // Default, the 8% circle.
+        profile.leftStick  = ReadStickSettings(L"LeftStick",  readTriggerDw);
+        profile.rightStick = ReadStickSettings(L"RightStick", readTriggerDw);
     }
 
     m_defaultProfile = profile;
@@ -2108,6 +2126,8 @@ void TrayApp::SaveSettings() {
     WriteTriggerSettings(L"LeftTrigger",  profile.leftTrigger,  writeDw);
     WriteTriggerSettings(L"RightTrigger", profile.rightTrigger, writeDw);
     writeDw(L"Rumble", profile.rumble);
+    WriteStickSettings(L"LeftStick",  profile.leftStick,  writeDw);
+    WriteStickSettings(L"RightStick", profile.rightStick, writeDw);
     // Written last and unconditionally: its presence is what tells the next
     // launch the per-pad values above are authoritative.
     writeDw(L"PadsMigrated", 1);

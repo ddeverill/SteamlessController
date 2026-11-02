@@ -131,6 +131,10 @@ std::map<std::wstring, ControllerProfile> Load() {
             // strength. Zero is a real value (muted), so the default comes from
             // the read rather than from treating zero as missing.
             p.rumble = ClampRumble(ReadDw(child, L"Rumble", kRumbleDefault));
+            // Absent before stick deadzones were settable, which reads back as
+            // Default: the 8% circle those profiles always had.
+            p.leftStick  = ReadStickSettings(L"LeftStick",  readDw);
+            p.rightStick = ReadStickSettings(L"RightStick", readDw);
             profiles[id] = p;
         }
         RegCloseKey(child);
@@ -171,6 +175,8 @@ void Save(const std::map<std::wstring, ControllerProfile>& profiles) {
             WriteTriggerSettings(L"LeftTrigger",  p.leftTrigger,  writeDw);
             WriteTriggerSettings(L"RightTrigger", p.rightTrigger, writeDw);
             WriteDw(child, L"Rumble", p.rumble);
+            WriteStickSettings(L"LeftStick",  p.leftStick,  writeDw);
+            WriteStickSettings(L"RightStick", p.rightStick, writeDw);
             RegCloseKey(child);
         }
         ++i;

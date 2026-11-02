@@ -120,6 +120,70 @@ int main() {
         Check(huge.x == 32767 && huge.y == 0, "one wider than the range still reaches full travel");
     }
 
+    // Stick settings (#131): Default is the 8% circle untouched, Circle at 8 and
+    // 100 is the same thing, Square is the same deadzone read one axis at a time,
+    // and the outer point is where full output starts.
+    printf("\nStick settings\n");
+    {
+        const StickSettings dflt;
+        const StickSettings circle{ StickDeadzoneMode::Circle, 8, 100 };
+        const StickSettings square{ StickDeadzoneMode::Square, 8, 100 };
+
+        bool same = true;
+        const int16_t samples[] = { -32768, -20000, -9000, -2600, -300, 0, 400, 2621, 2622, 5000, 17000, 32767 };
+        for (int16_t sx : samples)
+            for (int16_t sy : samples) {
+                const StickPos a = ApplyStickDeadzone(sx, sy);
+                const StickPos b = ApplyStick(sx, sy, dflt);
+                const StickPos c = ApplyStick(sx, sy, circle);
+                if (a.x != b.x || a.y != b.y || a.x != c.x || a.y != c.y) same = false;
+            }
+        Check(same, "Default, and Circle at 8 and 100, read every sample exactly as the old deadzone did");
+
+        const StickPos axisOnly = ApplyStick(20000, 1500, square);
+        Check(axisOnly.y == 0 && axisOnly.x > 0,
+              "square: a push along one axis with a little on the other leaves the other at nothing");
+        const StickPos circleSame = ApplyStick(20000, 1500, circle);
+        Check(circleSame.y != 0, "which circle, measuring from the centre, does not");
+
+        const StickPos diag = ApplyStick(32767, 32767, square);
+        Check(diag.x == 32767 && diag.y == 32767, "square: a diagonal reaches full on both axes");
+        const StickPos diagNeg = ApplyStick(-32768, -32768, square);
+        Check(diagNeg.x == -32768 && diagNeg.y == -32768, "and so does the opposite one, to the bottom of the range");
+        const StickPos edge = ApplyStick(static_cast<int16_t>(kStickDeadzoneRaw), 0, square);
+        Check(edge.x == 0, "square: the edge of the deadzone is nothing");
+        const StickPos past = ApplyStick(static_cast<int16_t>(kStickDeadzoneRaw + 1), 0, square);
+        Check(past.x > 0 && past.x < 100, "and one step past it is a hair of input, not a jump");
+
+        const StickSettings early{ StickDeadzoneMode::Circle, 3, 76 };
+        const int16_t at76 = static_cast<int16_t>(kStickRawMax * 76 / 100);
+        const StickPos full = ApplyStick(at76, 0, early);
+        Check(std::abs(full.x - kStickRawMax) <= 2, "circle: pushed to the outer point reads full");
+        const StickPos beyond = ApplyStick(32767, 0, early);
+        Check(beyond.x == 32767, "and so does anything past it");
+        const StickPos below = ApplyStick(static_cast<int16_t>(kStickRawMax * 3 / 100), 0, early);
+        Check(below.x == 0, "circle: at the inner point it is nothing");
+        const StickPos mid = ApplyStick(static_cast<int16_t>(kStickRawMax * 40 / 100), 0, early);
+        Check(mid.x > 0 && mid.x < kStickRawMax, "and between the two it is on the ramp");
+
+        const StickSettings sqEarly{ StickDeadzoneMode::Square, 3, 76 };
+        const StickPos sqFull = ApplyStick(at76, at76, sqEarly);
+        Check(std::abs(sqFull.x - kStickRawMax) <= 2 && std::abs(sqFull.y - kStickRawMax) <= 2,
+              "square: pushed to the outer point on both axes reads full on both");
+
+        const StickSettings none{ StickDeadzoneMode::Circle, 0, 100 };
+        const StickPos through = ApplyStick(500, -700, none);
+        Check(through.x == 500 && through.y == -700, "an inner point of 0 with the outer at 100 passes the stick straight through");
+
+        const StickSettings wild{ StickDeadzoneMode::Circle, 99, 3 };
+        const StickPos tame = ApplyStick(32767, 0, wild);
+        Check(tame.x == 32767, "points that are out of order or too close are pulled into a usable range");
+
+        uint32_t inner = 99, outer = 3;
+        ClampStickRange(inner, outer);
+        Check(inner == 95 && outer == 100, "the clamp holds the inner point and moves the outer one");
+    }
+
     printf("\n%s\n", g_failures == 0 ? "All checks passed." : "FAILURES.");
     return g_failures == 0 ? 0 : 1;
 }

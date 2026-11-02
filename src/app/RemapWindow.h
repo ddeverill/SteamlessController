@@ -152,6 +152,8 @@ private:
     static constexpr UINT_PTR IDT_TRIGGER_LEVELS = 1;
     int m_lastLeftTrigger  = -1;
     int m_lastRightTrigger = -1;
+    // The last stick position pushed to the preview; see the timer handler.
+    int m_lastSticks[4] = { 0, 0, 0, 0 };
 
     HWND              m_hwnd     = nullptr;
     HINSTANCE         m_hInst   = nullptr;
