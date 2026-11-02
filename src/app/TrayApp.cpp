@@ -2017,6 +2017,9 @@ void TrayApp::LoadSettings() {
         };
         profile.leftTrigger  = ReadTriggerSettings(L"LeftTrigger",  readTriggerDw);
         profile.rightTrigger = ReadTriggerSettings(L"RightTrigger", readTriggerDw);
+        // Absent reads as full strength, as it was before rumble was settable;
+        // zero is a real value (muted).
+        profile.rumble = ClampRumble(readDw(L"Rumble", kRumbleDefault));
     }
 
     m_defaultProfile = profile;
@@ -2104,6 +2107,7 @@ void TrayApp::SaveSettings() {
     writePad(L"RightPad", profile.rightPad);
     WriteTriggerSettings(L"LeftTrigger",  profile.leftTrigger,  writeDw);
     WriteTriggerSettings(L"RightTrigger", profile.rightTrigger, writeDw);
+    writeDw(L"Rumble", profile.rumble);
     // Written last and unconditionally: its presence is what tells the next
     // launch the per-pad values above are authoritative.
     writeDw(L"PadsMigrated", 1);

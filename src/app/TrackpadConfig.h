@@ -75,6 +75,17 @@ inline ScrollDirection ScrollDirectionFromDword(uint32_t v) {
          : ScrollDirection::Natural;
 }
 
+// How much of a game's rumble reaches the controller, as a percentage (#136):
+// 100 passes it through, 0 mutes it. A per-profile setting, so one game can be
+// quiet while the rest keep theirs. Unlike the speeds below, 0 is a real value
+// here, so a stored profile that lacks it has to be told apart from one that
+// says 0 — readers give the default for an absent value, not for zero.
+inline constexpr uint32_t kRumbleDefault = 100;
+
+inline constexpr uint32_t ClampRumble(uint32_t v) {
+    return v > 100 ? 100 : v;
+}
+
 // How fast a pad in scroll mode scrolls, as a percentage of the built-in
 // scale. A taste setting: kCalibratedWheelLines in InputInjection.h already
 // makes a given swipe scroll the same distance on every machine, and this is
@@ -375,13 +386,17 @@ struct ControllerProfile {
     TriggerSettings leftTrigger;
     TriggerSettings rightTrigger;
 
+    // How much of the game's rumble reaches the controller — see kRumbleDefault.
+    uint32_t rumble = kRumbleDefault;
+
     bool operator==(const ControllerProfile& o) const {
         return useDefaultMappings == o.useDefaultMappings
             && platform == o.platform
             && back.l4 == o.back.l4 && back.l5 == o.back.l5
             && back.r4 == o.back.r4 && back.r5 == o.back.r5
             && leftPad == o.leftPad && rightPad == o.rightPad
-            && leftTrigger == o.leftTrigger && rightTrigger == o.rightTrigger;
+            && leftTrigger == o.leftTrigger && rightTrigger == o.rightTrigger
+            && rumble == o.rumble;
     }
     bool operator!=(const ControllerProfile& o) const { return !(*this == o); }
 };

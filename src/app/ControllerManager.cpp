@@ -658,7 +658,8 @@ void ControllerManager::LogPadSettings() {
     std::string line = "PADS: left=" + DescribePad(m_profile.leftPad)
                      + " right="     + DescribePad(m_profile.rightPad)
                      + " | TRIGGERS: left="  + DescribeTrigger(m_profile.leftTrigger)
-                     + " right="             + DescribeTrigger(m_profile.rightTrigger);
+                     + " right="             + DescribeTrigger(m_profile.rightTrigger)
+                     + " | RUMBLE: "         + std::to_string(ClampRumble(m_profile.rumble)) + "%";
 
     // The failure this exists to make visible: settings changed with game mode
     // off do nothing at all, and until now nothing said so. Two #95 sessions
@@ -691,6 +692,9 @@ void ControllerManager::ApplyPadSettings(Slot& slot) {
 void ControllerManager::SetProfile(const ControllerProfile& profile) {
     const bool platformChanged = profile.platform != m_profile.platform;
     m_profile = profile;
+    // Before the platform check below, which can return: a rebuilt pad is handed
+    // the strength already in force.
+    ApplyRumbleStrength();
 
     // The virtual pad is created as an X360 target or a DS4 one and cannot
     // become the other, so a platform change is the one setting here that
@@ -717,6 +721,18 @@ void ControllerManager::SetProfile(const ControllerProfile& profile) {
 
     // After the push, so what is logged is what the pads are now set to.
     LogPadSettings();
+}
+
+void ControllerManager::ApplyRumbleStrength() {
+    const uint32_t percent = ClampRumble(m_profile.rumble);
+    const uint32_t before  = m_rumbleStrength.exchange(percent, std::memory_order_relaxed);
+    // Muting stops whatever is already running: a game that last asked for a
+    // steady rumble would otherwise keep it going until it asked for another.
+    // Only on the change, since this runs on every foreground switch.
+    if (percent != 0 || before == 0) return;
+    for (auto& slot : m_slots)
+        if (slot->sc && slot->sc->IsOpen())
+            slot->sc->SetRumble(0, 0);
 }
 
 // Sends the key or mouse event a binding stands for. Gamepad actions reach the
@@ -1140,7 +1156,10 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut, bool 
 
     slot.vc = std::make_unique<VirtualController>(
         m_profile.platform,
-        [sc = slot.sc.get()](uint8_t largeMotor, uint8_t smallMotor) {
+        [this, sc = slot.sc.get()](uint8_t largeMotor, uint8_t smallMotor) {
+            const uint32_t strength = m_rumbleStrength.load(std::memory_order_relaxed);
+            largeMotor = static_cast<uint8_t>(largeMotor * strength / 100);
+            smallMotor = static_cast<uint8_t>(smallMotor * strength / 100);
             if (sc->IsOpen()) sc->SetRumble(largeMotor, smallMotor);
         });
     if (!slot.vc->IsValid()) {

@@ -227,6 +227,13 @@ private:
     // does not write one. SetProfile runs on every foreground switch.
     std::string                        m_lastPadDescription;
     ControllerProfile                  m_profile;
+    // How much of the game's rumble reaches the controller, as a percentage,
+    // taken from the profile in force (#136). Read on the thread the virtual
+    // pad delivers rumble from, written from the UI thread.
+    std::atomic<uint32_t>              m_rumbleStrength{kRumbleDefault};
+    // Brings m_rumbleStrength in line with m_profile, and silences the motors if
+    // that mutes them.
+    void ApplyRumbleStrength();
 
     std::atomic<bool>                            m_capturing{false};
     std::mutex                                   m_captureMutex;

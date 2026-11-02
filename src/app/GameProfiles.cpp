@@ -127,6 +127,10 @@ std::map<std::wstring, ControllerProfile> Load() {
             };
             p.leftTrigger  = ReadTriggerSettings(L"LeftTrigger",  readDw);
             p.rightTrigger = ReadTriggerSettings(L"RightTrigger", readDw);
+            // Absent before rumble was settable, which reads back as full
+            // strength. Zero is a real value (muted), so the default comes from
+            // the read rather than from treating zero as missing.
+            p.rumble = ClampRumble(ReadDw(child, L"Rumble", kRumbleDefault));
             profiles[id] = p;
         }
         RegCloseKey(child);
@@ -166,6 +170,7 @@ void Save(const std::map<std::wstring, ControllerProfile>& profiles) {
             auto writeDw = [&](const wchar_t* name, uint32_t v) { WriteDw(child, name, v); };
             WriteTriggerSettings(L"LeftTrigger",  p.leftTrigger,  writeDw);
             WriteTriggerSettings(L"RightTrigger", p.rightTrigger, writeDw);
+            WriteDw(child, L"Rumble", p.rumble);
             RegCloseKey(child);
         }
         ++i;

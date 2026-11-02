@@ -90,6 +90,9 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 .pad-note{font-size:12px;color:#7d8b96;padding:2px 0 10px;line-height:1.45;}
 /* Following the default leaves nothing below worth reading as editable. */
 #settings.inherited{opacity:.38;pointer-events:none;}
+/* The General Settings rows follow the default like everything in #settings,
+   but sit in a group of their own, so each is dimmed individually. */
+.row.inherited{opacity:.38;pointer-events:none;}
 .connector{flex:1;height:1.5px;border-top:1.5px dashed rgba(255,255,255,.1);}
 .row-right{display:flex;align-items:center;gap:11px;flex:none;}
 .chip-lg{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex:none;}
@@ -260,17 +263,27 @@ R"HTML(
     </div>
     <div class="inherit-note">This game turns the controller on and uses the controls from your default profile, including any later changes to it. Uncheck to give this game controls of its own.</div>
   </div>
-  <div id="settings">
   <div class="group">
-    <div class="group-label">CONTROLLER PLATFORM</div>
-    <div class="row mode-row">
+    <div class="group-label">GENERAL SETTINGS</div>
+    <div class="row mode-row" id="platform-row">
       <div class="row-top">
-        <span class="pos-label">Appear to games as</span>
+        <span class="pos-label">Controller Platform</span>
         <div class="connector"></div>
         <select id="platform" class="mode-select"></select>
       </div>
     </div>
+    <div class="row mode-row" id="rumble-row">
+      <div class="row-top">
+        <span class="pos-label">Rumble</span>
+        <div class="connector"></div>
+        <div class="speed-wrap">
+          <input type="range" id="rumble" class="speed-slider">
+          <span class="speed-val" id="rumble-val">100%</span>
+        </div>
+      </div>
+    </div>
   </div>
+  <div id="settings">
   <div class="group">
     <div class="group-label">LEFT TRACKPAD</div>
     <div class="row mode-row">
@@ -857,6 +870,7 @@ function resetDefaults(){
     speeds[p]=DEFAULT_SPEEDS[p];
   });
   triggerReset();
+  rumbleReset();
   flash=null;
   clearTimeout(flashTimer);
   renderModeSelects();
@@ -881,6 +895,7 @@ function currentProfile(){
     p[x+'speed']=String(speeds[x]);
   });
   triggerToProfile(p);
+  rumbleToProfile(p);
   return p;
 }
 // Inverse of currentProfile: adopt a stored profile as the live state, filling
@@ -911,6 +926,7 @@ function loadProfileInto(p){
     speeds[x]=clampSpeed(x,p[x+'speed']);
   });
   triggerFromProfile(p);
+  rumbleFromProfile(p);
   savedProfile=currentProfile();
 }
 // Commit the current state to the selected profile. Split out from the
@@ -1204,6 +1220,8 @@ function renderInherit(){
   if(box) box.checked=useDefault;
   var settings=document.getElementById('settings');
   if(settings) settings.className=(currentGame!==''&&useDefault)?'inherited':'';
+  var platformRow=document.getElementById('platform-row');
+  if(platformRow) platformRow.className='row mode-row'+((currentGame!==''&&useDefault)?' inherited':'');
   var reset=document.getElementById('btn-reset');
   if(reset) reset.disabled=(currentGame!==''&&useDefault);
   // Only offered for a game that actually has something saved — a game merely
@@ -1238,6 +1256,7 @@ function renderModeSelects(){
   });
   renderPadRows();
   renderTriggerSelects();
+  renderRumble();
 }
 // Show only the rows the current mode actually has settings for.
 function renderPadRows(){
@@ -1357,6 +1376,7 @@ document.getElementById('use-default').addEventListener('change',function(e){
   // rows, and reveals whatever controls this game had stored all along.
   cancelListening();
   renderInherit();
+  renderRumble();
 });
 document.getElementById('platform').addEventListener('change',function(e){
   setPlatform(e.target.value);
@@ -1715,6 +1735,69 @@ triggerReset();
 // Hide the Dual Stage rows now rather than when the first profile arrives, so
 // they are never on screen for the moment before it does.
 renderTriggerRows();
+)HTML"
+// Rumble (#136), in a literal of its own for the same reason as the triggers
+// above. The hooks that bring it into the profile cycle — rumbleReset,
+// rumbleToProfile, rumbleFromProfile and renderRumble — are called from the
+// functions further up; function declarations hoist, so the order is free.
+R"HTML(
+// ---- Rumble ----
+// How much of a game's rumble reaches the controller. Keep the default in step
+// with kRumbleDefault in TrackpadConfig.h.
+var RUMBLE_STOPS=[0,25,50,75,100];
+var RUMBLE_DEFAULT=100;
+var rumble=RUMBLE_DEFAULT;
+// Snaps to the nearest stop, so the slider and the readout always describe the
+// same number. Unlike the speeds, zero is a real value (muted); only something
+// unparseable, which is what a profile saved before this existed reads as, is
+// the default.
+function clampRumble(value){
+  var v=parseInt(value,10);
+  if(isNaN(v)) return RUMBLE_DEFAULT;
+  var best=RUMBLE_STOPS[0];
+  for(var i=0;i<RUMBLE_STOPS.length;i++){
+    if(Math.abs(RUMBLE_STOPS[i]-v)<Math.abs(best-v)) best=RUMBLE_STOPS[i];
+  }
+  return best;
+}
+function rumbleLabel(v){ return v===0?'Off':v+'%'; }
+function rumbleReset(){ rumble=RUMBLE_DEFAULT; }
+function rumbleToProfile(p){ p.rumble=String(rumble); }
+function rumbleFromProfile(p){ rumble=clampRumble(p.rumble); }
+// Whether this game is using the default profile's settings, and so has none of
+// its own to change.
+function rumbleFollowing(){ return currentGame!==''&&useDefault; }
+// What the slider shows: the default's strength while following it, which is
+// what the game will actually get, and the profile's own otherwise. The
+// profile's own value is kept underneath either way, so unticking brings back
+// whatever it had.
+function rumbleShown(){
+  if(rumbleFollowing()&&PROFILES.hasOwnProperty('')) return clampRumble(PROFILES[''].rumble);
+  return rumble;
+}
+function setRumble(value){
+  rumble=clampRumble(value);
+  var out=document.getElementById('rumble-val');
+  if(out) out.textContent=rumbleLabel(rumbleShown());
+}
+function renderRumble(){
+  var sel=document.getElementById('rumble');
+  if(sel){
+    // The slider travels over stop indexes, like the speed sliders.
+    sel.min=0; sel.max=RUMBLE_STOPS.length-1; sel.step=1;
+    sel.value=RUMBLE_STOPS.indexOf(clampRumble(rumbleShown()));
+  }
+  var row=document.getElementById('rumble-row');
+  if(row) row.className='row mode-row'+(rumbleFollowing()?' inherited':'');
+  setRumble(rumble);
+}
+(function(){
+  var sel=document.getElementById('rumble');
+  if(sel) sel.addEventListener('input',function(e){
+    setRumble(RUMBLE_STOPS[parseInt(e.target.value,10)]);
+  });
+})();
+renderRumble();
 )HTML"
 R"HTML(
 renderAll();
@@ -2528,6 +2611,16 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
         readTrigger("LT", cfg.leftTrigger);
         readTrigger("RT", cfg.rightTrigger);
 
+        // A value the page did not send is full strength, not zero: zero is a
+        // real setting (muted), and reading "absent" as it would silence the
+        // controller.
+        {
+            const std::string v = JsonStr(msg, "rumble");
+            cfg.rumble = v.empty() ? kRumbleDefault
+                                   : ClampRumble(static_cast<uint32_t>(
+                                         std::strtoul(v.c_str(), nullptr, 10)));
+        }
+
         const std::string token = JsonStr(msg, "game");
         if (PickerEntry* entry = EntryForToken(token)) {
             const std::wstring gameId = entry->game.id;
@@ -2659,7 +2752,8 @@ std::wstring RemapWindow::ProfileJson(const ControllerProfile& p) {
              + pad(L"LPAD", p.leftPad) + L","
              + pad(L"RPAD", p.rightPad) + L","
              + trigger(L"LT", p.leftTrigger) + L","
-             + trigger(L"RT", p.rightTrigger) + L"}";
+             + trigger(L"RT", p.rightTrigger) + L","
+               L"\"rumble\":\"" + std::to_wstring(p.rumble) + L"\"}";
 }
 
 void RemapWindow::SendInitState() {
