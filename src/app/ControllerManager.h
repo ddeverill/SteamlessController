@@ -91,6 +91,13 @@ public:
     // thread while the read loops run.
     void TriggerLevels(int& left, int& right) const;
 
+    // The battery level the controller last reported, or -1 when there is
+    // nothing to show: no controller, game mode off (the controller only
+    // reports to whoever holds it, and a level from before the hand-off would
+    // be hours old), or no report received yet. With more than one controller
+    // the lowest, since that is the one about to need charging.
+    int BatteryPercent() const;
+
     bool IsConnected()              const { return !m_slots.empty(); }
     bool IsGameModeActive()         const;
     // Whether any slot running game mode is doing so on a handle it shares with
