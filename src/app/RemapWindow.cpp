@@ -483,6 +483,7 @@ R"HTML(
       <div class="stick-pv">
         <svg id="spv-LS" width="180" height="180" viewBox="0 0 180 180" role="img" aria-label="Left stick deadzone preview. Drag to try a position.">
           <rect id="sbg-LS" x="1" y="1" width="178" height="178" fill="#1f5fbf"/>
+          <circle id="sbgc-LS" cx="90" cy="90" r="86" fill="#1f5fbf"/>
           <rect id="srs-LS" fill="#66c0f4"/>
           <circle id="src-LS" cx="90" cy="90" fill="#66c0f4"/>
           <rect id="sd1-LS" fill="#6b7785"/>
@@ -518,6 +519,7 @@ R"HTML(
       <div class="stick-pv">
         <svg id="spv-RS" width="180" height="180" viewBox="0 0 180 180" role="img" aria-label="Right stick deadzone preview. Drag to try a position.">
           <rect id="sbg-RS" x="1" y="1" width="178" height="178" fill="#1f5fbf"/>
+          <circle id="sbgc-RS" cx="90" cy="90" r="86" fill="#1f5fbf"/>
           <rect id="srs-RS" fill="#66c0f4"/>
           <circle id="src-RS" cx="90" cy="90" fill="#66c0f4"/>
           <rect id="sd1-RS" fill="#6b7785"/>
@@ -1978,8 +1980,13 @@ function renderStickDot(id){
   var s=sticks[id];
   if(s.mode==='default') return;
   var p=stickTry[id]||stickLive[id];
-  stickEl('sdot',id).setAttribute('cx',STICK_CENTRE+p.x*STICK_HALF);
-  stickEl('sdot',id).setAttribute('cy',STICK_CENTRE-p.y*STICK_HALF);
+  // The circle's plate is a circle, so the dot stays on it. The readout below
+  // still uses the real position: a stick pushed into its corner reads past the
+  // edge of a circle, and the output is what the game gets.
+  var dx=p.x, dy=p.y, m=Math.hypot(dx,dy);
+  if(s.mode==='circle'&&m>1){ dx/=m; dy/=m; }
+  stickEl('sdot',id).setAttribute('cx',STICK_CENTRE+dx*STICK_HALF);
+  stickEl('sdot',id).setAttribute('cy',STICK_CENTRE-dy*STICK_HALF);
   var r=stickOut(id,p.x,p.y);
   function pc(v){ return Math.round(v*100); }
   stickEl('sout',id).textContent='Stick '+pc(p.x)+', '+pc(p.y)+'  →  Output '+pc(r[0])+', '+pc(r[1]);
@@ -1993,6 +2000,8 @@ function renderStick(id){
   detail.style.display=(s.mode==='default')?'none':'';
   if(s.mode==='default') return;
   var i=s.inner/100, o=s.outer/100, H=STICK_HALF, C=STICK_CENTRE, sq=(s.mode==='square');
+  stickEl('sbg',id).style.display=sq?'':'none';
+  stickEl('sbgc',id).style.display=sq?'none':'';
   stickEl('srs',id).style.display=sq?'':'none';
   stickEl('src',id).style.display=sq?'none':'';
   stickEl('sd1',id).style.display=sq?'':'none';
@@ -2076,10 +2085,12 @@ function stickWire(id){
     var down=false;
     function tryAt(ev){
       var r=pv.getBoundingClientRect(), k=180/r.width;
-      stickTry[id]={
-        x:Math.max(-1,Math.min(1,((ev.clientX-r.left)*k-STICK_CENTRE)/STICK_HALF)),
-        y:Math.max(-1,Math.min(1,-((ev.clientY-r.top)*k-STICK_CENTRE)/STICK_HALF))
-      };
+      var x=Math.max(-1,Math.min(1,((ev.clientX-r.left)*k-STICK_CENTRE)/STICK_HALF));
+      var y=Math.max(-1,Math.min(1,-((ev.clientY-r.top)*k-STICK_CENTRE)/STICK_HALF));
+      // A circle's plate ends at its edge, so a drag past it lands on it.
+      var m=Math.hypot(x,y);
+      if(sticks[id].mode==='circle'&&m>1){ x/=m; y/=m; }
+      stickTry[id]={x:x,y:y};
       renderStickDot(id);
     }
     pv.addEventListener('pointerdown',function(ev){ down=true; pv.setPointerCapture(ev.pointerId); tryAt(ev); });
