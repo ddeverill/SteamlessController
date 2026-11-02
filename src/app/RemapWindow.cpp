@@ -289,7 +289,7 @@ R"HTML(
     </div>
     <div class="row mode-row" id="speed-row-LPAD">
       <div class="row-top">
-        <span class="pos-label">Scroll Speed</span>
+        <span class="pos-label">Speed</span>
         <div class="connector"></div>
         <div class="speed-wrap">
           <input type="range" id="speed-LPAD" class="speed-slider">
@@ -330,7 +330,7 @@ R"HTML(
     </div>
     <div class="row mode-row" id="speed-row-RPAD">
       <div class="row-top">
-        <span class="pos-label">Scroll Speed</span>
+        <span class="pos-label">Speed</span>
         <div class="connector"></div>
         <div class="speed-wrap">
           <input type="range" id="speed-RPAD" class="speed-slider">
@@ -484,11 +484,10 @@ var DEFAULTS = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RP
 var DEFAULT_MODES = {LPAD:'scroll',RPAD:'pointer'};
 var DEFAULT_DIRS  = {LPAD:'natural',RPAD:'natural'};
 var DEFAULT_DIAGS = {LPAD:'eight',RPAD:'eight'};
-// Percent of the calibrated scroll scale. Keep in step with
+// Percent of the built-in scroll or pointer scale. Keep in step with
 // kScrollSpeedDefault in TrackpadConfig.h.
 var DEFAULT_SPEEDS = {LPAD:100,RPAD:100};
-// The stops the scroll speed slider offers, as percentages of the calibrated
-// feel. Stored and sent as those percentages, so the C++ side keeps taking any
+// The stops the speed slider offers, as percentages of the calibrated feel. Stored and sent as those percentages, so the C++ side keeps taking any
 // value in kScrollSpeedMin..Max and nothing about persistence changes — these
 // are where the slider is willing to stop, not what the setting can hold.
 //
@@ -1248,7 +1247,8 @@ function renderPadRows(){
     var dirRow=document.getElementById('dir-row-'+padId);
     if(dirRow) dirRow.style.display=(mode==='scroll')?'':'none';
     var speedRow=document.getElementById('speed-row-'+padId);
-    if(speedRow) speedRow.style.display=(mode==='scroll')?'':'none';
+    // Pointer speed shares the slider scroll already had (#129).
+    if(speedRow) speedRow.style.display=(mode==='scroll'||mode==='pointer')?'':'none';
     var diagRow=document.getElementById('diag-row-'+padId);
     if(diagRow) diagRow.style.display=(mode==='dpad')?'':'none';
     // Only a directional pad splits its surface, so only it needs explaining.

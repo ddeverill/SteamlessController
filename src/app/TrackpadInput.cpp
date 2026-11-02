@@ -74,8 +74,13 @@ void TrackpadInput::UpdatePointer(int dx, int dy) {
     // Carry sub-pixel remainders between frames — per-frame deltas scaled by
     // sensitivity are often below one pixel, and truncating them each frame
     // would discard slow movement entirely.
-    const float fx = static_cast<float>(dx) * SENSITIVITY + m_remX;
-    const float fy = static_cast<float>(dy) * SENSITIVITY + m_remY;
+    //
+    // The pad's speed setting scales it, the same one scroll uses (#129): 100
+    // is the built-in feel, so a pad that never touched the setting moves as it
+    // always did.
+    const float sensitivity = SENSITIVITY * (static_cast<float>(m_scrollSpeed) / 100.0f);
+    const float fx = static_cast<float>(dx) * sensitivity + m_remX;
+    const float fy = static_cast<float>(dy) * sensitivity + m_remY;
     const LONG  ix = static_cast<LONG>(fx);
     const LONG  iy = static_cast<LONG>(fy);
     m_remX = fx - static_cast<float>(ix);

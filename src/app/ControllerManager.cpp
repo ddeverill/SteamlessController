@@ -595,8 +595,12 @@ std::vector<std::wstring> ControllerManager::UnheldDockPaths() const {
 // not a second thing to multiply by.
 static std::string DescribePad(const TrackpadSettings& pad) {
     switch (pad.mode) {
-    case TrackpadMode::MousePointer:   return "pointer";
-    case TrackpadMode::DS4Touchpad:    return "ds4 touchpad";
+    case TrackpadMode::MousePointer: {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "pointer (speed %u%%)", pad.scrollSpeed);
+        return buf;
+    }
+    case TrackpadMode::DS4Touchpad:   return "ds4 touchpad";
     case TrackpadMode::SingleButton:   return "single button";
     case TrackpadMode::DirectionalPad:
         return std::string("dpad (")
