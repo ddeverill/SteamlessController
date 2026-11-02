@@ -25,8 +25,9 @@ public:
     void SetPad(bool isLeftPad) { m_isLeftPad = isLeftPad; }
     void SetMode(TrackpadMode mode);
     void SetScrollDirection(ScrollDirection dir) { m_scrollDir = dir; }
-    // Percent of the calibrated scroll scale — see kScrollSpeedDefault.
-    // Clamped here rather than trusted, since it arrives from the registry.
+    // Percent of the built-in scale, for both scroll and pointer movement — see
+    // kScrollSpeedDefault. Clamped here rather than trusted, since it arrives
+    // from the registry.
     void SetScrollSpeed(uint32_t percent) { m_scrollSpeed = ClampScrollSpeed(percent); }
     void SetDiagonals(DiagonalMode d);
 

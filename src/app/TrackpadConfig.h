@@ -80,6 +80,10 @@ inline ScrollDirection ScrollDirectionFromDword(uint32_t v) {
 // makes a given swipe scroll the same distance on every machine, and this is
 // what remains for people who want that distance to be a different one.
 //
+// A pad in pointer mode takes the same percentage as its cursor speed (#129).
+// The name and the stored ScrollSpeed value are from before that, and are kept
+// so no profile has to be migrated for it.
+//
 // Stored as a DWORD, so 0 is what every profile written before this existed
 // reads back as — which has to mean "unset", not "do not scroll at all".
 // ScrollSpeedFromDword maps it to the default rather than clamping it up.
@@ -236,7 +240,7 @@ inline constexpr int kPadPressFrames = 2;
 struct TrackpadSettings {
     TrackpadMode      mode      = TrackpadMode::None;
     ScrollDirection   scrollDir = ScrollDirection::Natural;
-    // ScrollWheel only, as a percentage — see kScrollSpeedDefault.
+    // ScrollWheel and MousePointer, as a percentage — see kScrollSpeedDefault.
     uint32_t          scrollSpeed = kScrollSpeedDefault;
     BackButtonBinding click     = BackButtonBinding::FromAction(BackButtonAction::None);
     // Fires while a finger rests on the pad, whatever the pad's mode is doing
