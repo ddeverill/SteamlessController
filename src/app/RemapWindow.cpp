@@ -13,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <cstring>
+#include <climits>
 #include <cstdlib>
 
 RemapWindow* RemapWindow::s_instance = nullptr;
@@ -209,6 +210,25 @@ R"HTML(
 .meter-help span{flex:1;}
 .meter-help .btn-row-reset{flex:none;}
 .meter-help b{color:#66c0f4;font-weight:700;}
+/* The stick deadzone preview (#131): the three zones drawn to scale with the
+   stick's live position on top, and the two-point control that sets them. */
+.stick-detail{padding-top:6px;}
+.stick-pv{display:flex;align-items:center;gap:22px;padding:8px 0 4px;}
+.stick-pv svg{flex:none;touch-action:none;}
+.stick-readout{font-family:'JetBrains Mono',monospace;font-size:12px;color:#c7d5e0;margin-top:8px;}
+.stick-legend{display:flex;gap:14px;font-size:11px;color:#8f98a0;letter-spacing:.04em;margin:4px 0 0;}
+.stick-legend i{display:inline-block;width:9px;height:9px;margin-right:5px;vertical-align:-1px;}
+.stick-track{position:relative;height:6px;border-radius:3px;background:#1f5fbf;margin:34px 10px 12px;touch-action:none;}
+.stick-dead{position:absolute;top:0;bottom:0;left:0;background:#6b7785;border-radius:3px 0 0 3px;}
+.stick-ramp{position:absolute;top:0;bottom:0;background:#66c0f4;}
+.stick-handle{position:absolute;top:-6px;width:6px;height:18px;margin-left:-3px;background:#c7d5e0;border-radius:2px;cursor:ew-resize;touch-action:none;}
+.stick-handle:focus{outline:2px solid #fff;outline-offset:2px;}
+.stick-tag{position:absolute;top:-28px;left:50%;transform:translateX(-50%);background:#e8eef4;color:#1b2838;font-size:11px;font-weight:700;padding:1px 6px;border-radius:3px;white-space:nowrap;pointer-events:none;}
+.stick-note{font-size:12px;color:#7d8b96;line-height:1.45;}
+.stick-warn{color:#e0b04a;}
+.stick-foot{display:flex;align-items:flex-start;gap:14px;}
+.stick-foot .stick-note{flex:1;}
+.stick-foot .btn-row-reset{flex:none;}
 </style>
 )HTML"
 // Styles above, markup below.
@@ -445,6 +465,83 @@ R"HTML(
     <div id="row-R5" class="row"></div>
   </div>
   </div>
+)HTML"
+// The stick groups, in a literal of their own (the one above is near its budget)
+// and outside #settings on purpose: a game that follows the default's mappings
+// still keeps its own stick settings, so these must not be greyed with the rest.
+R"HTML(
+  <div class="group">
+    <div class="group-label">LEFT STICK</div>
+    <div class="row mode-row">
+      <div class="row-top">
+        <span class="pos-label">Deadzone</span>
+        <div class="connector"></div>
+        <select id="smode-LS" class="mode-select"></select>
+      </div>
+    </div>
+    <div class="stick-detail" id="sdetail-LS" style="display:none;">
+      <div class="stick-pv">
+        <svg id="spv-LS" width="180" height="180" viewBox="0 0 180 180" role="img" aria-label="Left stick deadzone preview. Drag to try a position.">
+          <rect id="sbg-LS" x="1" y="1" width="178" height="178" fill="#1f5fbf"/>
+          <rect id="srs-LS" fill="#66c0f4"/>
+          <circle id="src-LS" cx="90" cy="90" fill="#66c0f4"/>
+          <rect id="sd1-LS" fill="#6b7785"/>
+          <rect id="sd2-LS" fill="#6b7785"/>
+          <circle id="sdc-LS" cx="90" cy="90" fill="#6b7785"/>
+          <circle id="sdot-LS" r="5" fill="#fff" stroke="#16202d" stroke-width="2"/>
+        </svg>
+        <div class="stick-readout" id="sout-LS"></div>
+      </div>
+      <div class="stick-legend"><span><i style="background:#6b7785"></i>NO OUTPUT</span><span><i style="background:#66c0f4"></i>OUTPUT RAMP</span><span><i style="background:#1f5fbf"></i>MAX OUTPUT</span></div>
+      <div class="stick-track" id="strk-LS">
+        <div class="stick-dead" id="sdz-LS"></div>
+        <div class="stick-ramp" id="srp-LS"></div>
+        <div class="stick-handle" id="sh1-LS" tabindex="0" role="slider" aria-label="Left stick deadzone ends"><span class="stick-tag" id="st1-LS"></span></div>
+        <div class="stick-handle" id="sh2-LS" tabindex="0" role="slider" aria-label="Left stick full output starts"><span class="stick-tag" id="st2-LS"></span></div>
+      </div>
+      <div class="stick-foot">
+        <div class="stick-note"><span id="snote-LS"></span><span class="stick-warn" id="swarn-LS" style="display:none;"> Below about 6% some controllers drift while resting.</span></div>
+        <button class="btn-row-reset" id="sreset-LS">Reset</button>
+      </div>
+    </div>
+  </div>
+  <div class="group">
+    <div class="group-label">RIGHT STICK</div>
+    <div class="row mode-row">
+      <div class="row-top">
+        <span class="pos-label">Deadzone</span>
+        <div class="connector"></div>
+        <select id="smode-RS" class="mode-select"></select>
+      </div>
+    </div>
+    <div class="stick-detail" id="sdetail-RS" style="display:none;">
+      <div class="stick-pv">
+        <svg id="spv-RS" width="180" height="180" viewBox="0 0 180 180" role="img" aria-label="Right stick deadzone preview. Drag to try a position.">
+          <rect id="sbg-RS" x="1" y="1" width="178" height="178" fill="#1f5fbf"/>
+          <rect id="srs-RS" fill="#66c0f4"/>
+          <circle id="src-RS" cx="90" cy="90" fill="#66c0f4"/>
+          <rect id="sd1-RS" fill="#6b7785"/>
+          <rect id="sd2-RS" fill="#6b7785"/>
+          <circle id="sdc-RS" cx="90" cy="90" fill="#6b7785"/>
+          <circle id="sdot-RS" r="5" fill="#fff" stroke="#16202d" stroke-width="2"/>
+        </svg>
+        <div class="stick-readout" id="sout-RS"></div>
+      </div>
+      <div class="stick-legend"><span><i style="background:#6b7785"></i>NO OUTPUT</span><span><i style="background:#66c0f4"></i>OUTPUT RAMP</span><span><i style="background:#1f5fbf"></i>MAX OUTPUT</span></div>
+      <div class="stick-track" id="strk-RS">
+        <div class="stick-dead" id="sdz-RS"></div>
+        <div class="stick-ramp" id="srp-RS"></div>
+        <div class="stick-handle" id="sh1-RS" tabindex="0" role="slider" aria-label="Right stick deadzone ends"><span class="stick-tag" id="st1-RS"></span></div>
+        <div class="stick-handle" id="sh2-RS" tabindex="0" role="slider" aria-label="Right stick full output starts"><span class="stick-tag" id="st2-RS"></span></div>
+      </div>
+      <div class="stick-foot">
+        <div class="stick-note"><span id="snote-RS"></span><span class="stick-warn" id="swarn-RS" style="display:none;"> Below about 6% some controllers drift while resting.</span></div>
+        <button class="btn-row-reset" id="sreset-RS">Reset</button>
+      </div>
+    </div>
+  </div>
+)HTML"
+R"HTML(
 </div>
 
 <div id="footer">
@@ -871,6 +968,7 @@ function resetDefaults(){
   });
   triggerReset();
   rumbleReset();
+  stickReset();
   flash=null;
   clearTimeout(flashTimer);
   renderModeSelects();
@@ -896,6 +994,7 @@ function currentProfile(){
   });
   triggerToProfile(p);
   rumbleToProfile(p);
+  stickToProfile(p);
   return p;
 }
 // Inverse of currentProfile: adopt a stored profile as the live state, filling
@@ -927,6 +1026,7 @@ function loadProfileInto(p){
   });
   triggerFromProfile(p);
   rumbleFromProfile(p);
+  stickFromProfile(p);
   savedProfile=currentProfile();
 }
 // Commit the current state to the selected profile. Split out from the
@@ -1257,6 +1357,7 @@ function renderModeSelects(){
   renderPadRows();
   renderTriggerSelects();
   renderRumble();
+  renderStickSelects();
 }
 // Show only the rows the current mode actually has settings for.
 function renderPadRows(){
@@ -1799,6 +1900,212 @@ function renderRumble(){
 })();
 renderRumble();
 )HTML"
+// Stick deadzones (#131), in a literal of their own for the same reason as the
+// triggers above. The hooks that bring it into the profile cycle — stickReset,
+// stickToProfile, stickFromProfile and renderStickSelects — are called from the
+// functions further up; function declarations hoist, so the order is free.
+R"HTML(
+// ---- Stick deadzones ----
+var STICKS=['LS','RS'];
+var STICK_MODE_OPTIONS=[
+  {id:'default',label:'Default'},
+  {id:'circle', label:'Circle'},
+  {id:'square', label:'Square'},
+];
+// Keep in step with kStickInnerDefault, kStickOuterDefault and kStickMinGap in
+// StickConfig.h.
+var STICK_INNER_DEFAULT=8, STICK_OUTER_DEFAULT=100, STICK_GAP=5;
+// Half the preview's width in pixels: how far a full push lands from centre.
+var STICK_HALF=86, STICK_CENTRE=90;
+var sticks={};
+// The stick's live position, -1..1 with Y up, and a position tried by dragging
+// in the preview, which stands in for it until the stick moves again.
+var stickLive={LS:{x:0,y:0},RS:{x:0,y:0}};
+var stickTry={LS:null,RS:null};
+function stickEl(name,id){ return document.getElementById(name+'-'+id); }
+function stickReset(){
+  sticks={};
+  STICKS.forEach(function(id){
+    sticks[id]={mode:'default',inner:STICK_INNER_DEFAULT,outer:STICK_OUTER_DEFAULT};
+  });
+}
+// Both points together: each one's limit depends on the other, and the inner
+// point holds when they collide. Anything unparseable is the default.
+function stickClamp(s){
+  var i=parseInt(s.inner,10), o=parseInt(s.outer,10);
+  if(isNaN(i)) i=STICK_INNER_DEFAULT;
+  if(isNaN(o)) o=STICK_OUTER_DEFAULT;
+  i=Math.max(0,Math.min(i,100-STICK_GAP));
+  o=Math.max(i+STICK_GAP,Math.min(o,100));
+  s.inner=i; s.outer=o;
+}
+function stickToProfile(p){
+  STICKS.forEach(function(id){
+    p[id+'mode']=sticks[id].mode;
+    p[id+'inner']=String(sticks[id].inner);
+    p[id+'outer']=String(sticks[id].outer);
+  });
+}
+function stickFromProfile(p){
+  sticks={};
+  STICKS.forEach(function(id){
+    var m=p.hasOwnProperty(id+'mode')?p[id+'mode']:'default';
+    if(m!=='circle'&&m!=='square') m='default';
+    var s={mode:m,inner:p[id+'inner'],outer:p[id+'outer']};
+    stickClamp(s);
+    sticks[id]=s;
+  });
+}
+// What the deadzone makes of a position — the same arithmetic as StickConfig.h,
+// so the readout says what the game will see. x and y are -1..1.
+function stickOut(id,x,y){
+  var s=sticks[id], i=s.inner/100, o=s.outer/100;
+  function cl(v){ return Math.max(-1,Math.min(1,v)); }
+  if(s.mode==='square'){
+    var f=function(a){
+      var m=Math.abs(a);
+      var t=m<=i?0:Math.min(1,(m-i)/(o-i));
+      return a<0?-t:t;
+    };
+    return [f(x),f(y)];
+  }
+  var mag=Math.hypot(x,y);
+  if(mag<=i) return [0,0];
+  var t=(mag-i)/(o-i);
+  return [cl(x/mag*t),cl(y/mag*t)];
+}
+function renderStickDot(id){
+  var s=sticks[id];
+  if(s.mode==='default') return;
+  var p=stickTry[id]||stickLive[id];
+  stickEl('sdot',id).setAttribute('cx',STICK_CENTRE+p.x*STICK_HALF);
+  stickEl('sdot',id).setAttribute('cy',STICK_CENTRE-p.y*STICK_HALF);
+  var r=stickOut(id,p.x,p.y);
+  function pc(v){ return Math.round(v*100); }
+  stickEl('sout',id).textContent='Stick '+pc(p.x)+', '+pc(p.y)+'  →  Output '+pc(r[0])+', '+pc(r[1]);
+}
+function renderStick(id){
+  var s=sticks[id];
+  var detail=stickEl('sdetail',id);
+  if(!detail) return;
+  // Default needs no explaining and no controls, so it takes no room: the whole
+  // detail only opens for someone who has asked to tune it.
+  detail.style.display=(s.mode==='default')?'none':'';
+  if(s.mode==='default') return;
+  var i=s.inner/100, o=s.outer/100, H=STICK_HALF, C=STICK_CENTRE, sq=(s.mode==='square');
+  stickEl('srs',id).style.display=sq?'':'none';
+  stickEl('src',id).style.display=sq?'none':'';
+  stickEl('sd1',id).style.display=sq?'':'none';
+  stickEl('sd2',id).style.display=sq?'':'none';
+  stickEl('sdc',id).style.display=sq?'none':'';
+  var rs=stickEl('srs',id);
+  rs.setAttribute('x',C-o*H); rs.setAttribute('y',C-o*H);
+  rs.setAttribute('width',2*o*H); rs.setAttribute('height',2*o*H);
+  stickEl('src',id).setAttribute('r',o*H);
+  stickEl('sdc',id).setAttribute('r',Math.max(i*H,0.5));
+  var d1=stickEl('sd1',id), d2=stickEl('sd2',id), w=Math.max(2*i*H,1);
+  d1.setAttribute('x',C-i*H); d1.setAttribute('y',1); d1.setAttribute('width',w); d1.setAttribute('height',178);
+  d2.setAttribute('y',C-i*H); d2.setAttribute('x',1); d2.setAttribute('height',w); d2.setAttribute('width',178);
+  stickEl('sh1',id).style.left=s.inner+'%';
+  stickEl('sh2',id).style.left=s.outer+'%';
+  stickEl('sh1',id).setAttribute('aria-valuenow',s.inner);
+  stickEl('sh2',id).setAttribute('aria-valuenow',s.outer);
+  stickEl('st1',id).textContent=s.inner;
+  stickEl('st2',id).textContent=s.outer;
+  stickEl('sdz',id).style.width=s.inner+'%';
+  stickEl('srp',id).style.left=s.inner+'%';
+  stickEl('srp',id).style.width=(s.outer-s.inner)+'%';
+  stickEl('swarn',id).style.display=(s.inner<6)?'':'none';
+  stickEl('snote',id).textContent=(sq
+    ?'Square: each axis has its own deadzone and ramp, so a diagonal can reach full on both.'
+    :'Circle: the deadzone and ramp are measured by how far the stick is from centre.')
+    +' The dot follows your stick while Steamless mode is on; drag in the preview to try a position.';
+  renderStickDot(id);
+}
+function renderStickSelects(){
+  STICKS.forEach(function(id){
+    fillSelect('smode-'+id,STICK_MODE_OPTIONS,sticks[id].mode);
+    renderStick(id);
+  });
+}
+function stickWire(id){
+  var sel=stickEl('smode',id);
+  if(sel) sel.addEventListener('change',function(e){
+    sticks[id].mode=e.target.value;
+    stickTry[id]=null;
+    renderStick(id);
+  });
+  var rst=stickEl('sreset',id);
+  if(rst) rst.addEventListener('click',function(){
+    sticks[id].inner=STICK_INNER_DEFAULT;
+    sticks[id].outer=STICK_OUTER_DEFAULT;
+    renderStick(id);
+  });
+  var trk=stickEl('strk',id);
+  function setPoint(which,v){
+    var s=sticks[id];
+    v=Math.round(Math.max(0,Math.min(100,v)));
+    if(which===1) s.inner=Math.min(v,s.outer-STICK_GAP);
+    else          s.outer=Math.max(v,s.inner+STICK_GAP);
+    stickClamp(s);
+    renderStick(id);
+  }
+  [1,2].forEach(function(which){
+    var h=stickEl('sh'+which,id);
+    if(!h) return;
+    h.addEventListener('pointerdown',function(ev){
+      h.setPointerCapture(ev.pointerId); h._drag=true; ev.preventDefault();
+    });
+    h.addEventListener('pointerup',function(){ h._drag=false; });
+    h.addEventListener('pointercancel',function(){ h._drag=false; });
+    h.addEventListener('pointermove',function(ev){
+      if(!h._drag) return;
+      var r=trk.getBoundingClientRect();
+      setPoint(which,(ev.clientX-r.left)/r.width*100);
+    });
+    h.addEventListener('keydown',function(ev){
+      var step=ev.key==='ArrowLeft'||ev.key==='ArrowDown'?-1:(ev.key==='ArrowRight'||ev.key==='ArrowUp'?1:0);
+      if(!step) return;
+      ev.preventDefault();
+      var s=sticks[id];
+      setPoint(which,(which===1?s.inner:s.outer)+step);
+    });
+  });
+  var pv=stickEl('spv',id);
+  if(pv){
+    var down=false;
+    function tryAt(ev){
+      var r=pv.getBoundingClientRect(), k=180/r.width;
+      stickTry[id]={
+        x:Math.max(-1,Math.min(1,((ev.clientX-r.left)*k-STICK_CENTRE)/STICK_HALF)),
+        y:Math.max(-1,Math.min(1,-((ev.clientY-r.top)*k-STICK_CENTRE)/STICK_HALF))
+      };
+      renderStickDot(id);
+    }
+    pv.addEventListener('pointerdown',function(ev){ down=true; pv.setPointerCapture(ev.pointerId); tryAt(ev); });
+    pv.addEventListener('pointermove',function(ev){ if(down) tryAt(ev); });
+    pv.addEventListener('pointerup',function(){ down=false; });
+    pv.addEventListener('pointercancel',function(){ down=false; });
+  }
+}
+STICKS.forEach(stickWire);
+// Live position from the app, as a listener of its own like the triggers'.
+if(window.chrome&&window.chrome.webview){
+  window.chrome.webview.addEventListener('message',function(e){
+    var msg;
+    try{ msg=JSON.parse(e.data); }catch(x){ return; }
+    if(msg.type!=='sticks') return;
+    function norm(v){ return Math.max(-1,Math.min(1,(parseInt(v,10)||0)/32767)); }
+    stickLive.LS={x:norm(msg.lx),y:norm(msg.ly)};
+    stickLive.RS={x:norm(msg.rx),y:norm(msg.ry)};
+    // The stick moved, so it is the stick being shown again, not a tried spot.
+    stickTry.LS=null; stickTry.RS=null;
+    renderStickDot('LS'); renderStickDot('RS');
+  });
+}
+stickReset();
+renderStickSelects();
+)HTML"
 R"HTML(
 renderAll();
 </script>
@@ -2027,6 +2334,23 @@ LRESULT RemapWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 m_lastRightTrigger = r;
                 PostToWebView(L"{\"type\":\"triggers\",\"l\":\"" + std::to_wstring(l)
                               + L"\",\"r\":\"" + std::to_wstring(r) + L"\"}");
+            }
+
+            // The sticks' live position for the deadzone preview. A resting
+            // stick wobbles by a few counts every frame, so a change under about
+            // a pixel of the preview (~1% of travel) is not worth a message.
+            constexpr int kStickMoved = 330;
+            int s[4];
+            m_mgr->StickLevels(s);
+            bool moved = false;
+            for (int i = 0; i < 4; ++i)
+                if (std::abs(s[i] - m_lastSticks[i]) >= kStickMoved) moved = true;
+            if (moved) {
+                for (int i = 0; i < 4; ++i) m_lastSticks[i] = s[i];
+                PostToWebView(L"{\"type\":\"sticks\",\"lx\":\"" + std::to_wstring(s[0])
+                              + L"\",\"ly\":\"" + std::to_wstring(s[1])
+                              + L"\",\"rx\":\"" + std::to_wstring(s[2])
+                              + L"\",\"ry\":\"" + std::to_wstring(s[3]) + L"\"}");
             }
         }
         return 0;
@@ -2621,6 +2945,23 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
                                          std::strtoul(v.c_str(), nullptr, 10)));
         }
 
+        // The sticks, under "LS" and "RS". A point the page did not send is the
+        // default rather than zero: zero is a real inner point, and reading
+        // "absent" as it would quietly remove the deadzone.
+        auto readStick = [&](const std::string& id, StickSettings& s) {
+            auto num = [&](const std::string& key, uint32_t def) {
+                const std::string v = JsonStr(msg, key);
+                return v.empty() ? def
+                                 : static_cast<uint32_t>(std::strtoul(v.c_str(), nullptr, 10));
+            };
+            s.mode  = StickDeadzoneModeFromId(JsonStr(msg, id + "mode"));
+            s.inner = num(id + "inner", kStickInnerDefault);
+            s.outer = num(id + "outer", kStickOuterDefault);
+            ClampStickRange(s.inner, s.outer);
+        };
+        readStick("LS", cfg.leftStick);
+        readStick("RS", cfg.rightStick);
+
         const std::string token = JsonStr(msg, "game");
         if (PickerEntry* entry = EntryForToken(token)) {
             const std::wstring gameId = entry->game.id;
@@ -2739,6 +3080,12 @@ std::wstring RemapWindow::ProfileJson(const ControllerProfile& p) {
                L"\"" + k + L"haptic\":\"" + narrow(TriggerHapticId(t.haptic)) + L"\","
                L"\"" + k + L"full\":\"" + wid(t.full) + L"\"";
     };
+    auto stick = [&](const wchar_t* id, const StickSettings& s) {
+        const std::wstring k = id;
+        return L"\"" + k + L"mode\":\"" + narrow(StickDeadzoneModeId(s.mode)) + L"\","
+               L"\"" + k + L"inner\":\"" + std::to_wstring(s.inner) + L"\","
+               L"\"" + k + L"outer\":\"" + std::to_wstring(s.outer) + L"\"";
+    };
     return L"{\"useDefault\":\""
                + std::wstring(p.useDefaultMappings ? L"1" : L"0")
                + L"\","
@@ -2753,7 +3100,9 @@ std::wstring RemapWindow::ProfileJson(const ControllerProfile& p) {
              + pad(L"RPAD", p.rightPad) + L","
              + trigger(L"LT", p.leftTrigger) + L","
              + trigger(L"RT", p.rightTrigger) + L","
-               L"\"rumble\":\"" + std::to_wstring(p.rumble) + L"\"}";
+               L"\"rumble\":\"" + std::to_wstring(p.rumble) + L"\","
+             + stick(L"LS", p.leftStick) + L","
+             + stick(L"RS", p.rightStick) + L"}";
 }
 
 void RemapWindow::SendInitState() {
@@ -2819,6 +3168,7 @@ void RemapWindow::SendInitState() {
     // a page that has just loaded needs. SetTimer on an existing id replaces
     // it, so this is safe to run on every init.
     m_lastLeftTrigger = m_lastRightTrigger = -1;
+    for (int& v : m_lastSticks) v = INT_MIN / 2;
     SetTimer(m_hwnd, IDT_TRIGGER_LEVELS, 33, nullptr);
 }
 

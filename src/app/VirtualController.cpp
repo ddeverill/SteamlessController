@@ -63,14 +63,15 @@ static void ApplyBackActionX360(const BackButtonBinding& binding, XUSB_REPORT& r
 
 // One stick's X and Y from the state report, through the deadzone. Both
 // platforms read their sticks here, so they cannot disagree about what rest is.
-static StickPos ReadStick(const uint8_t* xy) {
+static StickPos ReadStick(const uint8_t* xy, const StickSettings& settings) {
     int16_t x, y;
     memcpy(&x, xy,     2);
     memcpy(&y, xy + 2, 2);
-    return ApplyStickDeadzone(x, y);
+    return ApplyStick(x, y, settings);
 }
 
-static XUSB_REPORT TranslateX360(const uint8_t* buf, size_t n) {
+static XUSB_REPORT TranslateX360(const uint8_t* buf, size_t n,
+                                 const ControllerProfile& profile) {
     XUSB_REPORT r{};
     if (n < 18) return r;
 
@@ -105,8 +106,8 @@ static XUSB_REPORT TranslateX360(const uint8_t* buf, size_t n) {
     r.bLeftTrigger  = static_cast<uint8_t>(std::clamp<int>(ltRaw >> 7, 0, 255));
     r.bRightTrigger = static_cast<uint8_t>(std::clamp<int>(rtRaw >> 7, 0, 255));
 
-    const StickPos ls = ReadStick(buf + 10);
-    const StickPos rs = ReadStick(buf + 14);
+    const StickPos ls = ReadStick(buf + 10, profile.leftStick);
+    const StickPos rs = ReadStick(buf + 14, profile.rightStick);
     r.sThumbLX = ls.x;
     r.sThumbLY = ls.y;
     r.sThumbRX = rs.x;
@@ -383,8 +384,8 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
             if (r.bTriggerL > 0) r.wButtons |= DS4_BUTTON_TRIGGER_LEFT;
             if (r.bTriggerR > 0) r.wButtons |= DS4_BUTTON_TRIGGER_RIGHT;
 
-            const StickPos ls = ReadStick(buf + 10);
-            const StickPos rs = ReadStick(buf + 14);
+            const StickPos ls = ReadStick(buf + 10, profile.leftStick);
+            const StickPos rs = ReadStick(buf + 14, profile.rightStick);
             r.bThumbLX = s16ToU8(ls.x);
             // Y is inverted before it is quantised, not after: 255 - u8 turns
             // a centred 128 into 127, so a stick at rest sat one step off on Y
@@ -540,7 +541,7 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
         if (!VIGEM_SUCCESS(exErr))
             printf("[ViGEm] ds4_update_ex failed: 0x%08X (bus driver may need update)\n", exErr);
     } else {
-        XUSB_REPORT report = TranslateX360(buf, n);
+        XUSB_REPORT report = TranslateX360(buf, n, profile);
 
         if (n > 4) {
             if (buf[4] & SteamController::BTN_L4) ApplyBackActionX360(backCfg.l4, report);

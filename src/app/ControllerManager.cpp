@@ -183,6 +183,10 @@ struct ControllerManager::Slot {
     // settings window's live meter. Per slot and combined by TriggerLevels, so
     // a second controller sitting idle cannot overwrite the one being pulled.
     std::atomic<int> triggerRaw[2] = { 0, 0 };
+    // Where each stick is as the controller reports it, before any deadzone:
+    // left X, left Y, right X, right Y, each -32768..32767. For the settings
+    // window's live preview, so what it shows is what the deadzone is up against.
+    std::atomic<int> stickRaw[4] = { 0, 0, 0, 0 };
 
     // Auto-repeat for held key bindings. When the next repeat is due, and the
     // gap to use after that — both captured at press time from the user's
@@ -395,6 +399,16 @@ int ControllerManager::BatteryPercent() const {
         if (percent >= 0 && (lowest < 0 || percent < lowest)) lowest = percent;
     }
     return lowest;
+}
+
+void ControllerManager::StickLevels(int (&xy)[4]) const {
+    for (int& v : xy) v = 0;
+    for (const auto& slot : m_slots) {
+        if (!slot->gameModeActive) continue;
+        for (int i = 0; i < 4; ++i)
+            xy[i] = slot->stickRaw[i].load(std::memory_order_relaxed);
+        return;
+    }
 }
 
 void ControllerManager::TriggerLevels(int& left, int& right) const {
@@ -654,12 +668,24 @@ static std::string DescribeTrigger(const TriggerSettings& t) {
     return buf;
 }
 
+// One stick's deadzone, in the same terms the settings window uses. The first
+// thing to check when someone says a stick feels dead or drifts.
+static std::string DescribeStick(const StickSettings& s) {
+    if (s.mode == StickDeadzoneMode::Default) return "default";
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s (inner %u%%, outer %u%%)",
+             StickDeadzoneModeId(s.mode), s.inner, s.outer);
+    return buf;
+}
+
 void ControllerManager::LogPadSettings() {
     std::string line = "PADS: left=" + DescribePad(m_profile.leftPad)
                      + " right="     + DescribePad(m_profile.rightPad)
                      + " | TRIGGERS: left="  + DescribeTrigger(m_profile.leftTrigger)
                      + " right="             + DescribeTrigger(m_profile.rightTrigger)
-                     + " | RUMBLE: "         + std::to_string(ClampRumble(m_profile.rumble)) + "%";
+                     + " | RUMBLE: "         + std::to_string(ClampRumble(m_profile.rumble)) + "%"
+                     + " | STICKS: left="    + DescribeStick(m_profile.leftStick)
+                     + " right="             + DescribeStick(m_profile.rightStick);
 
     // The failure this exists to make visible: settings changed with game mode
     // off do nothing at all, and until now nothing said so. Two #95 sessions
@@ -1233,6 +1259,7 @@ void ControllerManager::DisableGameModeSlot(Slot& slot) {
     // value would show a pull that ended with the read loop.
     slot.triggerRaw[0].store(0, std::memory_order_relaxed);
     slot.triggerRaw[1].store(0, std::memory_order_relaxed);
+    for (auto& s : slot.stickRaw) s.store(0, std::memory_order_relaxed);
     slot.vc.reset();
     slot.sc->EnableLizardMode();
     // Reopen shared so Steam can obtain write access — game mode is no longer active.
@@ -1452,6 +1479,12 @@ void ControllerManager::ReadLoop(Slot* slot) {
         }
         slot->triggerRaw[0].store(leftTriggerRaw,  std::memory_order_relaxed);
         slot->triggerRaw[1].store(rightTriggerRaw, std::memory_order_relaxed);
+        if (n >= 18) {
+            int16_t stick[4];
+            memcpy(stick, buf + 10, sizeof(stick));
+            for (int i = 0; i < 4; ++i)
+                slot->stickRaw[i].store(stick[i], std::memory_order_relaxed);
+        }
 
         const PadDigital resolved{
             slot->leftPad.Directions(),

@@ -98,6 +98,13 @@ public:
     // the lowest, since that is the one about to need charging.
     int BatteryPercent() const;
 
+    // Where each stick is right now, before any deadzone: left X, left Y, right
+    // X, right Y, each -32768..32767 with centre at zero. The first controller
+    // that is under our control, and all zeros while none is — nothing is
+    // reading the sticks then. Safe to call from the UI thread, like
+    // TriggerLevels.
+    void StickLevels(int (&xy)[4]) const;
+
     bool IsConnected()              const { return !m_slots.empty(); }
     bool IsGameModeActive()         const;
     // Whether any slot running game mode is doing so on a handle it shares with
