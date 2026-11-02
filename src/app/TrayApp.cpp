@@ -2196,6 +2196,16 @@ void TrayApp::ShowContextMenu() {
                 IDM_NOTIFICATIONS, L"Show Notifications");
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"Exit");
 
+    // Last, and only when there is a level to show (#128): a line reading
+    // "unknown" would be one more thing to explain, and the common reason for it
+    // — Steam holding the controller — is not a fault.
+    const int battery = m_controller->BatteryPercent();
+    if (battery >= 0) {
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        const std::wstring batteryLabel = L"Battery - " + std::to_wstring(battery) + L"%";
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, batteryLabel.c_str());
+    }
+
     // SetForegroundWindow is required for the menu to dismiss on click-away.
     SetForegroundWindow(m_hwnd);
 

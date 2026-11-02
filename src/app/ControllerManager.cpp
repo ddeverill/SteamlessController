@@ -51,7 +51,7 @@ struct ControllerManager::Slot {
     bool                               hasPendingClaim = false;
     SteamController::AccessClaim       pendingClaim =
                                            SteamController::AccessClaim::Failed;
-    int                                lastBatteryPercent = -1;  // -1 = never reported
+    std::atomic<int>                   lastBatteryPercent{-1};  // -1 = never reported; read by the tray menu
 
     // Steam + Y powers the controller off, as it does under Steam. Set once the
     // firmware has accepted the command, so the silence and the disconnect that
@@ -385,6 +385,16 @@ ControllerManager::~ControllerManager() {
 bool ControllerManager::IsGameModeActive() const {
     return std::any_of(m_slots.begin(), m_slots.end(),
         [](const auto& s) { return s->gameModeActive; });
+}
+
+int ControllerManager::BatteryPercent() const {
+    int lowest = -1;
+    for (const auto& slot : m_slots) {
+        if (!slot->gameModeActive) continue;
+        const int percent = slot->lastBatteryPercent.load();
+        if (percent >= 0 && (lowest < 0 || percent < lowest)) lowest = percent;
+    }
+    return lowest;
 }
 
 void ControllerManager::TriggerLevels(int& left, int& right) const {
@@ -959,7 +969,7 @@ void ControllerManager::SyncDevices() {
             EventLog::Write("DISCONNECT: OS removed device (transport=%s, gameMode=%d, lastBattery=%d%%) %ls",
                             SteamController::TransportName((*it)->transport),
                             (*it)->gameModeActive ? 1 : 0,
-                            (*it)->lastBatteryPercent, (*it)->path.c_str());
+                            (*it)->lastBatteryPercent.load(), (*it)->path.c_str());
             // Alert only when the controller was in active use; deliberate
             // unplugs while idle (and our own device cycles, which release
             // slots before cycling) stay quiet.
@@ -1262,16 +1272,16 @@ void ControllerManager::ReadLoop(Slot* slot) {
                     && std::chrono::steady_clock::now() - lastReport > kStallThreshold) {
                 stalled = true;
                 EventLog::Write("STALL: no reports for 4s (lastBattery=%d%%) %ls",
-                                slot->lastBatteryPercent, slot->path.c_str());
+                                slot->lastBatteryPercent.load(), slot->path.c_str());
                 // Silence after Steam + Y is the controller doing as it was told.
                 if (m_alertFn && !slot->powerOffRequested.load()) {
                     wchar_t text[256];
-                    if (slot->lastBatteryPercent >= 0)
+                    if (slot->lastBatteryPercent.load() >= 0)
                         swprintf_s(text,
                                    L"No input received for several seconds — the battery may "
                                    L"be dead, the controller may have gone to sleep, or the "
                                    L"wireless signal dropped. Last battery report: %d%%.",
-                                   slot->lastBatteryPercent);
+                                   slot->lastBatteryPercent.load());
                     else
                         swprintf_s(text,
                                    L"No input received for several seconds — the battery may "
@@ -1299,7 +1309,7 @@ void ControllerManager::ReadLoop(Slot* slot) {
                 const uint8_t percent     = buf[2];
                 if (slot->vc)
                     slot->vc->SetBatteryState(percent, chargeState);
-                if (slot->lastBatteryPercent != static_cast<int>(percent)) {
+                if (slot->lastBatteryPercent.load() != static_cast<int>(percent)) {
                     EventLog::Write("BATTERY: %u%% (chargeState=%u)", percent, chargeState);
                     slot->lastBatteryPercent = static_cast<int>(percent);
                 }
