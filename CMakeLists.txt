@@ -128,11 +128,12 @@ endif()
 add_executable(TrayPanelProbe
     src/probe/TrayPanelProbe.cpp
     src/app/TrayPanel.cpp
+    src/app/TrayPanelA11y.cpp
     src/app/EmbeddedFonts.cpp
     resources/fonts.rc
 )
 target_include_directories(TrayPanelProbe PRIVATE src resources)
-target_link_libraries(TrayPanelProbe PRIVATE d2d1 dwrite dwmapi)
+target_link_libraries(TrayPanelProbe PRIVATE d2d1 dwrite dwmapi uiautomationcore oleaut32 ole32)
 if (MSVC)
     target_compile_options(TrayPanelProbe PRIVATE /W4 /WX /utf-8)
     set_target_properties(TrayPanelProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
@@ -250,6 +251,7 @@ add_executable(SteamlessController WIN32
     src/app/main.cpp
     src/app/TrayApp.cpp
     src/app/TrayPanel.cpp
+    src/app/TrayPanelA11y.cpp
     src/app/EmbeddedFonts.cpp
     src/app/ControllerManager.cpp
     src/app/VirtualController.cpp
@@ -289,6 +291,8 @@ target_link_libraries(SteamlessController PRIVATE
     d2d1
     dwrite
     dwmapi
+    uiautomationcore
+    oleaut32
 )
 if (MSVC)
     target_compile_options(SteamlessController PRIVATE /W4 /WX /utf-8 /wd4828)
