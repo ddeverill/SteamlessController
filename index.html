@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SteamlessController: use your Steam Controller in any game</title>
+<meta name="description" content="A free, open-source Windows tray app that turns your Steam Controller into a standard Xbox or PlayStation gamepad. Works with the puck, USB and Bluetooth, no Steam required.">
+<meta name="theme-color" content="#15202c">
+<meta property="og:title" content="SteamlessController">
+<meta property="og:description" content="Use your Steam Controller as a standard gamepad in any game. Free and open source for Windows.">
+<meta property="og:type" content="website">
+<link rel="icon" type="image/png" href="assets/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@500;600&amp;display=swap" rel="stylesheet">
+<style>
+:root{--accent:#66c0f4;}
+body{margin:0;background:#15202c;}
+a{color:#66c0f4;text-decoration:none;}
+a:hover{color:#bfe3ff;}
+.nav-link{color:#c7d5e0;font-weight:600;font-size:15px;}
+.nav-link:hover{color:#ffffff;}
+.btn{transition:transform .15s,box-shadow .15s,filter .15s;}
+.btn:hover{transform:translateY(-1px);filter:brightness(1.08);}
+.btn-green:hover{color:#13260a;}
+.btn-ghost:hover{background:rgba(255,255,255,.08);color:#ffffff;}
+.card{transition:border-color .2s,background .2s;}
+.card:hover{border-color:rgba(102,192,244,.35);background:rgba(255,255,255,.04);}
+a:focus-visible,summary:focus-visible{outline:2px solid #66c0f4;outline-offset:3px;border-radius:6px;}
+summary{list-style:none;cursor:pointer;}
+summary::-webkit-details-marker{display:none;}
+details[open] .chev{transform:rotate(180deg);}
+.chev{transition:transform .2s;}
+@media (prefers-reduced-motion: reduce){.btn,.card,.chev{transition:none;}.btn:hover{transform:none;}}
+</style>
+</head>
+<body>
+<div style="font-family: 'Barlow', system-ui, sans-serif; color: #c7d5e0; background: radial-gradient(900px 520px at 78% -60px, rgba(26,159,255,.20), transparent 70%), linear-gradient(180deg, #1b2838 0%, #15202c 1100px); min-height: 100vh; overflow-x: hidden">
+
+<!-- NAV -->
+<header style="max-width: 1180px; margin: 0 auto; padding: 22px 24px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px">
+<a href="#top" style="display: flex; align-items: center; gap: 12px; color: #ffffff; font-weight: 700; font-size: 20px; letter-spacing: .2px">
+<span style="width: 38px; height: 38px; flex: none; border-radius: 10px; background: linear-gradient(145deg,#2a3f57 0%,#101925 100%); border: 1px solid rgba(102,192,244,.4); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 18px rgba(26,159,255,.35)"><img src="assets/logo.png" alt="" style="display: block; width: 24px; height: 24px"></span>
+SteamlessController
+</a>
+<nav aria-label="Primary" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px">
+<a class="nav-link" href="#features">Features</a>
+<a class="nav-link" href="#how">How it works</a>
+<a class="nav-link" href="#faq">FAQ</a>
+<a class="nav-link" href="https://github.com/ddeverill/SteamlessController">GitHub</a>
+<a class="btn" href="#download" style="background: #66c0f4; color: #08121c; font-weight: 700; font-size: 15px; padding: 10px 18px; border-radius: 8px; min-height: 24px">Download</a>
+</nav>
+</header>
+
+<!-- HERO -->
+<section id="top" style="max-width: 1180px; margin: 0 auto; padding: 56px 24px 72px; display: flex; flex-wrap: wrap; align-items: center; gap: 56px">
+<div style="flex: 1 1 460px; min-width: 0; display: flex; flex-direction: column; gap: 24px">
+<div style="display: flex; flex-wrap: wrap; gap: 10px">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 1.5px; color: var(--accent); border: 1px solid rgba(102,192,244,.35); background: rgba(102,192,244,.08); padding: 6px 12px; border-radius: 999px">FREE &amp; OPEN SOURCE</span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 1.5px; color: #aeb9c2; border: 1px solid rgba(255,255,255,.14); padding: 6px 12px; border-radius: 999px">WINDOWS 10 / 11</span>
+</div>
+<h1 style="margin: 0; font-size: clamp(42px, 6.4vw, 76px); line-height: 1.02; font-weight: 800; color: #ffffff; letter-spacing: -1.5px">Your Steam Controller. <span style="color: var(--accent)">Every game.</span> No Steam required.</h1>
+<p style="margin: 0; font-size: 20px; line-height: 1.55; color: #c7d5e0; max-width: 560px">SteamlessController is a tiny tray app that turns your Steam Controller into a standard Xbox or PlayStation gamepad, so it just works anywhere. Puck, wired or Bluetooth.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 14px; align-items: center">
+<a class="btn btn-green" href="https://github.com/ddeverill/SteamlessController/releases/latest/download/SteamlessController-Setup.exe" style="display: inline-flex; align-items: center; gap: 12px; background: linear-gradient(180deg,#94c63d 0%,#5ba32b 100%); color: #13260a; font-weight: 800; font-size: 18px; padding: 15px 26px; border-radius: 10px; box-shadow: 0 8px 28px rgba(91,163,43,.35)">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#13260a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"></path><path d="m7 11 5 5 5-5"></path><path d="M5 20h14"></path></svg>
+Download for Windows
+</a>
+<a class="btn btn-ghost" href="https://github.com/ddeverill/SteamlessController" style="display: inline-flex; align-items: center; gap: 10px; color: #ffffff; font-weight: 700; font-size: 17px; padding: 14px 22px; border-radius: 10px; border: 1px solid rgba(255,255,255,.18)">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.5c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.15-1.11-1.46-1.11-1.46-.9-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.9.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.5 9.5 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"></path></svg>
+View on GitHub
+</a>
+</div>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #8f98a0; letter-spacing: .3px">v1.25 &nbsp;·&nbsp; 5.6 MB installer</div>
+</div>
+
+<!-- App mock -->
+<div style="flex: 1 1 400px; min-width: 0; display: flex; justify-content: center">
+<div style="width: 100%; max-width: 480px; position: relative; margin-bottom: 84px">
+<div style="position: absolute; inset: -30px; background: radial-gradient(closest-side, rgba(26,159,255,.28), transparent); z-index: 0" aria-hidden="true"></div>
+<div style="position: relative; z-index: 1; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; box-shadow: 0 30px 80px rgba(0,0,0,.55); overflow: hidden; background: #15202c">
+<img src="assets/customize-controls.png" alt="The Customize Controls window: choose which game a profile applies to, then set the controller platform, rumble and button bindings." style="display: block; width: 100%; height: auto">
+</div>
+<div role="img" aria-label="The tray menu: Disable Steamless Mode, Control Mode, Customize Controls, Start with Windows, Enable on Launch, Open Event Log, Show Notifications, Exit, and the battery level." style="position: absolute; z-index: 2; right: -16px; bottom: -78px; width: 232px; box-sizing: border-box; background: #2b2b2b; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 5px 0; box-shadow: 0 18px 44px rgba(0,0,0,.6); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px; color: #ffffff">
+<div aria-hidden="true" style="padding: 5px 12px 5px 36px">Disable Steamless Mode</div>
+<div aria-hidden="true" style="padding: 5px 12px 5px 36px; display: flex; justify-content: space-between; align-items: center">Control Mode<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="#c9c9c9" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m3 1.5 3.5 3.5L3 8.5"></path></svg></div>
+<div aria-hidden="true" style="height: 1px; background: rgba(255,255,255,.12); margin: 5px 8px"></div>
+<div aria-hidden="true" style="padding: 5px 12px 5px 36px">Customize Controls...</div>
+<div aria-hidden="true" style="height: 1px; background: rgba(255,255,255,.12); margin: 5px 8px"></div>
+<div aria-hidden="true" style="position: relative; padding: 5px 12px 5px 36px"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="position: absolute; left: 13px; top: 9px"><path d="m2 6.5 2.8 2.8L10 3.2"></path></svg>Start with Windows</div>
+<div aria-hidden="true" style="padding: 5px 12px 5px 36px">Enable on Launch</div>
+<div aria-hidden="true" style="height: 1px; background: rgba(255,255,255,.12); margin: 5px 8px"></div>
+<div aria-hidden="true" style="padding: 5px 12px 5px 36px">Open Event Log</div>
+<div aria-hidden="true" style="position: relative; padding: 5px 12px 5px 36px"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="position: absolute; left: 13px; top: 9px"><path d="m2 6.5 2.8 2.8L10 3.2"></path></svg>Show Notifications</div>
+<div aria-hidden="true" style="padding: 5px 12px 5px 36px">Exit</div>
+<div aria-hidden="true" style="height: 1px; background: rgba(255,255,255,.12); margin: 5px 8px"></div>
+<div aria-hidden="true" style="padding: 5px 12px 5px 36px; color: #9a9a9a">Battery - 100%</div>
+</div>
+</div>
+</div>
+</section>
+
+<!-- CONNECTION STRIP -->
+<section aria-label="At a glance" style="border-top: 1px solid rgba(255,255,255,.07); border-bottom: 1px solid rgba(255,255,255,.07); background: rgba(0,0,0,.18)">
+<div style="max-width: 1180px; margin: 0 auto; padding: 22px 24px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 14px 32px; font-family: 'JetBrains Mono', monospace; font-size: 13px; letter-spacing: 1.5px; font-weight: 600; color: #aeb9c2"><span>ANY CONNECTION</span><span style="color: rgb(55, 72, 90)">/</span><span>XBOX / PLAYSTATION</span><span style="color: rgb(55, 72, 90)">/</span><span>CONTROL REMAPPING</span><span style="color: rgb(55, 72, 90)">/</span><span>RUMBLE</span><span style="color: rgb(55, 72, 90)">/</span><span>DEADZONE</span><span style="color: rgb(55, 72, 90)">/</span><span>PER-GAME PROFILES</span></div>
+</section>
+
+<!-- FEATURES -->
+<section id="features" style="max-width: 1180px; margin: 0 auto; padding: 104px 24px 24px">
+<div style="max-width: 700px; display: flex; flex-direction: column; gap: 14px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 1.8px; color: var(--accent)">WHAT IT DOES</div>
+<h2 style="margin: 0; font-size: clamp(32px, 4.4vw, 48px); line-height: 1.08; font-weight: 800; color: #ffffff; letter-spacing: -.8px">Everything the Steam Controller can do, minus needing Steam.</h2>
+</div>
+
+<div style="margin-top: 48px; display: flex; flex-direction: column; gap: 20px">
+
+<!-- row A -->
+<div style="display: flex; flex-wrap: wrap; gap: 20px">
+<div class="card" style="flex: 2 1 520px; min-width: 0; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; gap: 22px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<h3 style="margin: 0; font-size: 26px; font-weight: 700; color: #ffffff">Every way to connect</h3>
+<p style="margin: 0; font-size: 17px; line-height: 1.55; color: #c7d5e0">Wireless puck, USB, or Bluetooth. Plug in or pair the way you like and SteamlessController just works.</p>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 12px">
+<div style="flex: 1 1 140px; display: flex; align-items: center; gap: 12px; background: #101925; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 14px 16px">
+<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0"></path><path d="M8.5 16a5 5 0 0 1 7 0"></path><circle cx="12" cy="19.2" r="1" fill="var(--accent)"></circle></svg>
+<span style="color: #ffffff; font-weight: 600; font-size: 16px">Puck</span>
+</div>
+<div style="flex: 1 1 140px; display: flex; align-items: center; gap: 12px; background: #101925; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 14px 16px">
+<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17.5V4.5"></path><path d="M12 1.6l-2.4 3.6h4.8z" fill="var(--accent)"></path><circle cx="12" cy="19.8" r="1.7" fill="var(--accent)"></circle><path d="M12 14.2 7 11.2V9"></path><circle cx="7" cy="7.6" r="1.4" fill="var(--accent)"></circle><path d="M12 10.8l5-3V6.2"></path><rect x="15.6" y="3.4" width="2.8" height="2.8" fill="var(--accent)"></rect></svg>
+<span style="color: #ffffff; font-weight: 600; font-size: 16px">USB</span>
+</div>
+<div style="flex: 1 1 140px; display: flex; align-items: center; gap: 12px; background: #101925; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 14px 16px">
+<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 7 10 10-5 4V3l5 4L7 17"></path></svg>
+<span style="color: #ffffff; font-weight: 600; font-size: 16px">Bluetooth</span>
+</div>
+</div>
+</div>
+<div class="card" style="flex: 1 1 320px; min-width: 0; background: linear-gradient(160deg, rgba(26,159,255,.14), rgba(255,255,255,.02) 60%); border: 1px solid rgba(102,192,244,.25); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; gap: 8px">
+<h3 style="margin: 0; font-size: 26px; font-weight: 700; color: #ffffff">Runs alongside Steam</h3>
+<p style="margin: 0; font-size: 17px; line-height: 1.55; color: #c7d5e0">Toggle Steamless Mode on and off from the tray. No quitting Steam, no reshuffling how you use your PC.<br><br>Or use our auto modes to take control when you need it, and back off when you don't.</p>
+</div>
+</div>
+
+<!-- row B -->
+<div style="display: flex; flex-wrap: wrap; gap: 20px">
+<div class="card" style="flex: 1 1 340px; min-width: 0; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; gap: 20px">
+<div style="height: 120px; display: flex; flex-direction: column; justify-content: center; gap: 10px">
+<div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.06); border-radius: 8px; padding: 8px 10px">
+<span style="width: 36px; height: 36px; flex: none; border-radius: 8px; background: #1b2a3a; border: 1px solid rgba(255,255,255,.08); display: flex; flex-direction: column; align-items: center; justify-content: center"><span style="color: #ffffff; font-size: 15px; font-weight: 800; line-height: 1">L4</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 6.5px; letter-spacing: .5px; color: #8f98a0; margin-top: 3px">UPPER</span></span>
+<span style="color: #aeb9c2; font-size: 13px; font-weight: 500; white-space: nowrap">Upper grip</span>
+<span style="flex: 1; min-width: 8px; border-top: 1px dashed rgba(255,255,255,.18)"></span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 600; color: #c9b8f0; background: #3a2a5a; border-radius: 6px; padding: 8px 5px; flex: none">LMB</span>
+<span style="color: #ffffff; font-size: 13px; font-weight: 700; white-space: nowrap">Left Click</span>
+</div>
+<div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.06); border-radius: 8px; padding: 8px 10px">
+<span style="width: 36px; height: 36px; flex: none; border-radius: 8px; background: #1b2a3a; border: 1px solid rgba(255,255,255,.08); display: flex; flex-direction: column; align-items: center; justify-content: center"><span style="color: #ffffff; font-size: 15px; font-weight: 800; line-height: 1">L5</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 6.5px; letter-spacing: .5px; color: #8f98a0; margin-top: 3px">LOWER</span></span>
+<span style="color: #aeb9c2; font-size: 13px; font-weight: 500; white-space: nowrap">Lower grip</span>
+<span style="flex: 1; min-width: 8px; border-top: 1px dashed rgba(255,255,255,.18)"></span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 600; color: #9ac89a; background: #2a3a2a; border-radius: 6px; padding: 8px 5px; flex: none">KBD</span>
+<span style="color: #ffffff; font-size: 13px; font-weight: 700; white-space: nowrap">Touch Keyboard</span>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<h3 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff">Remap anything</h3>
+<p style="margin: 0; font-size: 16px; line-height: 1.55; color: #c7d5e0">Back buttons and trackpads are fully rebindable. Save a mapping as a profile and load it per game, or have it apply all the time.</p>
+</div>
+</div>
+<div class="card" style="flex: 1 1 340px; min-width: 0; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; gap: 20px">
+<svg width="100%" height="120" viewBox="0 0 320 120" role="img" aria-label="A trackpad divided into a ring of four directions and a centre button">
+<circle cx="160" cy="60" r="54" fill="#101925" stroke="#37485a" stroke-width="1.5"></circle>
+<circle cx="160" cy="60" r="24" fill="rgba(102,192,244,.12)" stroke="var(--accent)" stroke-width="2"></circle>
+<path d="M160 6v30M160 84v30M106 60h30M184 60h30" stroke="#37485a" stroke-width="1.5"></path>
+<path d="m154 18 6-6 6 6M154 102l6 6 6-6" stroke="var(--accent)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
+<path d="m118 54-6 6 6 6M202 54l6 6-6 6" stroke="var(--accent)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
+<circle cx="160" cy="60" r="4" fill="var(--accent)"></circle>
+</svg>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<h3 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff">Trackpad as a D-pad</h3>
+<p style="margin: 0; font-size: 16px; line-height: 1.55; color: #c7d5e0">Press the outer edge for a direction and the middle for a button of its own. Or use the whole pad as a single button.</p>
+</div>
+</div>
+<div class="card" style="flex: 1 1 340px; min-width: 0; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; gap: 20px">
+<div style="height: 120px; display: flex; flex-direction: column; justify-content: center; gap: 8px">
+<div style="display: flex; align-items: center; justify-content: space-between; background: #101925; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; padding: 10px 14px">
+<span style="color: #ffffff; font-weight: 600; font-size: 14px">Rocket League</span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #94c63d; letter-spacing: .5px">IN FOCUS</span>
+</div>
+<div style="display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,.02); border: 1px solid rgba(255,255,255,.06); border-radius: 8px; padding: 10px 14px">
+<span style="color: #c7d5e0; font-weight: 600; font-size: 14px">Elden Ring</span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8f98a0; letter-spacing: .5px">IDLE</span>
+</div>
+<div style="display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,.02); border: 1px solid rgba(255,255,255,.06); border-radius: 8px; padding: 10px 14px">
+<span style="color: #c7d5e0; font-weight: 600; font-size: 14px">Default</span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8f98a0; letter-spacing: .5px">FALLBACK</span>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<h3 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff">A profile for every game</h3>
+<p style="margin: 0; font-size: 16px; line-height: 1.55; color: #c7d5e0">Pick games from Steam, Epic, GOG, Ubisoft, Battle.net and the Store. The profile follows whatever is in the foreground.</p>
+</div>
+</div>
+</div>
+
+<!-- row C -->
+<div style="display: flex; flex-wrap: wrap; gap: 20px">
+<div class="card" style="flex: 1 1 340px; min-width: 0; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; gap: 20px">
+<div style="height: 120px; display: flex; align-items: center; justify-content: center; gap: 36px">
+<div style="display: flex; flex-direction: column; align-items: center; gap: 8px">
+<svg width="84" height="84" viewBox="0 0 84 84" aria-hidden="true"><circle cx="42" cy="42" r="38" fill="#101925" stroke="#37485a" stroke-width="1.5"></circle><circle cx="42" cy="42" r="15" fill="rgba(102,192,244,.14)" stroke="var(--accent)" stroke-width="1.8" stroke-dasharray="3 3"></circle><circle cx="55" cy="30" r="4" fill="var(--accent)"></circle></svg>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1px; color: #aeb9c2; font-weight: 600">CIRCLE</span>
+</div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 8px">
+<svg width="84" height="84" viewBox="0 0 84 84" aria-hidden="true"><circle cx="42" cy="42" r="38" fill="#101925" stroke="#37485a" stroke-width="1.5"></circle><rect x="28" y="28" width="28" height="28" fill="rgba(102,192,244,.14)" stroke="var(--accent)" stroke-width="1.8" stroke-dasharray="3 3"></rect><circle cx="55" cy="30" r="4" fill="var(--accent)"></circle></svg>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1px; color: #aeb9c2; font-weight: 600">SQUARE</span>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<h3 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff">Deadzones, your shape</h3>
+<p style="margin: 0; font-size: 16px; line-height: 1.55; color: #c7d5e0">Choose Default, Circle or Square per stick, with a live preview as you tune it.</p>
+</div>
+</div>
+<div class="card" style="flex: 1 1 340px; min-width: 0; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; gap: 20px">
+<div style="height: 120px; display: flex; flex-direction: column; justify-content: center; gap: 18px">
+<div style="display: flex; align-items: center; gap: 14px">
+<span style="width: 74px; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1px; color: #8f98a0; font-weight: 600">POINTER</span>
+<span style="flex: 1; height: 6px; border-radius: 3px; background: #101925; position: relative; display: block"><span style="position: absolute; left: 0; top: 0; bottom: 0; width: 64%; border-radius: 3px; background: linear-gradient(90deg,#1a9fff,var(--accent)); display: block"></span></span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #c7d5e0; font-weight: 600; width: 40px; text-align: right">64%</span>
+</div>
+<div style="display: flex; align-items: center; gap: 14px">
+<span style="width: 74px; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1px; color: #8f98a0; font-weight: 600">RUMBLE</span>
+<span style="flex: 1; height: 6px; border-radius: 3px; background: #101925; position: relative; display: block"><span style="position: absolute; left: 0; top: 0; bottom: 0; width: 38%; border-radius: 3px; background: linear-gradient(90deg,#1a9fff,var(--accent)); display: block"></span></span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #c7d5e0; font-weight: 600; width: 40px; text-align: right">38%</span>
+</div><div style="display: flex; align-items: center; gap: 14px"><span style="width: 74px; font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 11px; letter-spacing: 1px; color: rgb(143, 152, 160); font-weight: 600">SCROLL</span><span style="flex: 1 1 0%; height: 6px; border-radius: 3px; background: rgb(16, 25, 37); position: relative; display: block"><span style="position: absolute; left: 0px; top: 0px; bottom: 0px; width: 75%; border-radius: 3px; background: linear-gradient(90deg, rgb(26, 159, 255), rgb(102, 192, 244)); display: block"></span></span><span style="font-family: &quot;JetBrains Mono&quot;, monospace; font-size: 12px; color: rgb(199, 213, 224); font-weight: 600; width: 40px; text-align: right">75%</span></div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<h3 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff">Tuned per game</h3>
+<p style="margin: 0; font-size: 16px; line-height: 1.55; color: #c7d5e0">Pointer speed, scroll sensitivty, and rumble strength live in each profile; so every game can feel different.</p>
+</div>
+</div>
+<div class="card" style="flex: 1 1 340px; min-width: 0; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; gap: 20px">
+<div style="height: 120px; display: flex; align-items: center; justify-content: center; gap: 12px">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 600; color: #ffffff; background: #101925; border: 1px solid rgba(255,255,255,.18); border-bottom-width: 3px; border-radius: 8px; padding: 12px 16px">STEAM</span>
+<span style="color: #8f98a0; font-size: 20px; font-weight: 600">+</span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 600; color: #ffffff; background: #101925; border: 1px solid rgba(255,255,255,.18); border-bottom-width: 3px; border-radius: 8px; padding: 12px 20px">Y</span>
+<span style="color: #8f98a0; font-size: 20px">→</span>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: #c7d5e0; border: 1px dashed rgba(255,255,255,.25); border-radius: 8px; padding: 12px 14px">OFF</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<h3 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff">Steam + Y powers it off</h3>
+<p style="margin: 0; font-size: 16px; line-height: 1.55; color: #c7d5e0">Same chord as under Steam, on puck and Bluetooth. Plus auto modes that enable or disable Steamless Mode when it makes sense.</p>
+</div>
+</div>
+</div>
+
+</div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how" style="max-width: 1180px; margin: 0 auto; padding: 104px 24px 24px">
+<div style="max-width: 700px; display: flex; flex-direction: column; gap: 14px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 1.8px; color: var(--accent)">HOW IT WORKS</div>
+<h2 style="margin: 0; font-size: clamp(32px, 4.4vw, 48px); line-height: 1.08; font-weight: 800; color: #ffffff; letter-spacing: -.8px">Install it, plug in, play.</h2>
+</div>
+<div style="margin-top: 48px; display: flex; flex-wrap: wrap; gap: 20px">
+<div style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 14px; border-top: 2px solid var(--accent); padding-top: 22px">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600; letter-spacing: 1.5px; color: var(--accent)">01</span>
+<h3 style="margin: 0; font-size: 24px; font-weight: 700; color: #ffffff">Run the installer</h3>
+<p style="margin: 0; font-size: 17px; line-height: 1.55; color: #c7d5e0">One setup file installs the app and the driver it uses to create virtual controllers.</p>
+</div>
+<div style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 14px; border-top: 2px solid var(--accent); padding-top: 22px">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600; letter-spacing: 1.5px; color: var(--accent)">02</span>
+<h3 style="margin: 0; font-size: 24px; font-weight: 700; color: #ffffff">Connect your controller</h3>
+<p style="margin: 0; font-size: 17px; line-height: 1.55; color: #c7d5e0">Wake the puck, plug in the cable, or pair over Bluetooth. The tray icon shows when it is found.</p>
+</div>
+<div style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 14px; border-top: 2px solid var(--accent); padding-top: 22px">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600; letter-spacing: 1.5px; color: var(--accent)">03</span>
+<h3 style="margin: 0; font-size: 24px; font-weight: 700; color: #ffffff">Turn on Steamless Mode</h3>
+<p style="margin: 0; font-size: 17px; line-height: 1.55; color: #c7d5e0">Enable from the tray. Games now see an ordinary gamepad. Disable to hand it back to Steam.</p>
+</div>
+</div>
+
+<!-- under the hood -->
+<div style="margin-top: 56px; background: #101925; border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; gap: 22px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.5px; font-weight: 600; color: #8f98a0">UNDER THE HOOD</div>
+<div style="display: flex; flex-wrap: wrap; align-items: stretch; gap: 14px">
+<div style="flex: 1 1 220px; background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 16px 18px">
+<div style="color: #ffffff; font-weight: 700; font-size: 16px">Steam Controller</div>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8f98a0; margin-top: 6px; line-height: 1.5">lizard mode switched off, takes full control</div>
+</div>
+<div style="display: flex; align-items: center; justify-content: center; color: var(--accent); padding: 0 2px" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg></div>
+<div style="flex: 1 1 220px; background: rgba(102,192,244,.07); border: 1px solid rgba(102,192,244,.35); border-radius: 10px; padding: 16px 18px">
+<div style="color: #ffffff; font-weight: 700; font-size: 16px">SteamlessController</div>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8f98a0; margin-top: 6px; line-height: 1.5">remaps, applies your profile and deadzones, keeps the controller awake</div>
+</div>
+<div style="display: flex; align-items: center; justify-content: center; color: var(--accent); padding: 0 2px" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg></div>
+<div style="flex: 1 1 220px; background: rgba(148,198,61,.07); border: 1px solid rgba(148,198,61,.35); border-radius: 10px; padding: 16px 18px">
+<div style="color: #ffffff; font-weight: 700; font-size: 16px">Virtual gamepad</div>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8f98a0; margin-top: 6px; line-height: 1.5">an Xbox 360 or PlayStation controller, for any game</div>
+</div>
+</div>
+</div>
+</section>
+
+<!-- DOWNLOAD -->
+<section id="download" style="max-width: 1180px; margin: 0 auto; padding: 104px 24px 24px">
+<div style="background: linear-gradient(135deg, rgba(26,159,255,.20) 0%, rgba(16,25,37,.9) 55%); border: 1px solid rgba(102,192,244,.35); border-radius: 20px; padding: clamp(28px, 5vw, 56px); display: flex; flex-wrap: wrap; gap: 40px; align-items: center; box-shadow: 0 30px 80px rgba(0,0,0,.35)">
+<div style="flex: 1 1 400px; min-width: 0; display: flex; flex-direction: column; gap: 20px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 1.8px; color: var(--accent)">GET IT</div>
+<h2 style="margin: 0; font-size: clamp(32px, 4.4vw, 48px); line-height: 1.08; font-weight: 800; color: #ffffff; letter-spacing: -.8px">Free, signed, and ready in a minute.</h2>
+<p style="margin: 0; font-size: 18px; line-height: 1.55; color: #c7d5e0">The latest installer is v1.25. It sets up SteamlessController and just works, no shenanigans or Steam setting changes needed!</p>
+<div style="display: flex; flex-wrap: wrap; gap: 14px; align-items: center">
+<a class="btn btn-green" href="https://github.com/ddeverill/SteamlessController/releases/latest/download/SteamlessController-Setup.exe" style="display: inline-flex; align-items: center; gap: 12px; background: linear-gradient(180deg,#94c63d 0%,#5ba32b 100%); color: #13260a; font-weight: 800; font-size: 18px; padding: 15px 26px; border-radius: 10px; box-shadow: 0 8px 28px rgba(91,163,43,.35)">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#13260a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"></path><path d="m7 11 5 5 5-5"></path><path d="M5 20h14"></path></svg>
+SteamlessController-Setup.exe
+</a>
+<a class="btn btn-ghost" href="https://github.com/ddeverill/SteamlessController/releases" style="color: #ffffff; font-weight: 700; font-size: 16px; padding: 14px 20px; border-radius: 10px; border: 1px solid rgba(255,255,255,.18)">All releases</a>
+</div>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #8f98a0">5.6 MB &nbsp;·&nbsp; Windows 10 or later, 64-bit</div>
+</div>
+<div style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 12px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.5px; font-weight: 600; color: #8f98a0">WHAT YOU NEED</div>
+<div style="display: flex; align-items: center; gap: 12px; color: #ffffff; font-size: 16px; font-weight: 500"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#94c63d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="m5 12 5 5 9-10"></path></svg>Windows 10 or later (64-bit)</div>
+<div style="display: flex; align-items: center; gap: 12px; color: #ffffff; font-size: 16px; font-weight: 500"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#94c63d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="m5 12 5 5 9-10"></path></svg>A Steam Controller: puck, wired or Bluetooth</div>
+
+<div style="height: 1px; background: rgba(255,255,255,.1); margin: 8px 0"></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 15px; font-weight: 600">
+<a href="https://github.com/ddeverill/SteamlessController">Source code</a>
+<a href="https://github.com/ddeverill/SteamlessController/issues">Report an issue</a>
+</div>
+</div>
+</div>
+
+<!-- trust -->
+<div style="margin-top: 20px; display: flex; flex-wrap: wrap; gap: 20px">
+<div style="flex: 1 1 300px; min-width: 0; display: flex; gap: 16px; align-items: flex-start; padding: 22px 4px">
+<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M12 3 5 6v6c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V6l-7-3Z"></path><path d="m9 12 2.2 2.2L15.5 10"></path></svg>
+<div><div style="color: #ffffff; font-weight: 700; font-size: 17px">COMING SOON: Code signed</div><div style="font-size: 15px; line-height: 1.5; color: #aeb9c2; margin-top: 4px">Built in public on GitHub and signed through SignPath Foundation.</div></div>
+</div>
+<div style="flex: 1 1 300px; min-width: 0; display: flex; gap: 16px; align-items: flex-start; padding: 22px 4px">
+<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><rect x="5" y="11" width="14" height="9" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>
+<div><div style="color: #ffffff; font-weight: 700; font-size: 17px">No data collected</div><div style="font-size: 15px; line-height: 1.5; color: #aeb9c2; margin-top: 4px">Nothing about you or your system is sent anywhere.</div></div>
+</div>
+<div style="flex: 1 1 300px; min-width: 0; display: flex; gap: 16px; align-items: flex-start; padding: 22px 4px">
+<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="m8 8-5 4 5 4"></path><path d="m16 8 5 4-5 4"></path><path d="m14 5-4 14"></path></svg>
+<div><div style="color: #ffffff; font-weight: 700; font-size: 17px">Open source, MIT</div><div style="font-size: 15px; line-height: 1.5; color: #aeb9c2; margin-top: 4px">Read it, build it, fork it. The whole project is on GitHub.</div></div>
+</div>
+</div>
+</section>
+
+<!-- FAQ -->
+<section id="faq" style="max-width: 860px; margin: 0 auto; padding: 104px 24px 24px">
+<div style="display: flex; flex-direction: column; gap: 14px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 1.8px; color: var(--accent)">FAQ</div>
+<h2 style="margin: 0; font-size: clamp(32px, 4.4vw, 48px); line-height: 1.08; font-weight: 800; color: #ffffff; letter-spacing: -.8px">Good questions.</h2>
+</div>
+<div style="margin-top: 36px; display: flex; flex-direction: column; border-top: 1px solid rgba(255,255,255,.1)">
+<details style="border-bottom: 1px solid rgba(255,255,255,.1); padding: 4px 0">
+<summary style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 0; color: #ffffff; font-size: 19px; font-weight: 600">What does SteamlessController actually do?<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<p style="margin: 0 0 18px; font-size: 17px; line-height: 1.6; color: #c7d5e0">It switches off the controller's built-in keyboard and mouse emulation, reads its raw input, and presents it to Windows as a standard Xbox 360 or PlayStation controller. Any game that supports those gamepads then works with it.</p>
+</details>
+<details style="border-bottom: 1px solid rgba(255,255,255,.1); padding: 4px 0">
+<summary style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 0; color: #ffffff; font-size: 19px; font-weight: 600">Can I keep Steam open?<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<p style="margin: 0 0 18px; font-size: 17px; line-height: 1.6; color: #c7d5e0">Yes. You can toggle Steamless Mode without closing Steam. While Steamless Mode is on, the controller is yours; turn it off to give it back to Steam.</p>
+</details>
+<details style="border-bottom: 1px solid rgba(255,255,255,.1); padding: 4px 0">
+<summary style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 0; color: #ffffff; font-size: 19px; font-weight: 600">Which connection types work?<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<p style="margin: 0 0 18px; font-size: 17px; line-height: 1.6; color: #c7d5e0">All three: the wireless puck, a USB cable, and Bluetooth LE (pair the controller in Windows Bluetooth settings first).</p>
+</details>
+<details style="border-bottom: 1px solid rgba(255,255,255,.1); padding: 4px 0">
+<summary style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 0; color: #ffffff; font-size: 19px; font-weight: 600">What is ViGEmBus?<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<p style="margin: 0 0 18px; font-size: 17px; line-height: 1.6; color: #c7d5e0">A widely used open-source Windows driver that lets apps create virtual game controllers. The SteamlessController installer includes it and checks that it installed correctly.</p>
+</details>
+<details style="border-bottom: 1px solid rgba(255,255,255,.1); padding: 4px 0">
+<summary style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 0; color: #ffffff; font-size: 19px; font-weight: 600">Does it collect any data?<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8f98a0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="m6 9 6 6 6-6"></path></svg></summary>
+<p style="margin: 0 0 18px; font-size: 17px; line-height: 1.6; color: #c7d5e0">No. It sends nothing about you or your system. The remapping window loads its fonts from Google Fonts, and a missing-driver notification can open the ViGEmBus download page in your browser. That is all.</p>
+</details>
+</div>
+</section>
+
+<!-- FINAL CTA + FOOTER -->
+<section style="max-width: 1180px; margin: 0 auto; padding: 104px 24px 0; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 24px">
+<h2 style="margin: 0; font-size: clamp(34px, 5vw, 56px); line-height: 1.05; font-weight: 800; color: #ffffff; letter-spacing: -1px; max-width: 760px">Put your Steam Controller to work everywhere.</h2>
+<a class="btn btn-green" href="https://github.com/ddeverill/SteamlessController/releases/latest/download/SteamlessController-Setup.exe" style="display: inline-flex; align-items: center; gap: 12px; background: linear-gradient(180deg,#94c63d 0%,#5ba32b 100%); color: #13260a; font-weight: 800; font-size: 18px; padding: 15px 26px; border-radius: 10px; box-shadow: 0 8px 28px rgba(91,163,43,.35)">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#13260a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"></path><path d="m7 11 5 5 5-5"></path><path d="M5 20h14"></path></svg>
+Download for Windows
+</a>
+</section>
+<footer style="max-width: 1180px; margin: 96px auto 0; padding: 32px 24px 48px; border-top: 1px solid rgba(255,255,255,.08); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 20px">
+<div style="max-width: 520px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: center; gap: 10px; color: #ffffff; font-weight: 700; font-size: 16px">
+<span style="width: 30px; height: 30px; flex: none; border-radius: 8px; background: linear-gradient(145deg,#2a3f57 0%,#101925 100%); border: 1px solid rgba(102,192,244,.4); display: flex; align-items: center; justify-content: center"><img src="assets/logo.png" alt="" style="display: block; width: 19px; height: 19px"></span>
+SteamlessController
+</div>
+<p style="margin: 0; font-size: 14px; line-height: 1.55; color: #8f98a0">An independent project. Not affiliated with or endorsed by Valve Corporation. Steam and the Steam Controller are trademarks of Valve Corporation.</p>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 10px 28px; align-content: flex-start; font-size: 15px; font-weight: 600">
+<a href="https://github.com/ddeverill/SteamlessController">GitHub</a>
+<a href="https://github.com/ddeverill/SteamlessController/releases">Releases</a>
+<a href="https://github.com/ddeverill/SteamlessController/issues">Issues</a>
+<a href="https://github.com/ddeverill/SteamlessController/blob/main/LICENSE">License</a>
+</div>
+</footer>
+
+</div>
+</body>
+</html>
