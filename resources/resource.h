@@ -16,3 +16,11 @@
 #define APP_VERSION_MINOR 25
 #define APP_VERSION_PATCH 0
 #define APP_VERSION_STR   "1.25"
+
+// Fonts embedded as RCDATA (fonts.rc). The same bytes feed DirectWrite in the tray
+// panel and are served to the Customize page; see EmbeddedFonts.cpp.
+#define IDR_FONT_BARLOW_REGULAR  201
+#define IDR_FONT_BARLOW_MEDIUM   202
+#define IDR_FONT_BARLOW_SEMIBOLD 203
+#define IDR_FONT_BARLOW_BOLD     204
+#define IDR_FONT_JBMONO_SEMIBOLD 205

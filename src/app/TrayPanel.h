@@ -2,6 +2,7 @@
 #include <Windows.h>
 #include <functional>
 #include <memory>
+#include <string>
 
 // The tray icon's popup: a small custom-drawn panel in place of a native
 // TrackPopupMenu. It owns nothing but its own appearance — what it shows comes
@@ -62,6 +63,11 @@ public:
     // and delivers the tray message on button-up, so without this the same
     // click would close the panel and then open it again.
     bool RecentlyDismissed() const;
+
+    // Which fonts the panel ended up using, e.g. "Barlow / JetBrains Mono
+    // (bundled)". Only meaningful once it has been shown. For the event log and
+    // the probe: a font that failed to load falls back silently otherwise.
+    std::wstring FontFamilies() const;
 
 private:
     struct Impl;

@@ -114,6 +114,7 @@ saved identity can take.
 ## Third-party
 
 - [ViGEmClient](https://github.com/nefarius/ViGEmClient) — MIT License, built from source as a static library
+- [Barlow](https://github.com/jpt/barlow) and [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) — SIL Open Font License 1.1, built into the executable unmodified. The license texts are in [`resources/fonts`](resources/fonts) and are installed next to the program
 
 ## Code signing policy
 
@@ -128,7 +129,6 @@ Team roles:
 
 ### Privacy
 
-SteamlessController sends no data about you or your system anywhere. It makes two kinds of network request:
+SteamlessController sends no data about you or your system anywhere. Its fonts are built into the program, so no window loads anything from the web. The one network request it can cause is opt-in:
 
-- The controller remapping window loads its fonts from Google Fonts, which receives the usual details of a web request, such as your IP address.
 - If the ViGEmBus driver is missing, clicking the notification that says so opens its download page in your browser.

@@ -258,6 +258,7 @@ int main(int argc, char** argv) {
     const bool ok = SaveBmp(out.c_str(), x, y, w, h);
     std::printf("panel %dx%d at %d,%d -> %s\n", rc.right - rc.left, rc.bottom - rc.top, rc.left, rc.top,
                 ok ? "saved" : "save failed");
+    std::printf("fonts: %ls\n", panel.FontFamilies().c_str());
     panel.Close();
     return ok ? 0 : 1;
 }
