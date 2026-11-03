@@ -123,6 +123,19 @@ if (MSVC)
     set_target_properties(ViGEmBusProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
 endif()
 
+# Tray panel check — opens the panel in a chosen state and saves a picture of
+# it, so its look can be reviewed without a controller or a tray click.
+add_executable(TrayPanelProbe
+    src/probe/TrayPanelProbe.cpp
+    src/app/TrayPanel.cpp
+)
+target_include_directories(TrayPanelProbe PRIVATE src)
+target_link_libraries(TrayPanelProbe PRIVATE d2d1 dwrite dwmapi)
+if (MSVC)
+    target_compile_options(TrayPanelProbe PRIVATE /W4 /WX /utf-8)
+    set_target_properties(TrayPanelProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+endif()
+
 # Elevated on-demand helper — restarts the controller device node so the tray
 # app (which never runs elevated) can take the device from a running Steam.
 add_executable(SteamlessDeviceCycle WIN32
@@ -234,6 +247,7 @@ endif()
 add_executable(SteamlessController WIN32
     src/app/main.cpp
     src/app/TrayApp.cpp
+    src/app/TrayPanel.cpp
     src/app/ControllerManager.cpp
     src/app/VirtualController.cpp
     src/app/TrackpadInput.cpp
@@ -269,6 +283,9 @@ target_link_libraries(SteamlessController PRIVATE
     shlwapi
     cfgmgr32
     windowsapp
+    d2d1
+    dwrite
+    dwmapi
 )
 if (MSVC)
     target_compile_options(SteamlessController PRIVATE /W4 /WX /utf-8 /wd4828)
