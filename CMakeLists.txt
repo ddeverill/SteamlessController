@@ -128,8 +128,10 @@ endif()
 add_executable(TrayPanelProbe
     src/probe/TrayPanelProbe.cpp
     src/app/TrayPanel.cpp
+    src/app/EmbeddedFonts.cpp
+    resources/fonts.rc
 )
-target_include_directories(TrayPanelProbe PRIVATE src)
+target_include_directories(TrayPanelProbe PRIVATE src resources)
 target_link_libraries(TrayPanelProbe PRIVATE d2d1 dwrite dwmapi)
 if (MSVC)
     target_compile_options(TrayPanelProbe PRIVATE /W4 /WX /utf-8)
@@ -248,6 +250,7 @@ add_executable(SteamlessController WIN32
     src/app/main.cpp
     src/app/TrayApp.cpp
     src/app/TrayPanel.cpp
+    src/app/EmbeddedFonts.cpp
     src/app/ControllerManager.cpp
     src/app/VirtualController.cpp
     src/app/TrackpadInput.cpp
@@ -289,4 +292,53 @@ target_link_libraries(SteamlessController PRIVATE
 )
 if (MSVC)
     target_compile_options(SteamlessController PRIVATE /W4 /WX /utf-8 /wd4828)
+endif()
+
+# Customize window check — hosts the real RemapWindow in WebView2 with no controller
+# and no tray, and saves a picture of it, so how the page truly renders (the bundled
+# fonts arrive through a request handler, which a browser cannot stand in for) can
+# be seen without the whole app. Everything the window pulls in, minus the tray.
+add_executable(RemapWindowProbe
+    src/probe/RemapWindowProbe.cpp
+    src/app/EmbeddedFonts.cpp
+    src/app/ControllerManager.cpp
+    src/app/VirtualController.cpp
+    src/app/TrackpadInput.cpp
+    src/app/KeyInput.cpp
+    src/app/TouchKeyboard.cpp
+    src/app/InputInjection.cpp
+    src/app/SteamWatcher.cpp
+    src/app/DeviceRestart.cpp
+    src/app/EventLog.cpp
+    src/app/ForegroundWatcher.cpp
+    src/app/GameLibrary.cpp
+    src/app/GameLiveness.cpp
+    src/app/GameProfiles.cpp
+    src/app/HandleFinder.cpp
+    src/app/LauncherGames.cpp
+    src/app/ProcessIdentity.cpp
+    src/app/RemapWindow.cpp
+    src/app/SteamAppLocator.cpp
+    src/app/ViGEmBusInfo.cpp
+    resources/fonts.rc
+)
+target_include_directories(RemapWindowProbe PRIVATE
+    src
+    resources
+    ${webview2_SOURCE_DIR}/build/native/include
+)
+target_link_libraries(RemapWindowProbe PRIVATE
+    SteamController
+    ViGEmClient
+    ${webview2_SOURCE_DIR}/build/native/${WV2_ARCH}/WebView2LoaderStatic.lib
+    version
+    ole32
+    shell32
+    shlwapi
+    cfgmgr32
+    windowsapp
+)
+if (MSVC)
+    target_compile_options(RemapWindowProbe PRIVATE /W4 /WX /utf-8 /wd4828)
+    set_target_properties(RemapWindowProbe PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
 endif()

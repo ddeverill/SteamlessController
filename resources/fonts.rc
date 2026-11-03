@@ -1,0 +1,9 @@
+// The bundled fonts, as raw data in the executable. Kept apart from app.rc so
+// TrayPanelProbe can embed them without taking the icons and version info too.
+#include "resource.h"
+
+IDR_FONT_BARLOW_REGULAR  RCDATA "fonts/Barlow-Regular.ttf"
+IDR_FONT_BARLOW_MEDIUM   RCDATA "fonts/Barlow-Medium.ttf"
+IDR_FONT_BARLOW_SEMIBOLD RCDATA "fonts/Barlow-SemiBold.ttf"
+IDR_FONT_BARLOW_BOLD     RCDATA "fonts/Barlow-Bold.ttf"
+IDR_FONT_JBMONO_SEMIBOLD RCDATA "fonts/JetBrainsMono-SemiBold.ttf"
