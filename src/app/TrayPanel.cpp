@@ -3,6 +3,7 @@
 #endif
 #include "TrayPanel.h"
 #include "EmbeddedFonts.h"
+#include "TrayPanelA11y.h"
 
 #include <d2d1.h>
 #include <dwmapi.h>
@@ -106,6 +107,32 @@ const wchar_t* RowLabel(Action a) {
     }
 }
 
+// Ids for the things a screen reader is told about that are not controls. A
+// control's id is its Action's number, which is small, so these sit well above it.
+constexpr int kA11yStatus = 100;
+constexpr int kA11yBanner = 101;
+constexpr int kA11yModes  = 102;
+
+// Stable names for each control, for tools that find an element by id rather than
+// by what it is called, which can change.
+const wchar_t* AutomationId(Action a) {
+    switch (a) {
+    case Action::ToggleControl:  return L"MasterSwitch";
+    case Action::ModeManual:     return L"Mode.Manual";
+    case Action::ModeSteam:      return L"Mode.Steam";
+    case Action::ModeGame:       return L"Mode.InGame";
+    case Action::ModeProfile:    return L"Mode.Profile";
+    case Action::Customize:      return L"CustomizeControls";
+    case Action::Startup:        return L"StartWithWindows";
+    case Action::EnableOnLaunch: return L"EnableOnLaunch";
+    case Action::Notifications:  return L"ShowNotifications";
+    case Action::OpenLog:        return L"EventLog";
+    case Action::Exit:           return L"Exit";
+    case Action::EnableDevice:   return L"ReenableDevice";
+    }
+    return L"";
+}
+
 std::wstring StatusText(const Model& m) {
     if (m.deviceDisabled) return L"Controller unavailable";
     if (!m.connected)     return L"No controller detected";
@@ -142,7 +169,7 @@ struct Layout {
 
 }  // namespace
 
-struct TrayPanel::Impl {
+struct TrayPanel::Impl : PanelAccessibility::Host {
     HINSTANCE hInst = nullptr;
     HWND      hwnd  = nullptr;
 
@@ -175,6 +202,11 @@ struct TrayPanel::Impl {
     Layout           lay;
     std::vector<Hit> hits;
     int   hover = -1, focus = -1;
+    // Whether the focus is drawn. Focus can exist without being shown: with an
+    // assistive technology running it starts on the first control, so there is a
+    // place to start reading from, but a mouse user is not shown a ring they never
+    // asked for. It appears once somebody navigates.
+    bool  focusVisible = false;
     float scale = 1.f;
     bool  closing = false;   // we are the ones closing it, so not a dismissal
     bool  rounded = false;   // DWM is rounding and outlining the window for us
@@ -188,6 +220,100 @@ struct TrayPanel::Impl {
     float     launchT = 1.f;
     float     animFrom = 1.f, animTo = 1.f;
     ULONGLONG animStart = 0;
+
+    // What a screen reader sees; made with the window and gone with it.
+    std::unique_ptr<PanelAccessibility> a11y;
+
+    // ---- accessibility ----------------------------------------------------
+    // The panel's side of PanelAccessibility::Host. A screen reader can press
+    // things and move focus; both go through the same paths the mouse and
+    // keyboard do.
+    HWND  Window() const override { return hwnd; }
+    float Scale() const override { return scale; }
+    void  Invoke(int id) override {
+        const int i = HitIndexFor(static_cast<Action>(id));
+        if (i >= 0) Activate(i);
+    }
+    void  SetFocus(int id) override {
+        const int i = HitIndexFor(static_cast<Action>(id));
+        if (i < 0 || !hits[i].enabled) return;
+        focus = i;
+        focusVisible = true;  // a screen reader moved it: show where, for anyone looking
+        PublishAccess();
+        if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+    }
+
+    // Describes what is on screen right now, in the order it reads. Everything a
+    // screen reader is told comes from here, so it has to be kept in step with
+    // Paint(): a thing drawn but not listed is invisible to it.
+    A11yTree BuildAccessTree() const {
+        using Kind = A11yElement::Kind;
+        A11yTree t;
+        t.name = L"SteamlessController";
+        const Model& m = model;
+
+        auto place = [](A11yElement& e, const D2D1_RECT_F& r) {
+            e.left = r.left; e.top = r.top; e.right = r.right; e.bottom = r.bottom;
+        };
+        auto text = [&](int id, const wchar_t* automationId, std::wstring name, const D2D1_RECT_F& r) {
+            A11yElement e;
+            e.id = id; e.kind = Kind::Text; e.name = std::move(name); e.automationId = automationId;
+            place(e, r);
+            t.elements.push_back(std::move(e));
+        };
+        // A control that is also a hit target: its bounds and whether it can be used
+        // come from there, so they cannot disagree with what the mouse does.
+        auto control = [&](Action a, Kind kind, const wchar_t* name, const std::wstring& help,
+                           bool on, int parent, int position, int size) {
+            const int i = HitIndexFor(a);
+            if (i < 0) return;
+            A11yElement e;
+            e.id = static_cast<int>(a); e.parent = parent; e.kind = kind;
+            e.name = name; e.help = help; e.automationId = AutomationId(a);
+            e.enabled = hits[i].enabled; e.on = on; e.position = position; e.size = size;
+            place(e, hits[i].r);
+            t.elements.push_back(std::move(e));
+        };
+
+        if (lay.banner) {
+            text(kA11yBanner, L"Banner", L"Controller device is switched off in Windows.", lay.bannerText);
+            control(Action::EnableDevice, Kind::Button, L"Re-enable controller device", L"", false, -1, 0, 0);
+        }
+
+        // Battery belongs to the status line: it is shown there, and a screen reader
+        // has no other place to find it.
+        std::wstring status = StatusText(m);
+        if (m.battery >= 0) status += L", battery " + std::to_wstring(m.battery) + L" percent";
+        text(kA11yStatus, L"Status", status, lay.status);
+
+        // The switch says why it cannot be used when it cannot: the same line the
+        // header shows under the title.
+        control(Action::ToggleControl, Kind::Toggle, L"Steamless Mode", StatusText(m), m.controlOn, -1, 0, 0);
+
+        {
+            A11yElement g;
+            g.id = kA11yModes; g.kind = Kind::Group; g.name = L"Control mode";
+            g.help = ModeCaption(m.mode); g.automationId = L"ControlMode";
+            place(g, lay.segTrack);
+            t.elements.push_back(std::move(g));
+        }
+        static const Action modeActs[4] = { Action::ModeManual, Action::ModeSteam, Action::ModeGame, Action::ModeProfile };
+        for (int i = 0; i < 4; ++i)
+            control(modeActs[i], Kind::Radio, ModeLabel(i), ModeCaption(i), m.mode == i, kA11yModes, i + 1, 4);
+
+        control(Action::Customize, Kind::Button, L"Customize Controls",
+                L"Bindings, trackpads, triggers, sticks", false, -1, 0, 0);
+        for (int i = 0; i < lay.rowCount; ++i)
+            control(lay.rowAct[i], Kind::Toggle, RowLabel(lay.rowAct[i]), L"", RowOn(lay.rowAct[i]), -1, 0, 0);
+        control(Action::OpenLog, Kind::Button, L"Event log", L"", false, -1, 0, 0);
+        control(Action::Exit, Kind::Button, L"Exit", L"", false, -1, 0, 0);
+
+        t.focusId = (focus >= 0 && focus < static_cast<int>(hits.size())) ? static_cast<int>(hits[focus].a) : -1;
+        return t;
+    }
+    void PublishAccess() {
+        if (a11y) a11y->Update(BuildAccessTree());
+    }
 
     // ---- setup ------------------------------------------------------------
 
@@ -510,6 +636,7 @@ struct TrayPanel::Impl {
         };
         focus = find(oldFocus);
         hover = find(oldHover);
+        PublishAccess();
     }
 
     static bool IsModeAction(Action a) {
@@ -578,7 +705,7 @@ struct TrayPanel::Impl {
     }
 
     void DrawFocus() {
-        if (focus < 0 || focus >= static_cast<int>(hits.size())) return;
+        if (!focusVisible || focus < 0 || focus >= static_cast<int>(hits.size())) return;
         const Hit& h = hits[focus];
         Outline(Inset(h.r, -1.f), h.radius + 1.f, kAccent, 0.9f, 1.5f);
     }
@@ -684,7 +811,7 @@ struct TrayPanel::Impl {
         // leads somewhere.
         {
             const int ci = HitIndexFor(Action::Customize);
-            const bool hot = (ci >= 0 && (ci == hover || ci == focus));
+            const bool hot = (ci >= 0 && (ci == hover || (focusVisible && ci == focus)));
             Fill(lo.customize, 11.f, kAccent, hot ? 0.17f : 0.10f);
             Outline(lo.customize, 11.f, kAccent, hot ? 0.5f : 0.28f);
             IconSliders(lo.customize.left + 12.f, (lo.customize.top + lo.customize.bottom) * 0.5f - 11.f, kAccent);
@@ -820,8 +947,9 @@ struct TrayPanel::Impl {
         int i = focus;
         for (int k = 0; k < n; ++k) {
             i = (i < 0) ? (dir > 0 ? 0 : n - 1) : (i + dir + n) % n;
-            if (hits[i].enabled) { focus = i; break; }
+            if (hits[i].enabled) { focus = i; focusVisible = true; break; }
         }
+        PublishAccess();
         InvalidateRect(hwnd, nullptr, FALSE);
     }
 
@@ -830,6 +958,8 @@ struct TrayPanel::Impl {
         const int j = focus + dir;
         if (j >= 0 && j < static_cast<int>(hits.size()) && IsModeAction(hits[j].a)) {
             focus = j;
+            focusVisible = true;
+            PublishAccess();
             InvalidateRect(hwnd, nullptr, FALSE);
         }
     }
@@ -848,6 +978,9 @@ struct TrayPanel::Impl {
         hwnd = nullptr;
         KillTimer(h, kRefreshTimer);
         KillTimer(h, kAnimTimer);
+        // Before the window goes: a screen reader may be mid-question, and should be
+        // told "gone" rather than find a provider pointing at nothing.
+        if (a11y) { a11y->Detach(); a11y.reset(); }
         DestroyWindow(h);
         closing = false;
         rt.Reset();
@@ -858,6 +991,11 @@ struct TrayPanel::Impl {
 
     LRESULT Handle(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         switch (msg) {
+        case WM_GETOBJECT:
+            // A screen reader asking what is in this window.
+            if (a11y && PanelAccessibility::WantsRoot(lp)) return a11y->HandleGetObject(wp, lp);
+            break;
+
         case WM_ERASEBKGND:
             return 1;
 
@@ -886,6 +1024,7 @@ struct TrayPanel::Impl {
             if (i != hover) {
                 hover = i;
                 focus = -1;  // the pointer takes over from the keyboard
+                PublishAccess();
                 InvalidateRect(h, nullptr, FALSE);
             }
             return 0;
@@ -1011,9 +1150,20 @@ void TrayPanel::Show(HINSTANCE hInst, POINT anchor, ModelProvider provider, Acti
     d.scale = static_cast<float>(GetDpiForWindow(hwnd)) / 96.f;
     d.formats.clear();
     d.hover = d.focus = -1;
+    d.focusVisible = false;
     // Opens already at the right height; only a change while it is up animates.
     d.launchT = d.animFrom = d.animTo = d.model.manual ? 1.f : 0.f;
+    d.a11y = std::make_unique<PanelAccessibility>(d);
     d.BuildLayout();
+    // With a screen reader running, start with keyboard focus on the first control
+    // so it has somewhere to begin reading from. Otherwise focus stays unset until
+    // a key is pressed, so a mouse user is not shown a focus ring they did not ask
+    // for.
+    d.focusVisible = false;
+    if (PanelAccessibility::ClientsListening()) {
+        d.Step(+1);
+        d.focusVisible = false;  // Step shows the ring; this opening is not a keypress
+    }
 
     const int w   = static_cast<int>(std::lround(kWidth * d.scale));
     const int h   = static_cast<int>(std::lround(d.lay.height * d.scale));
