@@ -2,11 +2,13 @@
 #define NOMINMAX
 #endif
 #include "TrayPanel.h"
+#include "EmbeddedFonts.h"
 
 #include <d2d1.h>
 #include <dwmapi.h>
 #include <dwrite.h>
 #include <dwrite_1.h>
+#include <dwrite_3.h>
 #include <windowsx.h>
 #include <wrl/client.h>
 
@@ -156,6 +158,19 @@ struct TrayPanel::Impl {
     ComPtr<ID2D1SolidColorBrush>  brush;
     std::map<unsigned, ComPtr<IDWriteTextFormat>> formats;
     std::wstring sans, mono;
+    // The fonts built into the exe, and the collection that holds them. Null on a
+    // Windows too old to build one, in which case the system's fonts are used.
+    ComPtr<IDWriteInMemoryFontFileLoader> fontLoader;
+    ComPtr<IDWriteFontCollection>         bundled;
+    IDWriteFontCollection* sansCollection = nullptr;  // null means the system's
+    IDWriteFontCollection* monoCollection = nullptr;
+
+    ~Impl() {
+        // The loader is registered with a factory that can outlive this object.
+        ComPtr<IDWriteFactory5> f5;
+        if (dw && fontLoader && SUCCEEDED(dw.As(&f5)))
+            f5->UnregisterFontFileLoader(fontLoader.Get());
+    }
 
     Layout           lay;
     std::vector<Hit> hits;
@@ -189,19 +204,62 @@ struct TrayPanel::Impl {
         d2d->CreateStrokeStyle(sp, nullptr, 0, stroke.ReleaseAndGetAddressOf());
         BuildPadGeometry();
 
-        // The Customize window is set in Barlow; use it when it is installed and
-        // fall back to what ships with Windows when it is not.
+        LoadBundledFonts();
+
+        // Barlow and JetBrains Mono from the exe when they could be loaded, so the
+        // panel matches the Customize window on every machine. If they could not
+        // be (a Windows older than 10 1703 has no in-memory font loading), fall
+        // back to Barlow if it happens to be installed, then to what ships with
+        // Windows.
         ComPtr<IDWriteFontCollection> sys;
         dw->GetSystemFontCollection(sys.ReleaseAndGetAddressOf());
-        auto have = [&](const wchar_t* family) {
+        auto have = [](IDWriteFontCollection* c, const wchar_t* family) {
             UINT32 idx = 0; BOOL exists = FALSE;
-            return sys && SUCCEEDED(sys->FindFamilyName(family, &idx, &exists)) && exists;
+            return c && SUCCEEDED(c->FindFamilyName(family, &idx, &exists)) && exists;
         };
-        sans = have(L"Barlow")             ? L"Barlow"
-             : have(L"Segoe UI Variable Text") ? L"Segoe UI Variable Text"
-                                           : L"Segoe UI";
-        mono = have(L"Cascadia Mono") ? L"Cascadia Mono" : L"Consolas";
+        if (have(bundled.Get(), L"Barlow")) {
+            sans = L"Barlow";
+            sansCollection = bundled.Get();
+        } else {
+            sans = have(sys.Get(), L"Barlow")                 ? L"Barlow"
+                 : have(sys.Get(), L"Segoe UI Variable Text") ? L"Segoe UI Variable Text"
+                                                               : L"Segoe UI";
+        }
+        if (have(bundled.Get(), L"JetBrains Mono")) {
+            mono = L"JetBrains Mono";
+            monoCollection = bundled.Get();
+        } else {
+            mono = have(sys.Get(), L"Cascadia Mono") ? L"Cascadia Mono" : L"Consolas";
+        }
         return true;
+    }
+
+    // Builds a font collection out of the embedded TrueType data. The data is
+    // never copied: the loader hands DirectWrite pointers into the resource
+    // section, which stays mapped for the life of the process.
+    void LoadBundledFonts() {
+        ComPtr<IDWriteFactory5> f5;
+        if (FAILED(dw.As(&f5))) return;
+        ComPtr<IDWriteInMemoryFontFileLoader> loader;
+        if (FAILED(f5->CreateInMemoryFontFileLoader(loader.GetAddressOf()))) return;
+        if (FAILED(f5->RegisterFontFileLoader(loader.Get()))) return;
+        fontLoader = loader;  // from here on the destructor unregisters it
+
+        ComPtr<IDWriteFontSetBuilder1> builder;
+        if (FAILED(f5->CreateFontSetBuilder(builder.GetAddressOf()))) return;
+        for (size_t i = 0; i < EmbeddedFontCount(); ++i) {
+            const void* data = nullptr;
+            DWORD size = 0;
+            if (!LoadEmbeddedFont(hInst, EmbeddedFontAt(i), data, size)) continue;
+            ComPtr<IDWriteFontFile> file;
+            if (SUCCEEDED(loader->CreateInMemoryFontFileReference(f5.Get(), data, size, nullptr, file.GetAddressOf())))
+                builder->AddFontFile(file.Get());
+        }
+        ComPtr<IDWriteFontSet> set;
+        if (FAILED(builder->CreateFontSet(set.GetAddressOf()))) return;
+        ComPtr<IDWriteFontCollection1> collection;
+        if (FAILED(f5->CreateFontCollectionFromFontSet(set.Get(), collection.GetAddressOf()))) return;
+        bundled = collection;
     }
 
     // The gamepad silhouette from the tray icons, as a path in a 256-unit box
@@ -260,7 +318,8 @@ struct TrayPanel::Impl {
         if (it != formats.end()) return it->second.Get();
 
         ComPtr<IDWriteTextFormat> f;
-        if (FAILED(dw->CreateTextFormat(useMono ? mono.c_str() : sans.c_str(), nullptr, weight,
+        if (FAILED(dw->CreateTextFormat(useMono ? mono.c_str() : sans.c_str(),
+                                        useMono ? monoCollection : sansCollection, weight,
                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                                         size, L"en-us", f.GetAddressOf())))
             return nullptr;
@@ -904,6 +963,10 @@ TrayPanel::~TrayPanel() { Close(); }
 
 bool TrayPanel::IsOpen() const { return m_d->hwnd != nullptr; }
 
+std::wstring TrayPanel::FontFamilies() const {
+    return m_d->sans + L" / " + m_d->mono + (m_d->bundled ? L" (bundled)" : L" (system)");
+}
+
 bool TrayPanel::RecentlyDismissed() const {
     return m_d->dismissedAt != 0 && GetTickCount64() - m_d->dismissedAt < kDismissGraceMs;
 }
@@ -913,9 +976,9 @@ void TrayPanel::Close() { m_d->CloseWindow_(); }
 void TrayPanel::Show(HINSTANCE hInst, POINT anchor, ModelProvider provider, ActionHandler handler) {
     Impl& d = *m_d;
     d.CloseWindow_();
+    d.hInst = hInst;  // before the factories: the bundled fonts are read from it
     if (!d.EnsureFactories()) return;
 
-    d.hInst    = hInst;
     d.provider = std::move(provider);
     d.handler  = std::move(handler);
     d.model    = d.provider();

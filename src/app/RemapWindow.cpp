@@ -1,10 +1,12 @@
 #include "RemapWindow.h"
 #include "KeyInput.h"
 #include "ControllerManager.h"
+#include "EmbeddedFonts.h"
 #include "EventLog.h"
 #include "ProcessIdentity.h"
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shlwapi.h>
 #include <shobjidl.h>
 #include <windowsx.h>
 #include <wrl/client.h>
@@ -39,10 +41,16 @@ static const std::wstring& GetHtml() {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700;800&family=JetBrains+Mono:wght@600&display=swap" rel="stylesheet">
 <style>
+/* The fonts are built into the exe and handed over by the window (see
+   ServeEmbeddedFont); steamless.fonts is not a real host. Bold is the heaviest
+   weight carried, so a request for 800 lands there. If the window cannot answer,
+   the stacks below fall back to system fonts. */
+@font-face{font-family:'Barlow';font-weight:400;src:url(https://steamless.fonts/Barlow-Regular.ttf) format('truetype');}
+@font-face{font-family:'Barlow';font-weight:500;src:url(https://steamless.fonts/Barlow-Medium.ttf) format('truetype');}
+@font-face{font-family:'Barlow';font-weight:600;src:url(https://steamless.fonts/Barlow-SemiBold.ttf) format('truetype');}
+@font-face{font-family:'Barlow';font-weight:700;src:url(https://steamless.fonts/Barlow-Bold.ttf) format('truetype');}
+@font-face{font-family:'JetBrains Mono';font-weight:600;src:url(https://steamless.fonts/JetBrainsMono-SemiBold.ttf) format('truetype');}
 /* v2 visual language. One set of tokens, used everywhere below: three surface
    steps (chrome < window < card), a hairline for every divider, and Steam blue as
    the only accent. Amber means "look at this", green means "on / go". */
@@ -2933,6 +2941,49 @@ void RemapWindow::CreateWebViewAsync(HWND hwnd) {
     }
 }
 
+// Answers a page request for one of the bundled fonts from the exe's own copy.
+//
+// The page names https://steamless.fonts/<file>, which is not a host anyone
+// resolves; WebView2 raises the request to us before it would go to the network,
+// and a response set here is all the page ever sees. Nothing leaves the machine,
+// and a page opened offline looks exactly like one opened online. The reply is
+// marked cross-origin-readable because the page itself is a string, not served
+// from that origin, and a font fetched across origins is refused without it.
+static HRESULT ServeEmbeddedFont(ICoreWebView2Environment* env, HINSTANCE module,
+                                 ICoreWebView2WebResourceRequestedEventArgs* args) {
+    using Microsoft::WRL::ComPtr;
+    ComPtr<ICoreWebView2WebResourceRequest> request;
+    if (FAILED(args->get_Request(&request)) || !request) return S_OK;
+    LPWSTR raw = nullptr;
+    request->get_Uri(&raw);
+    const std::wstring uri = raw ? raw : L"";
+    CoTaskMemFree(raw);
+
+    const std::wstring_view origin = kEmbeddedFontOrigin;
+    std::wstring_view file = uri;
+    if (file.substr(0, origin.size()) != origin) return S_OK;  // not ours: let it through
+    file.remove_prefix(origin.size());
+    file = file.substr(0, file.find_first_of(L"?#"));
+
+    ComPtr<ICoreWebView2WebResourceResponse> response;
+    const EmbeddedFont* font = FindEmbeddedFont(file);
+    const void* data = nullptr;
+    DWORD size = 0;
+    if (font && LoadEmbeddedFont(module, *font, data, size)) {
+        ComPtr<IStream> stream;
+        stream.Attach(SHCreateMemStream(static_cast<const BYTE*>(data), size));
+        if (!stream) return S_OK;
+        env->CreateWebResourceResponse(
+            stream.Get(), 200, L"OK",
+            L"Content-Type: font/ttf\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: max-age=31536000",
+            &response);
+    } else {
+        env->CreateWebResourceResponse(nullptr, 404, L"Not Found", L"", &response);
+    }
+    if (response) args->put_Response(response.Get());
+    return S_OK;
+}
+
 void RemapWindow::OnControllerReady(ICoreWebView2Controller* ctrl) {
     m_controller = ctrl;
     m_controller->get_CoreWebView2(&m_webview);
@@ -2969,6 +3020,18 @@ void RemapWindow::OnControllerReady(ICoreWebView2Controller* ctrl) {
                 return S_OK;
             }
         ).Get(), &token);
+
+    // The page's fonts come from the exe, see ServeEmbeddedFont. Registered before
+    // the navigation below so the very first request is already covered.
+    const std::wstring fontFilter = std::wstring(kEmbeddedFontOrigin) + L"*";
+    (void)m_webview->AddWebResourceRequestedFilter(fontFilter.c_str(), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT);
+    EventRegistrationToken fontToken{};
+    (void)m_webview->add_WebResourceRequested(
+        Microsoft::WRL::Callback<ICoreWebView2WebResourceRequestedEventHandler>(
+            [this](ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
+                return ServeEmbeddedFont(m_env.Get(), m_hInst, args);
+            }
+        ).Get(), &fontToken);
 
     // Send initial state to the page once navigation completes.
     EventRegistrationToken navToken{};

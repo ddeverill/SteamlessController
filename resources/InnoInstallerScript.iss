@@ -82,6 +82,11 @@ Source: "{#BuildDir}SteamlessDeviceCycle.exe"; DestDir: "{app}"; Flags: ignoreve
 ; never reaches a game. Installed rather than temporary for the second reason.
 Source: "{#BuildDir}ViGEmBusProbe.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "resources\{#ViGEmSetup}"; DestDir: "{tmp}"; Flags: deleteafterinstall
+; The fonts are inside the exe, but the SIL Open Font License asks that its text
+; travel with them, so it is installed beside the program as well.
+Source: "resources\fonts\OFL-Barlow.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "resources\fonts\OFL-JetBrainsMono.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "resources\fonts\README.txt"; DestDir: "{app}\licenses"; DestName: "Fonts.txt"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
