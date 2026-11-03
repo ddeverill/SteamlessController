@@ -51,7 +51,6 @@ button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;back
 #titlebar{height:46px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 6px 0 14px;background:#171a21;border-bottom:1px solid rgba(0,0,0,.5);user-select:none;}
 #titlebar .left{display:flex;align-items:center;gap:10px;}
 .glyph{width:20px;height:20px;border-radius:5px;background:linear-gradient(135deg,#1a9fff,#0a4a78);display:flex;align-items:center;justify-content:center;box-shadow:0 0 8px rgba(26,159,255,.4);flex:none;}
-.glyph-dot{width:7px;height:7px;border-radius:50%;background:#bfe3ff;}
 .tb-title{font-size:13px;font-weight:600;color:#c7d5e0;letter-spacing:.3px;}
 .tb-sub{font-size:12px;color:#5c6b78;}
 .winctls{display:flex;align-items:center;gap:2px;}
@@ -238,7 +237,7 @@ R"HTML(
 
 <div id="titlebar">
   <div class="left">
-    <div class="glyph"><div class="glyph-dot"></div></div>
+    <div class="glyph"><svg width="14" height="11" viewBox="18 38 220 166" aria-hidden="true"><path fill="#bfe3ff" d="M78 44C100 40 170 40 192 44C220 50 236 80 236 110C236 140 232 165 226 185C222 198 212 202 204 198C196 194 192 180 186 168C182 160 176 158 168 158L88 158C80 158 74 160 70 168C64 180 60 194 52 198C44 202 34 198 30 186C24 165 20 140 20 110C20 80 36 50 78 44Z"/><circle cx="128" cy="98" r="25" fill="none" stroke="#0a4a78" stroke-width="10"/></svg></div>
     <span class="tb-title">SteamlessController</span>
     <span class="tb-sub">&#8212; Customize Controls</span>
   </div>
