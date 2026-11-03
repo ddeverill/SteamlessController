@@ -117,6 +117,11 @@ bool IsExtendedKey(uint16_t vk) {
 struct ScanCode { WORD scan; bool extended; };
 
 ScanCode ScanCodeFor(uint16_t vk) {
+    // MapVirtualKey answers with the legacy SysRq scan code 0x54 for Print
+    // Screen, and IsExtendedKey then prefixes it into 0xE054, which resolves to
+    // no virtual key at all. The key itself sends 0xE037.
+    if (vk == VK_SNAPSHOT) return { 0x37, true };
+
     // _EX is still the right lookup for the scan code itself: it distinguishes
     // left from right modifiers, which the plain mapping collapses.
     const UINT mapped = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX);
@@ -238,8 +243,12 @@ std::wstring KeyDisplayName(uint16_t vk) {
 void SendKeyInput(uint16_t vk, bool down) {
     if (vk == 0) return;
 
-    const ScanCode sc = ScanCodeFor(vk);
+    ScanCode sc = ScanCodeFor(vk);
     if (sc.scan == 0) return;
+
+    // Windows flags NumLock extended — which is what makes GetKeyNameText
+    // label it — but the key sends a plain 0x45, and 0xE045 is nothing.
+    if (vk == VK_NUMLOCK) sc.extended = false;
 
     INPUT input = {};
     input.type       = INPUT_KEYBOARD;
