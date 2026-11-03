@@ -43,149 +43,177 @@ static const std::wstring& GetHtml() {
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700;800&family=JetBrains+Mono:wght@600&display=swap" rel="stylesheet">
 <style>
+/* v2 visual language. One set of tokens, used everywhere below: three surface
+   steps (chrome < window < card), a hairline for every divider, and Steam blue as
+   the only accent. Amber means "look at this", green means "on / go". */
+:root{--chrome:#0b121a;--win:#111a24;--card:#172230;--raised:#223042;--inset:#0e151d;
+  --line:rgba(255,255,255,.07);--line2:rgba(255,255,255,.12);
+  --tx:#e6edf3;--tx2:#a9b6c2;--tx3:#8794a1;
+  --acc:#66c0f4;--acc-dim:rgba(102,192,244,.14);--on:#7fc241;--warn:#e0b04a;--danger:#e0584a;
+  --mono:'JetBrains Mono',monospace;}
 *,*::before,*::after{box-sizing:border-box;}
 html,body{margin:0;padding:0;height:100%;overflow:hidden;}
-body{font-family:'Barlow',system-ui,sans-serif;background:linear-gradient(180deg,#1b2838 0%,#15202c 100%);color:#fff;display:flex;flex-direction:column;height:100%;}
-button{font-family:'Barlow',system-ui,sans-serif;cursor:pointer;border:none;background:none;}
+body{font-family:'Barlow',system-ui,sans-serif;font-size:14px;background:var(--win);color:var(--tx);display:flex;flex-direction:column;height:100%;}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit;padding:0;}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px;}
+::-webkit-scrollbar{width:12px;}
+::-webkit-scrollbar-thumb{background:#2a3a4c;border-radius:6px;border:3px solid var(--win);}
+::-webkit-scrollbar-thumb:hover{background:#38506a;}
 @keyframes scPulse{0%,100%{opacity:.4;transform:scale(.85);}50%{opacity:1;transform:scale(1.2);}}
-#titlebar{height:46px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 6px 0 14px;background:#171a21;border-bottom:1px solid rgba(0,0,0,.5);user-select:none;}
-#titlebar .left{display:flex;align-items:center;gap:10px;}
-.glyph{width:20px;height:20px;border-radius:5px;background:linear-gradient(135deg,#1a9fff,#0a4a78);display:flex;align-items:center;justify-content:center;box-shadow:0 0 8px rgba(26,159,255,.4);flex:none;}
-.tb-title{font-size:13px;font-weight:600;color:#c7d5e0;letter-spacing:.3px;}
-.tb-sub{font-size:12px;color:#5c6b78;}
+#titlebar{height:56px;flex:none;display:flex;align-items:center;gap:16px;padding:0 6px 0 16px;background:var(--chrome);border-bottom:1px solid var(--line);user-select:none;position:relative;z-index:30;}
+#titlebar .left{display:flex;align-items:center;gap:10px;width:206px;flex:none;}
+.glyph{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#1a9fff,#0a4a78);display:flex;align-items:center;justify-content:center;box-shadow:0 0 10px rgba(26,159,255,.4);flex:none;}
+.tb-title{font-size:14px;font-weight:600;color:#c7d5e0;white-space:nowrap;}
+.tb-spacer{flex:1;}
 .winctls{display:flex;align-items:center;gap:2px;}
-.winctl{width:30px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:4px;color:#8f98a0;font-size:13px;cursor:pointer;transition:background .15s,color .15s;}
+.winctl{width:36px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--tx2);font-size:13px;transition:background .12s,color .12s;}
 .winctl:hover{background:rgba(255,255,255,.08);}
 .winctl.close:hover{background:#c0392b;color:#fff;}
-#body{flex:1;display:flex;flex-direction:column;padding:24px 26px;gap:22px;overflow-y:auto;min-height:0;}
-#body h2{font-size:21px;font-weight:800;color:#fff;letter-spacing:-.2px;}
-.instr{font-size:13.5px;color:#8f98a0;line-height:1.5;margin-top:4px;}
-.instr b{color:#66c0f4;font-weight:700;}
-/* Everything below the APPLY TO picker lives in #settings so it can be dimmed
-   as one block. That made it a plain div between #body's flex children, so its
-   groups stacked with no gap at all while the groups above it got #body's —
-   which is why each section heading sat jammed against the box above it. Same
-   axis, same gap, so the two halves of the page space identically. */
-#settings{display:flex;flex-direction:column;gap:22px;}
-.group{display:flex;flex-direction:column;gap:11px;}
-/* An explicit line box: at 11px with this letter-spacing the uppercase
-   headings were riding the top of their line and losing a pixel off the caps. */
-.group-label{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:1.5px;color:#5c6b78;font-weight:600;line-height:1.5;}
-.row{display:flex;flex-direction:column;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:12px 16px;transition:border-color .2s,box-shadow .2s,background .2s;}
-.row.listening{background:rgba(255,255,255,.05);border-color:#66c0f4;box-shadow:0 0 0 1px rgba(102,192,244,.4),0 10px 26px rgba(0,0,0,.32);}
-.row.flash{border-color:#5ba32b;box-shadow:0 0 0 1px rgba(91,163,43,.4);}
-.row-top{display:flex;align-items:center;gap:16px;}
-.badge{width:46px;height:46px;flex:none;border-radius:10px;background:#1b2a3a;border:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;align-items:center;justify-content:center;}
-.badge-id{font-size:15px;font-weight:800;color:#fff;line-height:1;}
-.badge-pos{font-family:'JetBrains Mono',monospace;font-size:8px;color:#5c6b78;letter-spacing:.5px;margin-top:2px;}
-.pos-label{font-size:13.5px;color:#aeb9c2;font-weight:500;flex:none;}
-.inherit-row{display:flex;align-items:center;gap:10px;padding:14px 0 0 0;}
-.inherit-row input{width:16px;height:16px;accent-color:#4a9eff;cursor:pointer;flex:none;margin:0;}
-.inherit-row label{font-size:13.5px;color:#aeb9c2;font-weight:500;cursor:pointer;}
-.inherit-note{font-size:12px;color:#7d8b96;padding:8px 0 14px 26px;line-height:1.45;}
-.combo-badge{margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.6px;color:#c9a86a;border:1px solid rgba(201,168,106,.35);border-radius:3px;padding:1px 5px;}
-.missing-note{margin-top:11px;font-size:12px;color:#c9a86a;line-height:1.45;}
-/* Says how a directional pad splits its surface, which is the one thing about
-   these rows that cannot be worked out from their labels. */
-.pad-note{font-size:12px;color:#7d8b96;padding:2px 0 10px;line-height:1.45;}
-/* Following the default leaves nothing below worth reading as editable. */
+#shell{flex:1;display:flex;min-height:0;}
+#rail{width:232px;flex:none;padding:14px 10px;background:var(--chrome);border-right:1px solid var(--line);display:flex;flex-direction:column;gap:2px;overflow-y:auto;}
+.rail-item{position:relative;display:flex;align-items:center;gap:12px;width:100%;padding:10px 12px;border-radius:10px;text-align:left;transition:background .12s;}
+.rail-item:hover{background:rgba(255,255,255,.04);}
+.rail-item.active{background:var(--acc-dim);}
+.rail-item.active::before{content:'';position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:2px;background:var(--acc);}
+.rail-item svg{flex:none;fill:none;stroke:var(--tx3);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;}
+.rail-item.active svg{stroke:var(--acc);}
+.ri-text{flex:1;min-width:0;display:flex;flex-direction:column;}
+.ri-title{font-size:14.5px;font-weight:600;color:var(--tx);}
+.ri-sub{font-size:12px;color:var(--tx3);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.ri-dot{width:8px;height:8px;border-radius:50%;background:transparent;flex:none;}
+.ri-dot.on{background:var(--warn);}
+#main{flex:1;min-width:0;overflow-y:auto;padding:24px 32px 28px;display:flex;flex-direction:column;gap:16px;}
+#main>*{flex:none;}
+.pane{display:none;flex-direction:column;gap:16px;}
+.pane.active{display:flex;}
+.pane-head h2{margin:0;font-size:26px;font-weight:700;letter-spacing:-.2px;}
+.pane-head p{margin:3px 0 0;font-size:13.5px;color:var(--tx2);line-height:1.45;}
+.pane-head b{color:var(--acc);font-weight:600;}
+/* Everything the default's mappings stand in for sits in #settings so it can be
+   dimmed as one. Its panes are siblings of each other and only one is showing,
+   so the wrapper adds no spacing of its own. */
+#settings{display:flex;flex-direction:column;}
 #settings.inherited{opacity:.38;pointer-events:none;}
-/* The General Settings rows follow the default like everything in #settings,
-   but sit in a group of their own, so each is dimmed individually. */
+</style>
+)HTML"
+// Rows are lines inside a card now, and the controls are restyled to match.
+R"HTML(
+<style>
+/* A group is a card; its rows are lines inside it rather than boxes of their
+   own. The mono label is the card's header, hidden when the pane's own heading
+   already says the same thing (.solo). */
+.group{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;}
+.group-label{font-family:var(--mono);font-size:10.5px;letter-spacing:1.4px;color:var(--tx3);font-weight:600;line-height:1.5;padding:12px 16px 10px;}
+.solo>.group-label{display:none;}
+.row{display:flex;flex-direction:column;border-top:1px solid var(--line);padding:9px 16px;transition:background .15s,box-shadow .15s;}
+.solo>.row:first-child{border-top:none;}
+.row.listening{background:rgba(102,192,244,.06);box-shadow:inset 3px 0 0 var(--acc);}
+.row.flash{background:rgba(127,194,65,.08);box-shadow:inset 3px 0 0 var(--on);}
 .row.inherited{opacity:.38;pointer-events:none;}
-.connector{flex:1;height:1.5px;border-top:1.5px dashed rgba(255,255,255,.1);}
-.row-right{display:flex;align-items:center;gap:11px;flex:none;}
-.chip-lg{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex:none;}
-.input-label{font-size:13.5px;color:#fff;font-weight:600;min-width:100px;}
-.btn-rebind{padding:7px 14px;border-radius:4px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:#aeb9c2;font-size:12px;font-weight:600;transition:border-color .15s,color .15s;}
-.btn-rebind:hover{border-color:#66c0f4;color:#66c0f4;}
-.listen-right{display:flex;align-items:center;gap:8px;flex:none;}
-.listen-pill{display:flex;align-items:center;gap:9px;background:rgba(102,192,244,.12);border:1px solid rgba(102,192,244,.45);color:#cfe7fa;border-radius:6px;padding:7px 12px;font-weight:600;font-size:12.5px;}
-.pulse-dot{width:9px;height:9px;border-radius:50%;background:#66c0f4;animation:scPulse 1.2s ease-in-out infinite;flex:none;}
-.btn-cancel{width:32px;height:32px;border-radius:5px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.03);color:#8f98a0;font-size:12px;display:flex;align-items:center;justify-content:center;transition:border-color .15s,color .15s,background .15s;}
-.btn-cancel:hover{border-color:#c0392b;color:#fff;background:rgba(192,57,43,.08);}
-.btn-row-reset{padding:6px 12px;border-radius:5px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.03);color:#8f98a0;font-size:12px;font-weight:600;transition:border-color .15s,color .15s,background .15s;}
-.btn-row-reset:hover{border-color:#66c0f4;color:#66c0f4;background:rgba(102,192,244,.06);}
-.combo-wrap{position:relative;}
-.combo-toggle{width:100%;background:#101925;border:1px solid rgba(255,255,255,.12);border-radius:6px;color:#fff;font-size:13.5px;font-family:'Barlow',system-ui,sans-serif;padding:9px 12px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;}
-.combo-toggle:hover{border-color:#66c0f4;}
-.combo-toggle .chev{color:#5c6b78;font-size:11px;flex:none;}
-.combo-panel{position:absolute;top:calc(100% + 6px);left:0;right:0;background:#101925;border:1px solid rgba(102,192,244,.3);border-radius:8px;box-shadow:0 12px 28px rgba(0,0,0,.45);padding:10px;z-index:20;}
-.combo-search{width:100%;box-sizing:border-box;background:#0b131c;border:1px solid rgba(255,255,255,.12);border-radius:6px;color:#fff;font-size:13px;font-family:'Barlow',system-ui,sans-serif;padding:8px 10px;}
-.combo-search:focus{outline:none;border-color:#66c0f4;}
-.combo-section-label{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:1px;color:#5c6b78;font-weight:600;margin:10px 2px 6px;}
-.combo-list{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;}
-.combo-item{padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px;color:#c7d5e0;}
-.combo-item:hover{background:rgba(102,192,244,.12);color:#fff;}
-.combo-item.active{background:rgba(102,192,244,.18);color:#fff;}
-.combo-empty{padding:10px;font-size:12px;color:#5c6b78;text-align:center;}
-.combo-add{margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;gap:2px;}
-.combo-add-item{padding:8px 10px;border-radius:6px;cursor:pointer;font-size:12.5px;color:#66c0f4;font-weight:600;}
-.combo-add-item:hover{background:rgba(102,192,244,.12);}
-.combo-note{padding:8px 10px 2px;font-size:11.5px;color:#5c6b78;text-align:center;}
-.combo-back{padding:6px 10px 8px;font-size:11.5px;color:#8f98a0;cursor:pointer;}
-.combo-back:hover{color:#66c0f4;}
-.combo-item .exe{display:block;font-size:11px;color:#5c6b78;margin-top:2px;}
-.mode-row{padding-top:14px;padding-bottom:14px;}
-.mode-select{background:#101925;border:1px solid rgba(255,255,255,.12);border-radius:6px;color:#fff;font-size:13px;font-family:'Barlow',system-ui,sans-serif;padding:7px 10px;font-weight:600;cursor:pointer;flex:none;min-width:215px;}
-.mode-select:hover{border-color:#66c0f4;}
-.mode-select:focus{outline:none;border-color:#66c0f4;}
-.speed-wrap{display:flex;align-items:center;gap:10px;flex:none;min-width:215px;}
+.row-top{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px;min-height:34px;}
+.connector{display:none;}
+.badge{width:34px;height:34px;flex:none;border-radius:8px;background:var(--inset);border:1px solid var(--line2);display:flex;flex-direction:column;align-items:center;justify-content:center;}
+.badge-id{font-size:13px;font-weight:800;line-height:1;}
+.badge-pos{font-family:var(--mono);font-size:7px;color:var(--tx3);letter-spacing:.4px;margin-top:2px;}
+.pos-label{flex:1 1 100px;min-width:100px;font-size:14px;font-weight:500;color:#c7d5e0;}
+.row-right{display:flex;align-items:center;gap:10px;flex:none;margin-left:auto;}
+.chip-lg{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;flex:none;}
+.input-label{font-size:13.5px;font-weight:600;min-width:100px;}
+.btn-rebind,.btn-row-reset{height:30px;padding:0 12px;border-radius:8px;border:1px solid var(--line2);color:#c7d5e0;font-size:12.5px;font-weight:600;transition:border-color .12s,color .12s,background .12s;}
+.btn-rebind:hover,.btn-row-reset:hover{border-color:var(--acc);color:var(--acc);background:rgba(102,192,244,.06);}
+.listen-right{display:flex;align-items:center;gap:8px;flex:none;margin-left:auto;}
+.listen-pill{display:flex;align-items:center;gap:9px;height:32px;padding:0 12px;border-radius:8px;border:1px solid rgba(102,192,244,.5);background:rgba(102,192,244,.12);color:#cfe7fa;font-size:12.5px;font-weight:600;}
+.pulse-dot{width:9px;height:9px;border-radius:50%;background:var(--acc);animation:scPulse 1.2s ease-in-out infinite;flex:none;}
+.btn-cancel{width:32px;height:32px;border-radius:8px;border:1px solid var(--line2);color:var(--tx2);font-size:12px;display:flex;align-items:center;justify-content:center;transition:border-color .12s,color .12s,background .12s;}
+.btn-cancel:hover{border-color:var(--danger);color:#fff;background:rgba(224,88,74,.1);}
+.mode-select{flex:none;min-width:220px;height:34px;padding:0 10px;border-radius:8px;border:1px solid var(--line2);background:var(--inset);color:var(--tx);font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer;}
+.mode-select:hover{border-color:var(--acc);}
+.speed-wrap{display:flex;align-items:center;gap:10px;flex:none;min-width:220px;}
 .speed-slider{-webkit-appearance:none;appearance:none;flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.16);outline:none;cursor:pointer;}
-.speed-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:15px;height:15px;border-radius:50%;background:#66c0f4;border:none;cursor:pointer;}
+.speed-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:15px;height:15px;border-radius:50%;background:var(--acc);border:none;cursor:pointer;}
 .speed-slider:hover::-webkit-slider-thumb{background:#8fd3ff;}
-.speed-slider:focus{outline:none;}
-.speed-val{font-family:'JetBrains Mono',monospace;font-size:12px;color:#8f98a0;font-weight:600;min-width:44px;text-align:right;}
-.offbar{display:none;margin:0 0 14px;padding:11px 13px;border-radius:8px;background:rgba(214,146,42,.13);border:1px solid rgba(214,146,42,.42);align-items:center;gap:12px;}
+.speed-slider:focus-visible{outline:2px solid var(--acc);outline-offset:6px;}
+.speed-val{font-family:var(--mono);font-size:12px;color:var(--tx2);font-weight:600;min-width:44px;text-align:right;}
+.pad-note{font-size:12.5px;color:var(--tx3);padding:10px 16px;border-top:1px solid var(--line);line-height:1.45;}
+.inherit-row{display:flex;align-items:center;gap:10px;padding:2px 16px 0;}
+.inherit-row input{width:16px;height:16px;accent-color:#4a9eff;cursor:pointer;flex:none;margin:0;}
+.inherit-row label{font-size:14px;color:#c7d5e0;font-weight:500;cursor:pointer;}
+.inherit-note{font-size:12.5px;color:var(--tx3);padding:6px 16px 14px 42px;line-height:1.45;}
+.combo-badge{margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.6px;color:#c9a86a;border:1px solid rgba(201,168,106,.35);border-radius:3px;padding:1px 5px;}
+.missing-note{font-size:12.5px;color:#e8c07a;line-height:1.45;padding:11px 14px;border-radius:10px;background:rgba(224,176,74,.08);border:1px solid rgba(224,176,74,.3);}
+.offbar{display:none;padding:11px 14px;border-radius:10px;background:rgba(224,176,74,.1);border:1px solid rgba(224,176,74,.4);align-items:center;gap:14px;}
 .offbar.on{display:flex;}
-.offbar-text{flex:1;font-size:12.5px;color:#e8c07a;line-height:1.45;}
-.offbar-text b{color:#ffd699;font-weight:700;}
-.offbar-btn{padding:7px 14px;border-radius:3px;border:1px solid #4c7a1d;background:linear-gradient(to bottom,#94c63d,#5d8a1f);color:#13260a;font-weight:700;font-size:12.5px;white-space:nowrap;}
+.offbar-text{flex:1;font-size:13px;color:#f0d28f;line-height:1.45;}
+.offbar-text b{color:#ffe3a8;font-weight:700;}
+.offbar-btn{height:30px;padding:0 14px;border-radius:7px;background:var(--warn);color:#1d1604;font-weight:700;font-size:12.5px;white-space:nowrap;}
 .offbar-btn:hover{opacity:.9;}
-.picker{margin-top:12px;background:#101925;border:1px solid rgba(102,192,244,.2);border-radius:8px;padding:12px 13px;}
-.picker-label{font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:1px;color:#5c6b78;font-weight:600;}
+.picker{margin-top:12px;background:var(--inset);border:1px solid var(--line);border-radius:10px;padding:12px 14px;}
+.picker-label{font-family:var(--mono);font-size:10.5px;letter-spacing:1px;color:var(--tx3);font-weight:600;}
 .picker-rows{display:flex;flex-direction:column;gap:7px;margin-top:10px;}
 .picker-row{display:flex;flex-wrap:wrap;gap:7px;}
-.picker-pill{display:flex;align-items:center;gap:8px;padding:5px 11px 5px 5px;border-radius:7px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);cursor:pointer;transition:border-color .15s,background .15s;}
-.picker-pill:hover{border-color:#66c0f4;background:rgba(102,192,244,.1);}
+.picker-pill{display:flex;align-items:center;gap:8px;padding:5px 11px 5px 5px;border-radius:8px;border:1px solid var(--line);background:rgba(255,255,255,.03);transition:border-color .12s,background .12s;}
+.picker-pill:hover{border-color:var(--acc);background:rgba(102,192,244,.1);}
 .chip-sm{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:11px;flex:none;}
 .picker-name{font-size:12px;color:#c7d5e0;font-weight:600;}
-.mod-pill{padding:6px 14px;border-radius:7px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.03);color:#aeb9c2;font-size:12px;font-weight:700;letter-spacing:.3px;transition:border-color .15s,color .15s,background .15s;}
-.mod-pill:hover{border-color:#66c0f4;color:#66c0f4;}
-.mod-pill.on{border-color:#66c0f4;background:rgba(102,192,244,.18);color:#fff;}
-.mod-note{font-size:11.5px;color:#5c6b78;line-height:1.45;margin-top:9px;}
-.mod-note b{color:#8f98a0;font-weight:700;}
-#footer{height:62px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 20px;background:#15202c;border-top:1px solid rgba(0,0,0,.45);}
-.footer-right{display:flex;gap:10px;align-items:center;}
-.btn-reset{padding:9px 16px;border-radius:3px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:#aeb9c2;font-weight:600;font-size:13.5px;transition:color .15s;}
+.mod-pill{height:30px;padding:0 14px;border-radius:8px;border:1px solid var(--line2);background:rgba(255,255,255,.03);color:var(--tx2);font-size:12px;font-weight:700;letter-spacing:.3px;transition:border-color .12s,color .12s,background .12s;}
+.mod-pill:hover{border-color:var(--acc);color:var(--acc);}
+.mod-pill.on{border-color:var(--acc);background:rgba(102,192,244,.18);color:#fff;}
+.mod-note{font-size:12px;color:var(--tx3);line-height:1.45;margin-top:9px;}
+</style>
+)HTML"
+// The profile picker, the footer and the modal: a third block, because the one
+// above is within reach of the compiler's single-string limit.
+R"HTML(
+<style>
+.combo-wrap{position:relative;width:340px;flex:none;}
+.combo-toggle{width:100%;height:40px;padding:0 12px 0 14px;border-radius:10px;border:1px solid var(--line2);background:var(--card);display:flex;align-items:center;justify-content:space-between;gap:12px;text-align:left;transition:border-color .12s;}
+.combo-toggle:hover{border-color:var(--acc);}
+.cb-text{flex:1;min-width:0;display:flex;flex-direction:column;}
+.cb-label{font-family:var(--mono);font-size:9.5px;letter-spacing:1.2px;font-weight:600;color:var(--tx3);line-height:1.1;}
+#combo-current{font-size:14px;font-weight:600;line-height:1.2;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.combo-toggle .chev{color:var(--tx2);font-size:10px;flex:none;}
+.combo-panel{position:absolute;top:calc(100% + 6px);left:0;width:380px;background:var(--card);border:1px solid rgba(102,192,244,.3);border-radius:12px;box-shadow:0 16px 36px rgba(0,0,0,.5);padding:10px;z-index:40;}
+.combo-search{width:100%;background:var(--inset);border:1px solid var(--line2);border-radius:8px;color:var(--tx);font-size:13px;font-family:inherit;padding:8px 10px;}
+.combo-search:focus{outline:none;border-color:var(--acc);}
+.combo-section-label{font-family:var(--mono);font-size:10px;letter-spacing:1px;color:var(--tx3);font-weight:600;margin:10px 2px 6px;}
+.combo-list{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;}
+.combo-item{padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:#c7d5e0;}
+.combo-item:hover{background:rgba(102,192,244,.12);color:#fff;}
+.combo-item.active{background:rgba(102,192,244,.18);color:#fff;}
+.combo-item .exe{display:block;font-size:11px;color:var(--tx3);margin-top:2px;}
+.combo-empty{padding:10px;font-size:12px;color:var(--tx3);text-align:center;}
+.combo-add{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:2px;}
+.combo-add-item{padding:8px 10px;border-radius:8px;cursor:pointer;font-size:12.5px;color:var(--acc);font-weight:600;}
+.combo-add-item:hover{background:rgba(102,192,244,.12);}
+.combo-note{padding:8px 10px 2px;font-size:11.5px;color:var(--tx3);text-align:center;}
+.combo-back{padding:6px 10px 8px;font-size:11.5px;color:var(--tx2);cursor:pointer;}
+.combo-back:hover{color:var(--acc);}
+#footer{height:64px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 20px;background:var(--chrome);border-top:1px solid var(--line);}
+.foot-left,.foot-right{display:flex;align-items:center;gap:14px;}
+.btn-reset{color:var(--tx2);font-size:13.5px;font-weight:600;padding:8px 4px;transition:color .12s;}
 .btn-reset:hover{color:#fff;}
-.btn-apply{padding:9px 22px;border-radius:3px;border:1px solid #4c7a1d;background:linear-gradient(to bottom,#94c63d,#5d8a1f);color:#13260a;font-weight:700;font-size:13.5px;box-shadow:0 1px 0 rgba(255,255,255,.25) inset;min-width:96px;text-align:center;transition:opacity .15s;}
+.btn-reset:disabled{opacity:.4;cursor:default;}
+.btn-delete{height:34px;padding:0 14px;border-radius:8px;border:1px solid rgba(224,88,74,.5);background:rgba(224,88,74,.12);color:#ff9d92;font-weight:600;font-size:13px;transition:background .12s;}
+.btn-delete:hover{background:rgba(224,88,74,.2);}
+.dirty{display:none;align-items:center;gap:8px;font-size:13px;color:#f0d28f;}
+.dirty.on{display:flex;}
+.dirty i{width:7px;height:7px;border-radius:50%;background:var(--warn);}
+.btn-apply{height:38px;min-width:104px;padding:0 22px;border-radius:9px;background:var(--on);color:#10200a;font-weight:700;font-size:14px;text-align:center;transition:opacity .12s;}
 .btn-apply:hover{opacity:.9;}
 .btn-apply:disabled{opacity:.7;cursor:default;}
 #modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:50;}
-.modal{background:#1b2838;border:1px solid rgba(102,192,244,.3);border-radius:10px;box-shadow:0 20px 50px rgba(0,0,0,.6);padding:22px 24px;max-width:420px;}
-.modal h3{margin:0 0 8px;font-size:16px;font-weight:800;color:#fff;}
-.modal p{margin:0 0 18px;font-size:13.5px;color:#aeb9c2;line-height:1.5;}
+.modal{background:var(--card);border:1px solid rgba(102,192,244,.3);border-radius:14px;box-shadow:0 20px 50px rgba(0,0,0,.6);padding:22px 24px;max-width:420px;}
+.modal h3{margin:0 0 8px;font-size:17px;font-weight:700;}
+.modal p{margin:0 0 18px;font-size:13.5px;color:var(--tx2);line-height:1.5;}
 .modal-btns{display:flex;gap:9px;justify-content:flex-end;}
-.btn-discard{padding:8px 15px;border-radius:4px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:#aeb9c2;font-weight:600;font-size:13px;}
-.btn-discard:hover{border-color:#c0392b;color:#fff;}
-.btn-modal-cancel{padding:8px 15px;border-radius:4px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:#aeb9c2;font-weight:600;font-size:13px;}
-.btn-modal-cancel:hover{color:#fff;}
-.btn-modal-delete{padding:8px 15px;border-radius:4px;border:none;background:#a33a3a;color:#fff;font-weight:700;font-size:13px;}
-.btn-modal-delete:hover{opacity:.9;}
-/* Same treatment as Apply — padding, radius, inset highlight — so it reads as
-   a peer of it rather than as a warning, but coloured for what it does. The
-   footer is space-between, so it sits at the far end from Apply: separated by
-   the whole width of the window rather than by a gap somebody can misjudge. */
-.btn-delete{padding:9px 16px;border-radius:3px;border:1px solid #7a2626;background:linear-gradient(to bottom,#b34141,#8a2727);color:#fff;font-weight:700;font-size:13.5px;box-shadow:0 1px 0 rgba(255,255,255,.18) inset;transition:opacity .15s;}
-.btn-delete:hover{opacity:.9;}
-.btn-save{padding:8px 18px;border-radius:4px;border:1px solid #4c7a1d;background:linear-gradient(to bottom,#94c63d,#5d8a1f);color:#13260a;font-weight:700;font-size:13px;}
-.btn-save:hover{opacity:.9;}
+.modal-btns button{height:36px;padding:0 16px;border-radius:8px;border:1px solid var(--line2);color:#c7d5e0;font-weight:600;font-size:13.5px;}
+.modal-btns button:hover{color:#fff;}
+.btn-discard:hover{border-color:var(--danger);}
+.modal-btns .btn-save{background:var(--on);border-color:transparent;color:#10200a;font-weight:700;}
+.modal-btns .btn-modal-delete{background:#b53b30;border-color:transparent;color:#fff;font-weight:700;}
 </style>
 )HTML"
-// A second style block rather than more of the one above: that literal is within
-// a kilobyte of the compiler's limit on a single string. Rules here layer on the
-// same page exactly as if they were written up there.
+// The trigger meter and stick preview, as they were apart from the stick card's padding.
 R"HTML(
 <style>
 /* The dual-stage trigger meter: a track showing where the trigger is right now,
@@ -211,7 +239,7 @@ R"HTML(
 .meter-help b{color:#66c0f4;font-weight:700;}
 /* The stick deadzone preview (#131): the three zones drawn to scale with the
    stick's live position on top, and the two-point control that sets them. */
-.stick-detail{padding-top:6px;}
+.stick-detail{padding:14px 16px;border-top:1px solid var(--line);}
 .stick-pv{display:flex;align-items:center;gap:22px;padding:8px 0 4px;}
 .stick-pv svg{flex:none;touch-action:none;}
 .stick-readout{font-family:'JetBrains Mono',monospace;font-size:12px;color:#c7d5e0;margin-top:8px;}
@@ -237,43 +265,46 @@ R"HTML(
 
 <div id="titlebar">
   <div class="left">
-    <div class="glyph"><svg width="14" height="11" viewBox="18 38 220 166" aria-hidden="true"><path fill="#bfe3ff" d="M78 44C100 40 170 40 192 44C220 50 236 80 236 110C236 140 232 165 226 185C222 198 212 202 204 198C196 194 192 180 186 168C182 160 176 158 168 158L88 158C80 158 74 160 70 168C64 180 60 194 52 198C44 202 34 198 30 186C24 165 20 140 20 110C20 80 36 50 78 44Z"/><circle cx="128" cy="98" r="25" fill="none" stroke="#0a4a78" stroke-width="10"/></svg></div>
-    <span class="tb-title">SteamlessController</span>
-    <span class="tb-sub">&#8212; Customize Controls</span>
+    <div class="glyph"><svg width="15" height="11" viewBox="18 38 220 166" aria-hidden="true"><path fill="#bfe3ff" d="M78 44C100 40 170 40 192 44C220 50 236 80 236 110C236 140 232 165 226 185C222 198 212 202 204 198C196 194 192 180 186 168C182 160 176 158 168 158L88 158C80 158 74 160 70 168C64 180 60 194 52 198C44 202 34 198 30 186C24 165 20 140 20 110C20 80 36 50 78 44Z"/><circle cx="128" cy="98" r="25" fill="none" stroke="#0a4a78" stroke-width="10"/></svg></div>
+    <span class="tb-title">Customize Controls</span>
   </div>
+  <div class="combo-wrap nodrag">
+    <button class="combo-toggle" id="combo-toggle">
+      <span class="cb-text"><span class="cb-label">APPLYING TO</span><span id="combo-current">Default (all other games)</span></span>
+      <span class="chev">&#9660;</span>
+    </button>
+    <div class="combo-panel" id="combo-panel" style="display:none;">
+      <input class="combo-search" id="combo-search" type="text" placeholder="Search for a game or app..." autocomplete="off">
+      <div id="combo-results"></div>
+      <div class="combo-add" id="combo-add">
+        <div class="combo-add-item" onclick="askRunningApps()">&#43;&nbsp; Add an app that&#39;s running now&#8230;</div>
+        <div class="combo-add-item" onclick="askBrowseExe()">&#43;&nbsp; Browse for a program&#8230;</div>
+      </div>
+    </div>
+  </div>
+  <div class="tb-spacer"></div>
   <div class="winctls">
     <button class="winctl" id="btn-min" title="Minimize">&#8211;</button>
     <button class="winctl close" id="btn-close" title="Close">&#10005;</button>
   </div>
 </div>
 
-<div id="body">
-  <div>
-    <h2>Customize Controls</h2>
-    <p class="instr">Click <b>Rebind</b> on any button, then press any gamepad button on your controller &#8212; or any key on your keyboard, or your mouse's middle or thumb buttons. The new binding shows up here instantly. Pick <b>Off</b> to stop a button doing anything at all.</p>
-  </div>
-  <div class="offbar" id="offbar">
-    <div class="offbar-text" id="offbar-text"></div>
-    <button class="offbar-btn" id="offbar-btn">Enable</button>
-  </div>
-  <div class="group">
-    <div class="group-label">APPLY TO</div>
-    <div class="combo-wrap">
-      <button class="combo-toggle" id="combo-toggle">
-        <span id="combo-current">Default (all other games)</span>
-        <span class="chev">&#9660;</span>
-      </button>
-      <div class="combo-panel" id="combo-panel" style="display:none;">
-        <input class="combo-search" id="combo-search" type="text" placeholder="Search for a game or app..." autocomplete="off">
-        <div id="combo-results"></div>
-        <div class="combo-add" id="combo-add">
-          <div class="combo-add-item" onclick="askRunningApps()">&#43;&nbsp; Add an app that&#39;s running now&#8230;</div>
-          <div class="combo-add-item" onclick="askBrowseExe()">&#43;&nbsp; Browse for a program&#8230;</div>
-        </div>
-      </div>
+<div id="shell">
+  <nav id="rail" aria-label="Sections">
+    <button class="rail-item active" id="rail-general" data-pane="general" aria-current="page"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M3 6h9M16 6h3M3 16h3M10 16h9M14 4v4M8 14v4"/></svg><span class="ri-text"><span class="ri-title">General</span><span class="ri-sub" id="rs-general"></span></span><span class="ri-dot" id="rd-general"></span></button>
+    <button class="rail-item" id="rail-lpad" data-pane="lpad"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM11 8v6M8 11h6"/></svg><span class="ri-text"><span class="ri-title">Left Trackpad</span><span class="ri-sub" id="rs-lpad"></span></span><span class="ri-dot" id="rd-lpad"></span></button>
+    <button class="rail-item" id="rail-rpad" data-pane="rpad"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM11 8v6M8 11h6"/></svg><span class="ri-text"><span class="ri-title">Right Trackpad</span><span class="ri-sub" id="rs-rpad"></span></span><span class="ri-dot" id="rd-rpad"></span></button>
+    <button class="rail-item" id="rail-triggers" data-pane="triggers"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M5 17V8a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v9l-2 2H7z"/></svg><span class="ri-text"><span class="ri-title">Triggers</span><span class="ri-sub" id="rs-triggers"></span></span><span class="ri-dot" id="rd-triggers"></span></button>
+    <button class="rail-item" id="rail-grips" data-pane="grips"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M4 9l3-4h8l3 4v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM8 13h6"/></svg><span class="ri-text"><span class="ri-title">Grips</span><span class="ri-sub" id="rs-grips"></span></span><span class="ri-dot" id="rd-grips"></span></button>
+    <button class="rail-item" id="rail-sticks" data-pane="sticks"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM11 8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg><span class="ri-text"><span class="ri-title">Sticks</span><span class="ri-sub" id="rs-sticks"></span></span><span class="ri-dot" id="rd-sticks"></span></button>
+  </nav>
+
+  <div id="main">
+    <div class="offbar" id="offbar">
+      <div class="offbar-text" id="offbar-text"></div>
+      <button class="offbar-btn" id="offbar-btn">Enable</button>
     </div>
     <div class="missing-note" id="missing-note" style="display:none;">This game wasn't found on this PC. Its profile is kept, and will start working again if the game comes back. Delete this if the game won't be coming back.</div>
-  </div>
   <div class="group" id="inherit-group" style="display:none;">
     <div class="group-label">MAPPINGS</div>
     <div class="inherit-row">
@@ -282,7 +313,9 @@ R"HTML(
     </div>
     <div class="inherit-note">This game turns the controller on and uses the controls from your default profile, including any later changes to it. Uncheck to give this game controls of its own.</div>
   </div>
-  <div class="group">
+    <section class="pane active" id="pane-general">
+      <div class="pane-head"><h2>General</h2><p>Which controller your games see, and how strongly it rumbles.</p></div>
+  <div class="group solo">
     <div class="group-label">GENERAL SETTINGS</div>
     <div class="row mode-row" id="platform-row">
       <div class="row-top">
@@ -302,8 +335,11 @@ R"HTML(
       </div>
     </div>
   </div>
-  <div id="settings">
-  <div class="group">
+    </section>
+    <div id="settings">
+    <section class="pane" id="pane-lpad">
+      <div class="pane-head"><h2>Left Trackpad</h2><p>What the pad does, and what each press sends to the game. Click <b>Rebind</b>, then press any gamepad button, key or mouse button.</p></div>
+  <div class="group solo">
     <div class="group-label">LEFT TRACKPAD</div>
     <div class="row mode-row">
       <div class="row-top">
@@ -344,7 +380,10 @@ R"HTML(
     <div id="row-LPAD" class="row"></div>
     <div id="row-LPADtouch" class="row"></div>
   </div>
-  <div class="group">
+    </section>
+    <section class="pane" id="pane-rpad">
+      <div class="pane-head"><h2>Right Trackpad</h2><p>What the pad does, and what each press sends to the game. Click <b>Rebind</b>, then press any gamepad button, key or mouse button.</p></div>
+  <div class="group solo">
     <div class="group-label">RIGHT TRACKPAD</div>
     <div class="row mode-row">
       <div class="row-top">
@@ -385,6 +424,12 @@ R"HTML(
     <div id="row-RPAD" class="row"></div>
     <div id="row-RPADtouch" class="row"></div>
   </div>
+)HTML"
+// The rest of the sections, in a literal of their own (the one above is near its budget).
+R"HTML(
+    </section>
+    <section class="pane" id="pane-triggers">
+      <div class="pane-head"><h2>Triggers</h2><p>Pull a trigger to watch it move. Dual Stage adds a second button at the end of the pull.</p></div>
   <div class="group">
     <div class="group-label">LEFT TRIGGER</div>
     <div class="row mode-row">
@@ -453,6 +498,9 @@ R"HTML(
       </div>
     </div>
   </div>
+    </section>
+    <section class="pane" id="pane-grips">
+      <div class="pane-head"><h2>Grips</h2><p>Click <b>Rebind</b> on a grip, then press any gamepad button, any key, or your mouse's middle or thumb buttons. Pick <b>Off</b> to stop a button doing anything at all.</p></div>
   <div class="group">
     <div class="group-label">LEFT GRIP</div>
     <div id="row-L4" class="row"></div>
@@ -463,21 +511,14 @@ R"HTML(
     <div id="row-R4" class="row"></div>
     <div id="row-R5" class="row"></div>
   </div>
-)HTML"
-// The "..." button's group, split off for the same reason: the literal above is
-// near its budget. Still inside #settings, which is closed here, so a game that
-// follows the default's mappings greys it with the rest of the bindings.
-R"HTML(
   <div class="group">
     <div class="group-label">CENTER</div>
     <div id="row-QAM" class="row"></div>
   </div>
-  </div>
-)HTML"
-// The stick groups, in a literal of their own (the one above is near its budget)
-// and outside #settings on purpose: a game that follows the default's mappings
-// still keeps its own stick settings, so these must not be greyed with the rest.
-R"HTML(
+    </section>
+    </div>
+    <section class="pane" id="pane-sticks">
+      <div class="pane-head"><h2>Sticks</h2><p>Where each stick starts and stops responding. Drag inside a preview to try a position.</p></div>
   <div class="group">
     <div class="group-label">LEFT STICK</div>
     <div class="row mode-row">
@@ -550,16 +591,19 @@ R"HTML(
       </div>
     </div>
   </div>
-)HTML"
-R"HTML(
+    </section>
+  </div>
 </div>
 
 <div id="footer">
-  <div class="footer-right">
+  <div class="foot-left">
     <button class="btn-reset" id="btn-reset">Reset this profile to default</button>
+    <button class="btn-delete" id="btn-delete" style="display:none;">Delete Profile</button>
+  </div>
+  <div class="foot-right">
+    <span class="dirty" id="dirty-note"><i></i>Unsaved changes</span>
     <button class="btn-apply" id="btn-apply">Apply</button>
   </div>
-  <button class="btn-delete" id="btn-delete" style="display:none;">Delete Profile</button>
 </div>
 
 <div id="modal-backdrop" style="display:none;">
@@ -1580,7 +1624,7 @@ document.getElementById('btn-delete').onclick=confirmRemove;
 
 // Title bar drag: mousedown on titlebar (but not on buttons) tells C++ to start a window move.
 document.getElementById('titlebar').addEventListener('mousedown',function(e){
-  if(e.target.closest('.winctls')) return;
+  if(e.target.closest('.winctls,.nodrag')) return;
   if(e.button!==0) return;
   postMsg({type:'startDrag'});
 });
@@ -2035,7 +2079,7 @@ function renderStickDot(id){
   stickEl('sdot',id).setAttribute('cy',STICK_CENTRE-dy*STICK_HALF);
   var r=stickOut(id,p.x,p.y);
   function pc(v){ return Math.round(v*100); }
-  stickEl('sout',id).textContent='Stick '+pc(p.x)+', '+pc(p.y)+'  →  Output '+pc(r[0])+', '+pc(r[1]);
+  stickEl('sout',id).textContent='Stick '+pc(p.x)+', '+pc(p.y)+'  \u2192  Output '+pc(r[0])+', '+pc(r[1]);
 }
 function renderStick(id){
   var s=sticks[id];
@@ -2162,6 +2206,108 @@ if(window.chrome&&window.chrome.webview){
 }
 stickReset();
 renderStickSelects();
+)HTML"
+// Sections, the rail and the unsaved marker, in a literal of their own. After every
+// part of the page they read from, and before the first render.
+R"HTML(
+// ---- Sections, rail summaries and the unsaved marker ----
+// The page is split into sections, one on screen at a time; the rail on the left
+// switches between them and says, in a line each, what is currently set. Nothing
+// here owns any state of the profile — it only reads what the code above holds.
+var SECTION_IDS=['general','lpad','rpad','triggers','grips','sticks'];
+var section='general';
+function showSection(id){
+  if(SECTION_IDS.indexOf(id)<0) return;
+  // A capture running on a row that is about to be hidden would bind something
+  // nobody can see, the same reason a mode change stops one.
+  if(id!==section) cancelListening();
+  closeCombo();
+  section=id;
+  SECTION_IDS.forEach(function(s){
+    var on=(s===id);
+    var pane=document.getElementById('pane-'+s), item=document.getElementById('rail-'+s);
+    if(pane) pane.className='pane'+(on?' active':'');
+    if(item){
+      item.className='rail-item'+(on?' active':'');
+      item.setAttribute('aria-current',on?'page':'false');
+    }
+  });
+  var main=document.getElementById('main');
+  if(main) main.scrollTop=0;
+}
+SECTION_IDS.forEach(function(s){
+  document.getElementById('rail-'+s).onclick=function(){ showSection(s); };
+});
+document.getElementById('rail').addEventListener('keydown',function(e){
+  if(listening||(e.key!=='ArrowDown'&&e.key!=='ArrowUp')) return;
+  var i=SECTION_IDS.indexOf(section)+(e.key==='ArrowDown'?1:-1);
+  if(i<0||i>=SECTION_IDS.length) return;
+  e.preventDefault();
+  showSection(SECTION_IDS[i]);
+  document.getElementById('rail-'+SECTION_IDS[i]).focus();
+});
+
+var PAD_MODE_SHORT={none:'Off',pointer:'Mouse pointer',scroll:'Scroll wheel',ds4:'DS4 touchpad',dpad:'Directional pad',button:'Single button'};
+var STICK_MODE_SHORT={'default':'Default',circle:'Circle',square:'Square'};
+function railSummaries(){
+  var dual=TRIGGERS.filter(function(t){return tmodes[t]==='dual';});
+  var bound=['L4','L5','R4','R5'].filter(function(id){return bindings[id]&&bindings[id]!=='none';}).length;
+  var ls=sticks.LS?sticks.LS.mode:'default', rs=sticks.RS?sticks.RS.mode:'default';
+  return {
+    general:(platform==='ps'?'PlayStation':'Xbox')+' \u00b7 Rumble '+rumbleLabel(rumble),
+    lpad:PAD_MODE_SHORT[modes.LPAD]||'',
+    rpad:PAD_MODE_SHORT[modes.RPAD]||'',
+    triggers:dual.length===2?'Dual Stage on both':dual.length===1?'Dual Stage on '+(dual[0]==='LT'?'L2':'R2'):'Analog',
+    grips:bound+' of 4 bound',
+    sticks:ls===rs?STICK_MODE_SHORT[ls]+' deadzones'
+                   :'Left '+STICK_MODE_SHORT[ls].toLowerCase()+' \u00b7 right '+STICK_MODE_SHORT[rs].toLowerCase()
+  };
+}
+// Which section a stored profile key belongs to, so the rail can mark where the
+// unsaved edits are. useDefault belongs to none of them; it only lights the
+// footer.
+function sectionOfKey(k){
+  if(k==='platform'||k==='rumble') return 'general';
+  if(k.indexOf('LPAD')===0) return 'lpad';
+  if(k.indexOf('RPAD')===0) return 'rpad';
+  if(/^[LR]T/.test(k)) return 'triggers';
+  if(/^[LR][45]$/.test(k)) return 'grips';
+  if(/^[LR]S/.test(k)) return 'sticks';
+  return '';
+}
+function renderChrome(){
+  var sums=railSummaries(), dirty={}, any=false;
+  if(savedProfile){
+    var cur=currentProfile();
+    for(var k in cur){
+      if(cur[k]===savedProfile[k]) continue;
+      any=true;
+      var s=sectionOfKey(k);
+      if(s) dirty[s]=true;
+    }
+  }
+  SECTION_IDS.forEach(function(s){
+    var sub=document.getElementById('rs-'+s);
+    if(sub&&sub.textContent!==sums[s]) sub.textContent=sums[s];
+    var dot=document.getElementById('rd-'+s);
+    if(dot){ dot.className='ri-dot'+(dirty[s]?' on':''); dot.title=dirty[s]?'Unsaved changes':''; }
+  });
+  var note=document.getElementById('dirty-note');
+  if(note) note.className='dirty'+(any?' on':'');
+}
+// The state changes through too many paths (clicks, sliders, drags, messages
+// from the app) to hook each one, so the chrome is redrawn after any of them has
+// had its say. Coalesced: a burst of events costs one pass.
+var chromeTimer=null;
+function scheduleChrome(){
+  if(chromeTimer) return;
+  chromeTimer=setTimeout(function(){ chromeTimer=null; renderChrome(); },0);
+}
+['click','input','change','keyup','pointerup'].forEach(function(ev){
+  document.addEventListener(ev,scheduleChrome,true);
+});
+if(window.chrome&&window.chrome.webview) window.chrome.webview.addEventListener('message',scheduleChrome);
+renderChrome();
 )HTML"
 R"HTML(
 renderAll();
@@ -2313,7 +2459,7 @@ LRESULT RemapWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             GetClientRect(hwnd, &rc);
             // The right ~96px of the title bar hosts our close/min buttons —
             // leave those as HTCLIENT so WebView2 can receive the clicks.
-            int tbPx  = MulDiv(46, dpi, 96);   // CSS 46px → physical pixels
+            int tbPx  = MulDiv(56, dpi, 96);   // CSS 56px → physical pixels
             int ctlPx = MulDiv(96, dpi, 96);
             if (local.y < tbPx && local.x < rc.right - ctlPx)
                 return HTCAPTION;

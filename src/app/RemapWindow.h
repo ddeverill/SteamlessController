@@ -193,8 +193,8 @@ private:
     // Design sizes in logical (96-DPI) pixels — scaled to the monitor's DPI
     // at creation. The process is PER_MONITOR_AWARE_V2, so nothing scales
     // these for us.
-    static constexpr int WINDOW_W = 760;
-    static constexpr int WINDOW_H = 668; // 46 titlebar + ~560 body + 62 footer
-    static constexpr int MIN_WINDOW_W = 560;
-    static constexpr int MIN_WINDOW_H = 440;
+    static constexpr int WINDOW_W = 940;
+    static constexpr int WINDOW_H = 680; // 56 titlebar + ~560 body + 64 footer
+    static constexpr int MIN_WINDOW_W = 760;
+    static constexpr int MIN_WINDOW_H = 480;
 };
