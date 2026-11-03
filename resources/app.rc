@@ -1,6 +1,7 @@
 #include "resource.h"
 #include <winver.h>
 
+IDI_ICON_APP    ICON  "SteamlessController.ico"
 IDI_ICON_OFF    ICON  "SteamControllerOFF.ico"
 IDI_ICON_ON     ICON  "SteamControllerON.ico"
 IDI_ICON_SHARED ICON  "SteamControllerSHARED.ico"

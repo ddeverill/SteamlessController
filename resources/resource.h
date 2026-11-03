@@ -1,5 +1,11 @@
 #pragma once
 
+// The application's own icon: the exe, its shortcuts and its Add or Remove Programs
+// entry. Windows takes the lowest-numbered icon resource as the exe's, so this has
+// to stay below the three tray state icons.
+#define IDI_ICON_APP    100
+
+// The tray icon in its three states: off, on, and on a handle shared with Steam.
 #define IDI_ICON_OFF    101
 #define IDI_ICON_ON     102
 // Game mode is live, but on a handle shared with another writer (typically
