@@ -11,6 +11,7 @@
 #include "RemapWindow.h"
 #include "SteamAppLocator.h"
 #include "SteamWatcher.h"
+#include "TrayPanel.h"
 
 class ControllerManager;
 
@@ -75,6 +76,12 @@ private:
                           DWORD infoFlags = NIIF_WARNING);
     void OpenEventLog();
     void ShowContextMenu();
+    // What the tray panel should be showing right now. Read from live state each
+    // time rather than cached, because the panel re-asks while it is open.
+    TrayPanel::Model BuildPanelModel();
+    // Sends the panel's action down the same WM_COMMAND path the native menu
+    // used, so each control still does exactly what its menu item did.
+    void OnPanelAction(TrayPanel::Action action);
     void LoadSettings();
     void SaveSettings();
     void OpenRemapWindow();
@@ -261,6 +268,7 @@ private:
     // at the few moments the answer can have changed — see RefreshSteamApps.
     SteamAppLocator                    m_steamApps;
     RemapWindow                        m_remapWindow;
+    TrayPanel                          m_panel;
     // Per-game overrides, keyed by GameLibrary's opaque game id.
     // Most users never populate this; empty by default.
     std::map<std::wstring, ControllerProfile> m_gameProfiles;

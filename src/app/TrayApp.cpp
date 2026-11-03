@@ -2138,6 +2138,12 @@ void TrayApp::SaveSettings() {
 }
 
 void TrayApp::ShowContextMenu() {
+    // Clicking the tray icon to dismiss the panel deactivates it on button-down
+    // and arrives here on button-up. Without this the same click closed the
+    // panel and opened it again.
+    if (m_panel.RecentlyDismissed())
+        return;
+
     // Re-enumerate before reading state off the manager. Releasing the
     // controller clears its slot list and only a device event refills it, so
     // after a manual disable the menu grayed out its own toggle as "(no
@@ -2149,95 +2155,57 @@ void TrayApp::ShowContextMenu() {
     if (!m_cycleInFlight)
         m_controller->OnDeviceChange();
 
-    bool connected    = m_controller->IsConnected();
-    bool gameModeOn   = m_controller->IsGameModeActive();
-    bool startupOn    = m_startupEnabled;
-
-    HMENU menu = CreatePopupMenu();
-
-    // Only present when it applies, and first when it does: with the devnode
-    // switched off nothing else on this menu can do anything useful, and every
-    // other entry will be reporting "no controller detected" for a reason the
+    // Only shown when it applies, and first when it does: with the devnode
+    // switched off nothing else on the panel can do anything useful, and every
+    // other control will be reporting "no controller detected" for a reason the
     // user has no way to guess at. Re-resolved on each open so it disappears
     // once the device is back, however it got there.
     m_disabledDeviceNode = DeviceRestart::FindDisabledControllerNode();
-    if (!m_disabledDeviceNode.empty()) {
-        AppendMenuW(menu, MF_STRING, IDM_ENABLE_DEVICE,
-                    L"Re-enable Controller Device (disabled in Windows)");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    }
-
-    // Manual toggle is disabled while an auto mode owns the decision — when
-    // grayed, the label itself says why.
-    const bool manual = (m_autoMode == AutoMode::Manual);
-    // In manual mode the label tracks intent, not the current handle state:
-    // acquiring can spend several seconds cycling the device, and during that
-    // window the toggle's job is to offer a cancel.
-    const bool toggleOn = manual ? m_wantControl : gameModeOn;
-    std::wstring toggleLabel = toggleOn ? L"Disable Steamless Mode"
-                                        : L"Enable Steamless Mode";
-    if (!connected)
-        toggleLabel += L" (no controller detected)";
-    else if (!manual)
-        toggleLabel += L" (managed by Auto Mode)";
-    UINT toggleFlags = MF_STRING | ((connected && manual) ? MF_ENABLED : MF_GRAYED);
-    AppendMenuW(menu, toggleFlags, IDM_TOGGLE, toggleLabel.c_str());
-
-    HMENU modeMenu = CreatePopupMenu();
-    AppendMenuW(modeMenu, MF_STRING | (manual ? MF_CHECKED : MF_UNCHECKED),
-                IDM_MODE_MANUAL, L"Manual");
-    AppendMenuW(modeMenu, MF_STRING | (m_autoMode == AutoMode::OffWhileSteam ? MF_CHECKED : MF_UNCHECKED),
-                IDM_MODE_STEAM, L"Auto - Off while Steam running");
-    AppendMenuW(modeMenu, MF_STRING | (m_autoMode == AutoMode::OffOnlyInGame ? MF_CHECKED : MF_UNCHECKED),
-                IDM_MODE_GAME, L"Auto - Off ONLY while in Steam game");
-    AppendMenuW(modeMenu, MF_STRING | (m_autoMode == AutoMode::OffUnlessProfile ? MF_CHECKED : MF_UNCHECKED),
-                IDM_MODE_PROFILE, L"Auto - Off unless a game profile is running");
-    AppendMenuW(menu, MF_STRING | MF_POPUP,
-                reinterpret_cast<UINT_PTR>(modeMenu), L"Control Mode");
-
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-
-    // Everything about how the controller behaves — trackpads, paddles, and
-    // which kind of pad the game sees — is configured in one window now, per
-    // profile. This menu used to carry three separate entries for pieces of
-    // that, none of which could be set per game.
-    AppendMenuW(menu, MF_STRING, IDM_REMAP_BACK, L"Customize Controls...");
-
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-
-    AppendMenuW(menu, MF_STRING | (startupOn ? MF_CHECKED : MF_UNCHECKED),
-                IDM_STARTUP, L"Start with Windows");
-
-    // Meaningless outside Manual mode — the auto modes never make an "at
-    // launch" decision, they resolve control from Steam/game state on every
-    // evaluation — so it stays off the menu entirely there rather than
-    // sitting grayed out with nothing to explain.
-    if (manual)
-        AppendMenuW(menu, MF_STRING | (m_enableOnLaunch ? MF_CHECKED : MF_UNCHECKED),
-                    IDM_ENABLE_ON_LAUNCH, L"Enable on Launch");
-
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, IDM_OPENLOG, L"Open Event Log");
-    AppendMenuW(menu, MF_STRING | (m_notificationsEnabled ? MF_CHECKED : MF_UNCHECKED),
-                IDM_NOTIFICATIONS, L"Show Notifications");
-    AppendMenuW(menu, MF_STRING, IDM_EXIT, L"Exit");
-
-    // Last, and only when there is a level to show (#128): a line reading
-    // "unknown" would be one more thing to explain, and the common reason for it
-    // — Steam holding the controller — is not a fault.
-    const int battery = m_controller->BatteryPercent();
-    if (battery >= 0) {
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        const std::wstring batteryLabel = L"Battery - " + std::to_wstring(battery) + L"%";
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, batteryLabel.c_str());
-    }
-
-    // SetForegroundWindow is required for the menu to dismiss on click-away.
-    SetForegroundWindow(m_hwnd);
 
     POINT pt;
     GetCursorPos(&pt);
-    TrackPopupMenu(menu, TPM_RIGHTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON,
-                   pt.x, pt.y, 0, m_hwnd, nullptr);
-    DestroyMenu(menu);
+    m_panel.Show(m_hInstance, pt,
+                 [this] { return BuildPanelModel(); },
+                 [this](TrayPanel::Action action) { OnPanelAction(action); });
+}
+
+TrayPanel::Model TrayApp::BuildPanelModel() {
+    TrayPanel::Model m;
+    m.deviceDisabled = !m_disabledDeviceNode.empty();
+    m.connected      = m_controller->IsConnected();
+    m.manual         = (m_autoMode == AutoMode::Manual);
+    // In manual mode the switch tracks intent, not the current handle state:
+    // acquiring can spend several seconds cycling the device, and during that
+    // window the toggle's job is to offer a cancel. Under an auto mode there is
+    // no intent of the user's to show, only what is actually happening.
+    m.controlOn      = m.manual ? m_wantControl : m_controller->IsGameModeActive();
+    m.mode           = static_cast<int>(m_autoMode);
+    // Only when there is a level to show (#128): a line reading "unknown" would
+    // be one more thing to explain, and the common reason for it — Steam holding
+    // the controller — is not a fault.
+    m.battery        = m_controller->BatteryPercent();
+    m.startup        = m_startupEnabled;
+    m.enableOnLaunch = m_enableOnLaunch;
+    m.notifications  = m_notificationsEnabled;
+    return m;
+}
+
+void TrayApp::OnPanelAction(TrayPanel::Action action) {
+    UINT id = 0;
+    switch (action) {
+    case TrayPanel::Action::ToggleControl:  id = IDM_TOGGLE;           break;
+    case TrayPanel::Action::ModeManual:     id = IDM_MODE_MANUAL;      break;
+    case TrayPanel::Action::ModeSteam:      id = IDM_MODE_STEAM;       break;
+    case TrayPanel::Action::ModeGame:       id = IDM_MODE_GAME;        break;
+    case TrayPanel::Action::ModeProfile:    id = IDM_MODE_PROFILE;     break;
+    case TrayPanel::Action::Customize:      id = IDM_REMAP_BACK;       break;
+    case TrayPanel::Action::Startup:        id = IDM_STARTUP;          break;
+    case TrayPanel::Action::EnableOnLaunch: id = IDM_ENABLE_ON_LAUNCH; break;
+    case TrayPanel::Action::Notifications:  id = IDM_NOTIFICATIONS;    break;
+    case TrayPanel::Action::OpenLog:        id = IDM_OPENLOG;          break;
+    case TrayPanel::Action::Exit:           id = IDM_EXIT;             break;
+    case TrayPanel::Action::EnableDevice:   id = IDM_ENABLE_DEVICE;    break;
+    }
+    if (id != 0)
+        SendMessageW(m_hwnd, WM_COMMAND, MAKEWPARAM(id, 0), 0);
 }
