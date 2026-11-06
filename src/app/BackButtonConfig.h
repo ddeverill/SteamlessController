@@ -21,6 +21,8 @@ enum class BackButtonAction : uint8_t {
     // None (see Unpack) on a build that predates it rather than as some other
     // action that happened to take the value.
     TouchKeyboard,
+    // The virtual pad's system buttons. Appended for the same reason.
+    Guide, TouchpadClick,
     COUNT
 };
 
@@ -32,7 +34,8 @@ inline const char* BackButtonActionId(BackButtonAction a) {
         "Up","Down","Left","Right",
         "leftMouse","rightMouse",
         "none","menu","view","L3","R3",
-        "touchKeyboard"
+        "touchKeyboard",
+        "guide","touchpadClick"
     };
     auto i = static_cast<size_t>(a);
     return i < static_cast<size_t>(BackButtonAction::COUNT) ? ids[i] : "none";
@@ -58,6 +61,8 @@ inline BackButtonAction BackButtonActionFromId(const std::string& id) {
     if (id == "L3")         return BackButtonAction::L3;
     if (id == "R3")         return BackButtonAction::R3;
     if (id == "touchKeyboard") return BackButtonAction::TouchKeyboard;
+    if (id == "guide")      return BackButtonAction::Guide;
+    if (id == "touchpadClick") return BackButtonAction::TouchpadClick;
     return BackButtonAction::None;
 }
 

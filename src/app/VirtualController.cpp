@@ -49,10 +49,12 @@ static void ApplyBackActionX360(const BackButtonBinding& binding, XUSB_REPORT& r
     case BackButtonAction::View:      r.wButtons |= XUSB_GAMEPAD_BACK;           break;
     case BackButtonAction::L3:        r.wButtons |= XUSB_GAMEPAD_LEFT_THUMB;     break;
     case BackButtonAction::R3:        r.wButtons |= XUSB_GAMEPAD_RIGHT_THUMB;    break;
+    case BackButtonAction::Guide:     r.wButtons |= XUSB_GAMEPAD_GUIDE;          break;
     case BackButtonAction::None:
     case BackButtonAction::LeftMouseButton:
     case BackButtonAction::RightMouseButton:
     case BackButtonAction::TouchKeyboard:
+    case BackButtonAction::TouchpadClick:  // an Xbox pad has no touchpad
     default: break;
     }
 }
@@ -413,6 +415,8 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
                 case BackButtonAction::View:      r.wButtons |= DS4_BUTTON_SHARE;          break;
                 case BackButtonAction::L3:        r.wButtons |= DS4_BUTTON_THUMB_LEFT;     break;
                 case BackButtonAction::R3:        r.wButtons |= DS4_BUTTON_THUMB_RIGHT;    break;
+                case BackButtonAction::Guide:     r.bSpecial |= DS4_SPECIAL_BUTTON_PS;     break;
+                case BackButtonAction::TouchpadClick: r.bSpecial |= DS4_SPECIAL_BUTTON_TOUCHPAD; break;
                 default: break;
                 }
             };
