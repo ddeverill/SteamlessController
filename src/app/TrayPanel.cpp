@@ -697,11 +697,17 @@ struct TrayPanel::Impl : PanelAccessibility::Host {
     }
 
     void DrawSwitch(const D2D1_RECT_F& r, bool on, bool enabled) {
-        const float a = enabled ? 1.f : 0.45f;
+        // A switch that is on but not the user's to flip (an auto mode owns it) goes
+        // grey instead of fading: the green accent at partial opacity turns a muddy
+        // dark green, where grey says "on, and out of your hands" cleanly. Its knob
+        // still sits at the on end, so the state is not lost. Off needs no such
+        // treatment; it is already neutral, and only dims.
+        const UINT32 track = !on ? kOff : enabled ? kOn : kIdle;
+        const float  a     = enabled ? 1.f : on ? 0.9f : 0.45f;
         const float h = r.bottom - r.top;
         const float inset = h > 22.f ? 3.f : 2.f;
         const float d = h - inset * 2.f;
-        Fill(r, h * 0.5f, on ? kOn : kOff, a);
+        Fill(r, h * 0.5f, track, a);
         const float kx = on ? r.right - inset - d * 0.5f : r.left + inset + d * 0.5f;
         Dot(kx, (r.top + r.bottom) * 0.5f, d * 0.5f, 0xffffff, a);
     }
