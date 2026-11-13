@@ -400,6 +400,7 @@ struct ControllerProfile {
             && platform == o.platform
             && back.l4 == o.back.l4 && back.l5 == o.back.l5
             && back.r4 == o.back.r4 && back.r5 == o.back.r5
+            && back.qam == o.back.qam
             && leftPad == o.leftPad && rightPad == o.rightPad
             && leftTrigger == o.leftTrigger && rightTrigger == o.rightTrigger
             && rumble == o.rumble

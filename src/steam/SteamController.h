@@ -86,7 +86,7 @@ public:
     static constexpr uint8_t BTN_B        = 0x02;  // bit 1
     static constexpr uint8_t BTN_X        = 0x04;  // bit 2
     static constexpr uint8_t BTN_Y        = 0x08;  // bit 3
-    // bit 4 (0x10): TBD
+    static constexpr uint8_t BTN_QAM      = 0x10;  // bit 4 — "..." quick-access button (#121)
     static constexpr uint8_t BTN_RS       = 0x20;  // bit 5 — right stick click
     static constexpr uint8_t BTN_MENU     = 0x40;  // bit 6 — ≡ Menu / Start
     static constexpr uint8_t BTN_R4       = 0x80;  // bit 7 — back paddle R4

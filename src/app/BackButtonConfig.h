@@ -215,4 +215,8 @@ struct BackButtonConfig {
     BackButtonBinding l5 = BackButtonBinding::FromAction(BackButtonAction::None);
     BackButtonBinding r4 = BackButtonBinding::FromAction(BackButtonAction::LeftMouseButton);
     BackButtonBinding r5 = BackButtonBinding::FromAction(BackButtonAction::None);
+    // The "..." button between the trackpads. Not a paddle, but it is the same
+    // kind of thing — one physical button bound to one output — so it lives
+    // with them. Unbound by default: nothing here used to read it.
+    BackButtonBinding qam = BackButtonBinding::FromAction(BackButtonAction::None);
 };

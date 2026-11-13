@@ -426,6 +426,7 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
             }
             if (n > 2) {
                 if (buf[2] & SteamController::BTN_R4) applyBack(backCfg.r4);
+                if (buf[2] & SteamController::BTN_QAM) applyBack(backCfg.qam);
             }
             if (n > 3) {
                 if (buf[3] & SteamController::BTN_R5) applyBack(backCfg.r5);
@@ -553,6 +554,7 @@ void VirtualController::Update(const uint8_t* buf, size_t n,
         }
         if (n > 2) {
             if (buf[2] & SteamController::BTN_R4) ApplyBackActionX360(backCfg.r4, report);
+            if (buf[2] & SteamController::BTN_QAM) ApplyBackActionX360(backCfg.qam, report);
         }
         if (n > 3) {
             if (buf[3] & SteamController::BTN_R5) ApplyBackActionX360(backCfg.r5, report);

@@ -1953,6 +1953,7 @@ void TrayApp::LoadSettings() {
     profile.back.l5 = BackButtonBinding::Unpack(readDw(L"BackBtnL5", unbound));
     profile.back.r4 = BackButtonBinding::Unpack(readDw(L"BackBtnR4", unbound));
     profile.back.r5 = BackButtonBinding::Unpack(readDw(L"BackBtnR5", unbound));
+    profile.back.qam = BackButtonBinding::Unpack(readDw(L"BackBtnQAM", unbound));
 
     // Migrate the retired "Back Buttons as Mouse Click" toggle into real
     // bindings. The toggle used to hijack L4/R4 for a left click and silently
@@ -2107,6 +2108,7 @@ void TrayApp::SaveSettings() {
     writeDw(L"BackBtnL5", profile.back.l5.Pack());
     writeDw(L"BackBtnR4", profile.back.r4.Pack());
     writeDw(L"BackBtnR5", profile.back.r5.Pack());
+    writeDw(L"BackBtnQAM", profile.back.qam.Pack());
 
     auto writePad = [&](const wchar_t* prefix, const TrackpadSettings& pad) {
         auto name = [&](const wchar_t* suffix) { return std::wstring(prefix) + suffix; };
