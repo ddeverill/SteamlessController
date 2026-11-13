@@ -303,7 +303,7 @@ R"HTML(
     <button class="rail-item" id="rail-lpad" data-pane="lpad"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM11 8v6M8 11h6"/></svg><span class="ri-text"><span class="ri-title">Left Trackpad</span><span class="ri-sub" id="rs-lpad"></span></span><span class="ri-dot" id="rd-lpad"></span></button>
     <button class="rail-item" id="rail-rpad" data-pane="rpad"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM11 8v6M8 11h6"/></svg><span class="ri-text"><span class="ri-title">Right Trackpad</span><span class="ri-sub" id="rs-rpad"></span></span><span class="ri-dot" id="rd-rpad"></span></button>
     <button class="rail-item" id="rail-triggers" data-pane="triggers"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M5 17V8a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v9l-2 2H7z"/></svg><span class="ri-text"><span class="ri-title">Triggers</span><span class="ri-sub" id="rs-triggers"></span></span><span class="ri-dot" id="rd-triggers"></span></button>
-    <button class="rail-item" id="rail-grips" data-pane="grips"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M4 9l3-4h8l3 4v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM8 13h6"/></svg><span class="ri-text"><span class="ri-title">Grips</span><span class="ri-sub" id="rs-grips"></span></span><span class="ri-dot" id="rd-grips"></span></button>
+    <button class="rail-item" id="rail-buttons" data-pane="buttons"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M4 9l3-4h8l3 4v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM8 13h6"/></svg><span class="ri-text"><span class="ri-title">Buttons</span><span class="ri-sub" id="rs-buttons"></span></span><span class="ri-dot" id="rd-buttons"></span></button>
     <button class="rail-item" id="rail-sticks" data-pane="sticks"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM11 8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg><span class="ri-text"><span class="ri-title">Sticks</span><span class="ri-sub" id="rs-sticks"></span></span><span class="ri-dot" id="rd-sticks"></span></button>
   </nav>
 
@@ -507,8 +507,8 @@ R"HTML(
     </div>
   </div>
     </section>
-    <section class="pane" id="pane-grips">
-      <div class="pane-head"><h2>Grips</h2><p>Click <b>Rebind</b> on a grip, then press any gamepad button, any key, or your mouse's middle or thumb buttons. Pick <b>Off</b> to stop a button doing anything at all.</p></div>
+    <section class="pane" id="pane-buttons">
+      <div class="pane-head"><h2>Buttons</h2><p>The four grips and the Quick Access (&hellip;) button between the trackpads. Click <b>Rebind</b>, then press any gamepad button, any key, or your mouse's middle or thumb buttons. Pick <b>Off</b> to stop a button doing anything at all.</p></div>
   <div class="group">
     <div class="group-label">LEFT GRIP</div>
     <div id="row-L4" class="row"></div>
@@ -2222,7 +2222,7 @@ R"HTML(
 // The page is split into sections, one on screen at a time; the rail on the left
 // switches between them and says, in a line each, what is currently set. Nothing
 // here owns any state of the profile — it only reads what the code above holds.
-var SECTION_IDS=['general','lpad','rpad','triggers','grips','sticks'];
+var SECTION_IDS=['general','lpad','rpad','triggers','buttons','sticks'];
 var section='general';
 function showSection(id){
   if(SECTION_IDS.indexOf(id)<0) return;
@@ -2259,14 +2259,14 @@ var PAD_MODE_SHORT={none:'Off',pointer:'Mouse pointer',scroll:'Scroll wheel',ds4
 var STICK_MODE_SHORT={'default':'Default',circle:'Circle',square:'Square'};
 function railSummaries(){
   var dual=TRIGGERS.filter(function(t){return tmodes[t]==='dual';});
-  var bound=['L4','L5','R4','R5'].filter(function(id){return bindings[id]&&bindings[id]!=='none';}).length;
+  var bound=['L4','L5','R4','R5','QAM'].filter(function(id){return bindings[id]&&bindings[id]!=='none';}).length;
   var ls=sticks.LS?sticks.LS.mode:'default', rs=sticks.RS?sticks.RS.mode:'default';
   return {
     general:(platform==='ps'?'PlayStation':'Xbox')+' \u00b7 Rumble '+rumbleLabel(rumble),
     lpad:PAD_MODE_SHORT[modes.LPAD]||'',
     rpad:PAD_MODE_SHORT[modes.RPAD]||'',
     triggers:dual.length===2?'Dual Stage on both':dual.length===1?'Dual Stage on '+(dual[0]==='LT'?'L2':'R2'):'Analog',
-    grips:bound+' of 4 bound',
+    buttons:bound+' of 5 bound',
     sticks:ls===rs?STICK_MODE_SHORT[ls]+' deadzones'
                    :'Left '+STICK_MODE_SHORT[ls].toLowerCase()+' \u00b7 right '+STICK_MODE_SHORT[rs].toLowerCase()
   };
@@ -2279,7 +2279,7 @@ function sectionOfKey(k){
   if(k.indexOf('LPAD')===0) return 'lpad';
   if(k.indexOf('RPAD')===0) return 'rpad';
   if(/^[LR]T/.test(k)) return 'triggers';
-  if(/^[LR][45]$/.test(k)) return 'grips';
+  if(/^[LR][45]$/.test(k)||k==='QAM') return 'buttons';
   if(/^[LR]S/.test(k)) return 'sticks';
   return '';
 }
