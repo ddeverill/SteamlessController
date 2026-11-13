@@ -744,12 +744,36 @@ var savedProfile = null;
 // opens, because the action that triggered it has to wait for the answer.
 var pendingAction = null;
 
+)HTML"
+// The input catalog, in a literal of its own: with the PlayStation faces it no
+// longer fits in the one before it.
+R"HTML(
 // ---- Input catalog (Steam Controller nomenclature) ----
+// The PlayStation symbols are drawn rather than typed: the font's own circle,
+// square and triangle come out far smaller than its cross, so a row of the
+// four was visibly uneven. Drawn in the chip's text colour, at one size.
+function psGlyph(shape){
+  return '<svg viewBox="0 0 24 24" width="62%" height="62%" fill="none" '+
+         'stroke="currentColor" stroke-width="2.6" stroke-linecap="round" '+
+         'stroke-linejoin="round">'+shape+'</svg>';
+}
 var INPUTS = [
-  {id:'A',         glyph:'A',      label:'A Button',    bg:'#5ba32b',fg:'#fff'},
-  {id:'B',         glyph:'B',      label:'B Button',    bg:'#c0392b',fg:'#fff'},
-  {id:'X',         glyph:'X',      label:'X Button',    bg:'#2b7fc0',fg:'#fff'},
-  {id:'Y',         glyph:'Y',      label:'Y Button',    bg:'#c9a227',fg:'#211a04'},
+  // The face buttons carry a PlayStation face of their own, shown instead when
+  // the profile's platform is PlayStation. The ids are the same either way —
+  // they are what is stored — so only what the user sees changes. The colours
+  // are the symbols' own, as the Xbox ones are the letters'.
+  {id:'A',         glyph:'A',      label:'A Button',    bg:'#5ba32b',fg:'#fff',
+   ps:{glyph:psGlyph('<path d="M6 6l12 12M18 6L6 18"/>'),
+       label:'Cross',bg:'#3f74c9',fg:'#fff'}},
+  {id:'B',         glyph:'B',      label:'B Button',    bg:'#c0392b',fg:'#fff',
+   ps:{glyph:psGlyph('<circle cx="12" cy="12" r="7.5"/>'),
+       label:'Circle',bg:'#d2453b',fg:'#fff'}},
+  {id:'X',         glyph:'X',      label:'X Button',    bg:'#2b7fc0',fg:'#fff',
+   ps:{glyph:psGlyph('<rect x="5" y="5" width="14" height="14" rx="1"/>'),
+       label:'Square',bg:'#c25c9f',fg:'#fff'}},
+  {id:'Y',         glyph:'Y',      label:'Y Button',    bg:'#c9a227',fg:'#211a04',
+   ps:{glyph:psGlyph('<path d="M12 4.5l8 14H4z"/>'),
+       label:'Triangle',bg:'#2f9e74',fg:'#fff'}},
   {id:'LB',        glyph:'L1',     label:'L1 Bumper',   bg:'#37485a',fg:'#cdd9e3'},
   {id:'LT',        glyph:'L2',     label:'L2 Trigger',  bg:'#37485a',fg:'#cdd9e3'},
   {id:'RB',        glyph:'R1',     label:'R1 Bumper',   bg:'#37485a',fg:'#cdd9e3'},
@@ -763,17 +787,26 @@ var INPUTS = [
   {id:'mouse:middle',glyph:'MMB',   label:'Middle Click',bg:'#3a2a5a',fg:'#c9b8f0'},
   {id:'mouse:x1',  glyph:'M4',      label:'Mouse 4',     bg:'#3a2a5a',fg:'#c9b8f0'},
   {id:'mouse:x2',  glyph:'M5',      label:'Mouse 5',     bg:'#3a2a5a',fg:'#c9b8f0'},
-  {id:'menu',      glyph:'MNU',     label:'Menu',        bg:'#2a3a2a',fg:'#9ac89a'},
-  {id:'view',      glyph:'VEW',     label:'View',        bg:'#2a3a2a',fg:'#9ac89a'},
+  {id:'menu',      glyph:'MNU',     label:'Menu',        bg:'#2a3a2a',fg:'#9ac89a',
+   ps:{glyph:'OPT',label:'Options',bg:'#2a3a2a',fg:'#9ac89a'}},
+  {id:'view',      glyph:'VEW',     label:'View',        bg:'#2a3a2a',fg:'#9ac89a',
+   ps:{glyph:'SHR',label:'Share',bg:'#2a3a2a',fg:'#9ac89a'}},
   {id:'L3',        glyph:'L3',      label:'L3 Stick',    bg:'#37485a',fg:'#cdd9e3'},
   {id:'R3',        glyph:'R3',      label:'R3 Stick',    bg:'#37485a',fg:'#cdd9e3'},
   {id:'touchKeyboard',glyph:'KBD',  label:'Touch Keyboard',bg:'#2a3a2a',fg:'#9ac89a'},
-  {id:'guide',     glyph:'GDE',     label:'Guide / PS Button',bg:'#2a3a2a',fg:'#9ac89a'},
+  {id:'guide',     glyph:'GDE',     label:'Guide Button',bg:'#2a3a2a',fg:'#9ac89a',
+   ps:{glyph:'PS',label:'PS Button',bg:'#2a3a2a',fg:'#9ac89a'}},
   {id:'touchpadClick',glyph:'TPC',  label:'PS Touchpad Click',bg:'#2a3a2a',fg:'#9ac89a'},
   {id:'none',      glyph:'OFF',     label:'Off',         bg:'#1e2d3d',fg:'#5a7a9a'},
 ];
 var byId = {};
 INPUTS.forEach(function(t){byId[t.id]=t;});
+// What an input looks like on the platform being edited. Looked up at render
+// time rather than baked into the catalog, so switching platform only has to
+// render again.
+function viewOf(t){
+  return (platform==='ps'&&t.ps)?t.ps:t;
+}
 
 // Picker layout: each inner array is one row in the manual-pick panel.
 var PICKER_ROWS = [
@@ -1288,8 +1321,10 @@ function fillSelect(id,options,value){
 function setPlatform(value){
   platform=value;
   // The DS4 Touchpad option's label depends on this, so the pad dropdowns
-  // have to be rebuilt rather than left as they are.
+  // have to be rebuilt rather than left as they are. So do the rows, which
+  // name the face buttons after the platform.
   renderModeSelects();
+  renderAll();
 }
 // The checkbox belongs to a game, never to the default profile, and while it
 // is ticked everything below it describes controls this game is not using —
@@ -1401,7 +1436,7 @@ R"HTML(
 // Resolves a binding id to something renderable. Keys aren't in the static
 // catalog, so they're built on the fly from the label C++ sent.
 function inputInfo(id){
-  if(byId[id]) return byId[id];
+  if(byId[id]) return viewOf(byId[id]);
   if(id&&id.indexOf('key:')===0){
     var lbl=keyLabels[id]||'Key';
     return {id:id,glyph:(lbl.length<=3?lbl:'KEY'),label:lbl,bg:'#4a3524',fg:'#f2d5ab'};
@@ -1436,7 +1471,7 @@ function renderRow(def){
   if(isL){
     var pickerRows=PICKER_ROWS.map(function(row){
       var pills=row.map(function(inputId){
-        var t=byId[inputId];
+        var t=viewOf(byId[inputId]);
         return '<button class="picker-pill" onclick="doBind(\''+def.id+'\',\''+inputId+'\')">'+
           chipHTML(t,'chip-sm')+
           '<span class="picker-name">'+t.label+'</span></button>';
