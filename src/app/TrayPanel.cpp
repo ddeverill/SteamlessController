@@ -682,6 +682,13 @@ struct TrayPanel::Impl : PanelAccessibility::Host {
             return false;
         const float dpi = scale * 96.f;
         rt->SetDpi(dpi, dpi);
+
+        // Grayscale antialiasing, as the Customize window's browser engine uses.
+        // ClearType's coloured subpixel fringes look heavy and crunchy on light
+        // text over a dark ground at 12 or 13 pixels, and make Barlow, whose
+        // letters are close-set, read as squashed.
+        rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+
         if (FAILED(rt->CreateSolidColorBrush(Col(kText), brush.ReleaseAndGetAddressOf()))) {
             rt.Reset();
             return false;
