@@ -134,7 +134,13 @@ R"HTML(
 .pulse-dot{width:9px;height:9px;border-radius:50%;background:var(--acc);animation:scPulse 1.2s ease-in-out infinite;flex:none;}
 .btn-cancel{width:32px;height:32px;border-radius:8px;border:1px solid var(--line2);color:var(--tx2);font-size:12px;display:flex;align-items:center;justify-content:center;transition:border-color .12s,color .12s,background .12s;}
 .btn-cancel:hover{border-color:var(--danger);color:#fff;background:rgba(224,88,74,.1);}
-.mode-select{flex:none;min-width:220px;height:34px;padding:0 10px;border-radius:8px;border:1px solid var(--line2);background:var(--inset);color:var(--tx);font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer;}
+/* Every dropdown is the same width, so the column of controls down the right of a
+   card lines up and a pad's Scroll Direction matches its Movement Mode. Wide enough
+   for the longest option anywhere (a trigger's "Dual Stage (adds a full-press
+   button)", 214px) plus its padding and chevron, with a little room over. The chevron is drawn here rather
+   than left to the browser, whose native arrow sits against the edge: 12px in, as
+   the design has it, with the text area stopping short of it. */
+.mode-select{flex:none;width:270px;height:34px;padding:0 34px 0 12px;border-radius:8px;border:1px solid var(--line2);background:var(--inset) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%238794a1' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5L6 8l3.5-3.5'/%3E%3C/svg%3E") no-repeat right 12px center;color:var(--tx);font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer;-webkit-appearance:none;appearance:none;text-overflow:ellipsis;}
 .mode-select:hover{border-color:var(--acc);}
 .speed-wrap{display:flex;align-items:center;gap:10px;flex:none;min-width:220px;}
 .speed-slider{-webkit-appearance:none;appearance:none;flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.16);outline:none;cursor:pointer;}
