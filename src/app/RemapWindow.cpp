@@ -464,6 +464,15 @@ R"HTML(
     <div id="row-R4" class="row"></div>
     <div id="row-R5" class="row"></div>
   </div>
+)HTML"
+// The "..." button's group, split off for the same reason: the literal above is
+// near its budget. Still inside #settings, which is closed here, so a game that
+// follows the default's mappings greys it with the rest of the bindings.
+R"HTML(
+  <div class="group">
+    <div class="group-label">CENTER</div>
+    <div id="row-QAM" class="row"></div>
+  </div>
   </div>
 )HTML"
 // The stick groups, in a literal of their own (the one above is near its budget)
@@ -587,7 +596,7 @@ R"HTML(
 // clicks while the left pad scrolls. Keep in sync with ControllerProfile in
 // TrackpadConfig.h — these two are what "default" means, and a fresh install
 // and this window's reset button both have to land on the same thing.
-var DEFAULTS = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RPAD:'leftMouse',
+var DEFAULTS = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',QAM:'none',LPAD:'none',RPAD:'leftMouse',
   // Directions default to the gamepad d-pad so picking the mode does the
   // obvious thing before anything is rebound; touch starts unbound. Keep in
   // step with TrackpadSettings in TrackpadConfig.h.
@@ -617,7 +626,7 @@ var SPEED_STOPS = [10,15,25,35,50,75,100,150,200,300,400];
 var DEFAULT_PLATFORM = 'xbox';
 
 // ---- State ----
-var bindings = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RPAD:'none'};
+var bindings = {L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',QAM:'none',LPAD:'none',RPAD:'none'};
 // Trackpad movement modes, keyed by the same row ids their click rows use.
 var modes = {LPAD:'none',RPAD:'none'};
 // Scroll direction per pad. Only meaningful in scroll mode, but kept for
@@ -724,7 +733,7 @@ var runningOpen = false;
 // Each profile is a flat object: one entry per bindable row id, plus
 // "<pad>mode" for each trackpad's movement mode. Flat because the JSON
 // reader on the C++ side matches "key":"value" pairs without nesting.
-var PROFILES = {'':{platform:'xbox',L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',LPAD:'none',RPAD:'leftMouse',LPADmode:'scroll',RPADmode:'pointer',LPADdir:'natural',RPADdir:'natural',LPADspeed:'100',RPADspeed:'100',LPADdiag:'eight',RPADdiag:'eight',LPADtouch:'none',RPADtouch:'none',LPADup:'Up',LPADdown:'Down',LPADleft:'Left',LPADright:'Right',RPADup:'Up',RPADdown:'Down',RPADleft:'Left',RPADright:'Right'}};
+var PROFILES = {'':{platform:'xbox',L4:'leftMouse',L5:'none',R4:'leftMouse',R5:'none',QAM:'none',LPAD:'none',RPAD:'leftMouse',LPADmode:'scroll',RPADmode:'pointer',LPADdir:'natural',RPADdir:'natural',LPADspeed:'100',RPADspeed:'100',LPADdiag:'eight',RPADdiag:'eight',LPADtouch:'none',RPADtouch:'none',LPADup:'Up',LPADdown:'Down',LPADleft:'Left',LPADright:'Right',RPADup:'Up',RPADdown:'Down',RPADleft:'Left',RPADright:'Right'}};
 var currentGame = '';
 var comboOpen = false;
 var comboQuery = '';
@@ -783,6 +792,7 @@ var ROWS = [
   {id:'L5',posTag:'LOWER',posLabel:'Lower grip'},
   {id:'R4',posTag:'UPPER',posLabel:'Upper grip'},
   {id:'R5',posTag:'LOWER',posLabel:'Lower grip'},
+  {id:'QAM',badge:'&hellip;',posTag:'MENU',posLabel:'Quick Access (...)'},
   {id:'LPAD',badge:'L',posTag:'PAD',posLabel:'Trackpad Click'},
   {id:'RPAD',badge:'R',posTag:'PAD',posLabel:'Trackpad Click'},
   {id:'LPADtouch',badge:'L',posTag:'TAP',posLabel:'Trackpad Tap'},
@@ -2910,6 +2920,7 @@ void RemapWindow::OnWebMessage(const std::wstring& raw) {
         cfg.back.l5 = BackButtonBinding::FromId(JsonStr(msg, "L5"));
         cfg.back.r4 = BackButtonBinding::FromId(JsonStr(msg, "R4"));
         cfg.back.r5 = BackButtonBinding::FromId(JsonStr(msg, "R5"));
+        cfg.back.qam = BackButtonBinding::FromId(JsonStr(msg, "QAM"));
         // The reader matches on "key":" including the colon, so the bare pad
         // id cannot be found inside a longer one — "LPAD" does not match
         // "LPADup", and "LPADdir" does not match "LPADdiag".
@@ -3109,6 +3120,7 @@ std::wstring RemapWindow::ProfileJson(const ControllerProfile& p) {
                L"\"L5\":\"" + wid(p.back.l5) + L"\","
                L"\"R4\":\"" + wid(p.back.r4) + L"\","
                L"\"R5\":\"" + wid(p.back.r5) + L"\","
+               L"\"QAM\":\"" + wid(p.back.qam) + L"\","
              + pad(L"LPAD", p.leftPad) + L","
              + pad(L"RPAD", p.rightPad) + L","
              + trigger(L"LT", p.leftTrigger) + L","
@@ -3146,7 +3158,7 @@ void RemapWindow::SendInitState() {
             for (const auto* b : { &pad->click, &pad->touch, &pad->up,
                                    &pad->down, &pad->left, &pad->right })
                 addLabel(*b);
-        for (const auto* b : { &p.back.l4, &p.back.l5, &p.back.r4, &p.back.r5 })
+        for (const auto* b : { &p.back.l4, &p.back.l5, &p.back.r4, &p.back.r5, &p.back.qam })
             addLabel(*b);
         // Stored under a trigger that is currently Standard still needs a name
         // ready for when it is switched to Dual Stage.

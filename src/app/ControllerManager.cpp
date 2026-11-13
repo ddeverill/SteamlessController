@@ -95,8 +95,9 @@ struct ControllerManager::Slot {
     // belongs to the trackpads, which are ordinary bindings dispatched down
     // this same path. 4-5 are the pad clicks, 6-7 the pad touches, and 8-15
     // the four directions of each pad in turn. 16-17 are the full presses of
-    // the left and right triggers when they are dual-stage.
-    static constexpr size_t kBindableCount = 18;
+    // the left and right triggers when they are dual-stage. 18 is the "..."
+    // button, appended so nothing above it moves.
+    static constexpr size_t kBindableCount = 19;
     BackButtonBinding paddleHeld[kBindableCount];
 
     // What each pad's directions were last frame. Unlike every other edge
@@ -1976,6 +1977,8 @@ void ControllerManager::ReadLoop(Slot* slot) {
                   m_profile.leftTrigger.EffectiveFull() },
                 { resolved.rightTriggerFull, slot->prevRightTriggerFull,
                   m_profile.rightTrigger.EffectiveFull() },
+                // The "..." button, a plain bit in the report like the paddles.
+                { n>2 && (buf[2]&SteamController::BTN_QAM)!=0, (prevBuf[2]&SteamController::BTN_QAM)!=0, m_profile.back.qam },
             };
             static_assert(std::size(edges) == Slot::kBindableCount,
                           "paddleHeld must have one entry per edge-dispatched binding");

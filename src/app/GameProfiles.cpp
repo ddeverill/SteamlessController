@@ -115,6 +115,9 @@ std::map<std::wstring, ControllerProfile> Load() {
             p.back.l5 = BackButtonBinding::Unpack(ReadDw(child, L"L5", unbound));
             p.back.r4 = BackButtonBinding::Unpack(ReadDw(child, L"R4", unbound));
             p.back.r5 = BackButtonBinding::Unpack(ReadDw(child, L"R5", unbound));
+            // Absent on every profile written before the button was bindable,
+            // which reads back as unbound — what those profiles always did.
+            p.back.qam = BackButtonBinding::Unpack(ReadDw(child, L"QAM", unbound));
             // Profiles written before per-pad settings existed have none of
             // these values; the defaults leave both pads unclaimed, which is
             // exactly how those profiles behaved.
@@ -169,6 +172,7 @@ void Save(const std::map<std::wstring, ControllerProfile>& profiles) {
             WriteDw(child, L"L5", p.back.l5.Pack());
             WriteDw(child, L"R4", p.back.r4.Pack());
             WriteDw(child, L"R5", p.back.r5.Pack());
+            WriteDw(child, L"QAM", p.back.qam.Pack());
             WritePad(child, L"LeftPad",  p.leftPad);
             WritePad(child, L"RightPad", p.rightPad);
             auto writeDw = [&](const wchar_t* name, uint32_t v) { WriteDw(child, name, v); };
