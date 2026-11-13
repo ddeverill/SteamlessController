@@ -700,10 +700,12 @@ struct TrayPanel::Impl : PanelAccessibility::Host {
         // A switch that is on but not the user's to flip (an auto mode owns it) goes
         // grey instead of fading: the green accent at partial opacity turns a muddy
         // dark green, where grey says "on, and out of your hands" cleanly. Its knob
-        // still sits at the on end, so the state is not lost. Off needs no such
-        // treatment; it is already neutral, and only dims.
+        // still sits at the on end, so the state is not lost, and it is a little
+        // translucent so it also reads as inactive. Off needs no colour change; it is
+        // already neutral, and only dims, further than on does because it has
+        // less to lose.
         const UINT32 track = !on ? kOff : enabled ? kOn : kIdle;
-        const float  a     = enabled ? 1.f : on ? 0.9f : 0.45f;
+        const float  a     = enabled ? 1.f : on ? 0.7f : 0.45f;
         const float h = r.bottom - r.top;
         const float inset = h > 22.f ? 3.f : 2.f;
         const float d = h - inset * 2.f;
