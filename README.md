@@ -26,7 +26,6 @@ When **Steamless Mode** is active, the app disables the controller's built-in ke
 - Windows 10 or later (64-bit)
 - [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases/latest) driver installed
 - Steam Controller — wired USB (PID `0x1302`), wireless dongle (PID `0x1304`), or Bluetooth LE (PID `0x1303`, pair via Windows Bluetooth settings)
-- Steam **closed** (Steam claims the controller when running)
 
 ### To build
 - [Visual Studio 2022](https://visualstudio.microsoft.com/) with the **Desktop development with C++** workload
