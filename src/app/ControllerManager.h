@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+class VirtualController;
+
 class ControllerManager {
 public:
     using StateChangedFn = std::function<void(bool connected, bool gameModeActive,
@@ -116,6 +118,10 @@ public:
     // per slot and only one is ever occupied, so this is what a cycle actually
     // needs to touch — see the request file the helper reads.
     const std::wstring& LastLivePath() const { return m_lastLivePath; }
+    // Which controller interfaces are visible right now, one entry each — enough
+    // for a log line to show that one is missing, which is otherwise only
+    // inferable from the interfaces that are not mentioned.
+    std::string DescribeSlots() const;
     // Where the milliseconds go in an acquire, measured rather than inferred.
     // Every timing figure in #79 so far came from reading log line order, and
     // that was wrong twice: queued WM_DEVICECHANGE messages made a five-second
@@ -179,6 +185,17 @@ private:
                                        uint32_t stateWaitMs, bool recordSilent);
     void DisableGameModeSlot(Slot& slot);
     void ReleaseHeldPaddleInputs(Slot& slot);
+    // The virtual pad for one slot, rumble wired through to the physical
+    // controller. May come back invalid — callers check IsValid().
+    std::unique_ptr<VirtualController> MakeVirtualPad(Slot& slot);
+    // A receiver keeps publishing a slot's interface after the controller in it
+    // powers off, so unlike a cable or Bluetooth the OS never reports a
+    // disconnect and the virtual pad would sit in the system, listed and inert,
+    // until game mode ended. Both run on the slot's read thread: the pad goes
+    // when the controller has been silent long enough to be gone, and comes back
+    // with the first state report after.
+    void DropVirtualPad(Slot& slot, const char* why);
+    void RestoreVirtualPad(Slot& slot);
     void StartReadLoop(Slot& slot);
     void StopReadLoop(Slot& slot);
     void ReadLoop(Slot* slot);

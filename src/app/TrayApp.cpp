@@ -197,6 +197,7 @@ bool TrayApp::Init(HINSTANCE hInstance) {
     // "stopped" without anyone having to reproduce the fault.
     SetTimer(m_hwnd, IDT_HEARTBEAT, HEARTBEAT_MS, nullptr);
     SetTimer(m_hwnd, IDT_STEAM_RECONCILE, STEAM_RECONCILE_MS, nullptr);
+    SetTimer(m_hwnd, IDT_DISABLED_CHECK, DISABLED_CHECK_MS, nullptr);
 
     // Start watching for Steam regardless of auto mode — the state is applied
     // only when auto mode is on, and having it warm makes toggling auto mode
@@ -443,6 +444,9 @@ LRESULT TrayApp::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (wp == IDT_DOCK_CYCLE) {
             KillTimer(m_hwnd, IDT_DOCK_CYCLE);
             CycleUnheldDocks();
+        } else if (wp == IDT_DISABLED_CHECK) {
+            // Periodic, so not killed.
+            CheckForDisabledControllerDevice();
         } else if (wp == IDT_HEARTBEAT) {
             // Periodic, so not killed — its absence is the signal.
             WriteHeartbeat();
@@ -1070,8 +1074,9 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
             SetTimer(m_hwnd, IDT_DOCK_CYCLE, DOCK_CYCLE_DELAY_MS, nullptr);
         KillTimer(m_hwnd, IDT_ACQUIRE_VERDICT);
         KillTimer(m_hwnd, IDT_WAKE_POLL);
-        m_acquireRetries = 0;
-        m_lastCycleTick  = 0;
+        m_acquireRetries  = 0;
+        m_lastCycleTick   = 0;
+        m_lastWaitLogTick = 0;  // the next wait is a new one and says so
         // The controller is ours again, and the user may have been sitting in
         // a game the whole time it was not — no foreground change is coming
         // to tell us, so ask.
@@ -1106,6 +1111,20 @@ void TrayApp::TryAcquireController(uint32_t stateWaitMs) {
     // so switching the controller on produces no WM_DEVICECHANGE at all —
     // measured: 88 seconds of silence after the controller was turned on.
     if (outcome == ControllerManager::GameModeOutcome::NoActiveController) {
+        // Say so, because from the log alone this state is indistinguishable
+        // from a healthy idle app — and a controller whose own interface is
+        // missing (switched off in Windows) lands here too, polling forever for a
+        // slot that cannot appear. One line when the wait starts and one every
+        // few minutes after, not one per poll.
+        const ULONGLONG nowWait = GetTickCount64();
+        if (m_lastWaitLogTick == 0 || nowWait - m_lastWaitLogTick >= WAIT_LOG_EVERY_MS) {
+            m_lastWaitLogTick = nowWait;
+            EventLog::Write("ACQUIRE: waiting for a controller — no slot is emitting state "
+                            "(interfaces seen: %s). The controller is off or asleep, or the "
+                            "interface it reports on is missing; a receiver normally shows "
+                            "four (mi_02 to mi_05). Checking every %u s.",
+                            m_controller->DescribeSlots().c_str(), WAKE_POLL_MS / 1000);
+        }
         SetTimer(m_hwnd, IDT_WAKE_POLL, WAKE_POLL_MS, nullptr);
         return;
     }
@@ -1409,18 +1428,72 @@ void TrayApp::RecoverStrandedDevices() {
                         "(or: pnputil /enable-device \"<instance id>\")");
 }
 
-void TrayApp::EnableDisabledControllerDevice() {
+void TrayApp::CheckForDisabledControllerDevice() {
+    // Only while we are waiting on the controller. Not wanting it means a
+    // disabled device may be exactly what the user intends, and holding it means
+    // there is nothing wrong to find.
+    //
+    // Not mid-cycle either: the node is down on purpose for the length of one,
+    // which on a slow device stack is far longer than it looks.
+    if (!m_wantControl || m_controller->IsGameModeActive() || m_cycleInFlight) {
+        m_disabledSeenNode.clear();
+        return;
+    }
+
+    const std::wstring node = DeviceRestart::FindDisabledControllerNode();
+    if (node.empty()) {
+        m_disabledSeenNode.clear();
+        m_autoEnableAttempts = 0;
+        m_autoEnableGaveUp   = false;
+        return;
+    }
+
+    if (node != m_disabledSeenNode) {
+        m_disabledSeenNode = node;
+        EventLog::Write("DEVICE: a controller devnode is disabled in Windows while the app is "
+                        "waiting for the controller — it will be re-enabled if it is still "
+                        "disabled in %u s: %ls",
+                        DISABLED_CHECK_MS / 1000, node.c_str());
+        return;
+    }
+
+    if (m_autoEnableAttempts >= MAX_AUTO_ENABLES) {
+        if (!m_autoEnableGaveUp) {
+            m_autoEnableGaveUp = true;
+            EventLog::Write("DEVICE: re-enabling %ls did not stick after %d tries — leaving it "
+                            "to the user (tray menu, Device Manager, or pnputil)",
+                            node.c_str(), MAX_AUTO_ENABLES);
+            if (m_notificationsEnabled)
+                ShowAlertBalloon(L"Controller is disabled in Windows",
+                                 L"Windows has this controller's device switched off, and "
+                                 L"switching it back on automatically did not work. Click "
+                                 L"here to try again.",
+                                 BalloonAction::EnableDisabledDevice);
+        }
+        return;
+    }
+
+    ++m_autoEnableAttempts;
+    EnableDisabledControllerDevice(/*automatic=*/true);
+}
+
+void TrayApp::EnableDisabledControllerDevice(bool automatic) {
     // Re-resolve rather than trusting what the menu or balloon was built from:
     // minutes may have passed, and the user may already have fixed it by hand.
     const std::wstring node = DeviceRestart::FindDisabledControllerNode();
     m_disabledDeviceNode = node;
     if (node.empty()) {
-        EventLog::Write("USER: asked to re-enable the controller device, but no controller "
-                        "devnode is disabled");
+        if (!automatic)
+            EventLog::Write("USER: asked to re-enable the controller device, but no controller "
+                            "devnode is disabled");
         return;
     }
 
-    EventLog::Write("USER: re-enabling disabled controller devnode %ls", node.c_str());
+    if (automatic)
+        EventLog::Write("DEVICE: re-enabling disabled controller devnode %ls (attempt %d of %d)",
+                        node.c_str(), m_autoEnableAttempts, MAX_AUTO_ENABLES);
+    else
+        EventLog::Write("USER: re-enabling disabled controller devnode %ls", node.c_str());
 
     // Hand it to the same mechanism that repairs an interrupted cycle rather
     // than growing a second way to switch a devnode on: recorded as pending, it
@@ -1430,7 +1503,8 @@ void TrayApp::EnableDisabledControllerDevice() {
     DeviceRestart::ArmPendingDisable(node, L"");
 
     if (!RunPendingRecovery()) {
-        EventLog::Write("USER: could not run the elevated helper to re-enable the device");
+        EventLog::Write("%s: could not run the elevated helper to re-enable the device",
+                        automatic ? "DEVICE" : "USER");
         if (m_notificationsEnabled)
             ShowAlertBalloon(L"Could not re-enable the controller",
                              L"Windows would not let the device be switched back on from "
@@ -1478,15 +1552,48 @@ bool TrayApp::RestartControllerDevices() {
     //
     // Fire the elevated helper via its scheduled task. Starting
     // a task the user authored needs no elevation, so no UAC prompt here.
+    //
+    // Checked before /Run, not after it fails: /Run reports success for a task
+    // whose program is gone (the failure, 0x80070002, only shows up in the
+    // task's last result), so the cycle would "start", do nothing, and time out.
+    // Registering the task again cannot help either, and the elevation prompt it
+    // would raise would blame the wrong thing. Security software removing the
+    // helper is the usual way this happens.
+    if (GetFileAttributesW(HelperPath().c_str()) == INVALID_FILE_ATTRIBUTES) {
+        if (!m_helperMissingShown) {
+            m_helperMissingShown = true;
+            EventLog::Write("CYCLE TASK: the helper is missing (%ls) — nothing to run",
+                            HelperPath().c_str());
+            if (m_notificationsEnabled)
+                ShowAlertBalloon(L"Controller helper is missing",
+                                 L"SteamlessDeviceCycle.exe is no longer next to the app, so "
+                                 L"it cannot take the controller back from Steam. Security "
+                                 L"software may have removed it; reinstalling restores it.");
+        }
+        EndCycle("the helper file is missing");
+        return false;
+    }
+    m_helperMissingShown = false;
+
     std::wstring run = L"schtasks.exe /Run /TN \"";
     run += CYCLE_TASK_NAME;
     run += L"\"";
-    if (RunToolHidden(run)) return true;  // asynchronous — flag stays raised
-
-    // Task missing (copied exes without installing?) — register it with a
-    // one-time UAC prompt, then retry.
-    if (EnsureCycleTaskRegistered() && RunToolHidden(std::move(run)))
+    if (RunToolHidden(run)) {  // asynchronous — flag stays raised
+        m_taskRepairTried = false;
         return true;
+    }
+
+    // The task is missing (copied exes without installing?), or it is there and
+    // /Run refused it anyway ("Element not found" on a task that reads back
+    // correctly). Register it again with a UAC prompt, then retry. The second
+    // case is told apart from the first by the path check passing, so it has to
+    // be forced — and only once, since each one prompts.
+    const bool force = !m_taskRepairTried;
+    m_taskRepairTried = true;
+    if (EnsureCycleTaskRegistered(force) && RunToolHidden(std::move(run))) {
+        m_taskRepairTried = false;
+        return true;
+    }
 
     // No cycle was started, so nothing is running that our handle could veto.
     EndCycle("the helper could not be started");
@@ -1861,7 +1968,7 @@ static bool RegisteredCommandMatches(const std::string& registered,
     return false;
 }
 
-bool TrayApp::EnsureCycleTaskRegistered() {
+bool TrayApp::EnsureCycleTaskRegistered(bool force) {
     // Registered AND pointing at this build's helper? Existence alone is not
     // enough: a task left by an older or relocated install still "runs" —
     // schtasks reports success — while executing a helper that may be gone or
@@ -1870,9 +1977,12 @@ bool TrayApp::EnsureCycleTaskRegistered() {
     // app's side, so verify the path rather than just the task.
     {
         const std::string registered = RegisteredTaskCommand();
-        if (RegisteredCommandMatches(registered, HelperPath()))
+        if (!force && RegisteredCommandMatches(registered, HelperPath()))
             return true;
-        if (!registered.empty())
+        if (force && RegisteredCommandMatches(registered, HelperPath()))
+            EventLog::Write("CYCLE TASK: /Run failed on a task that reads back as "
+                            "correct — re-registering");
+        else if (!registered.empty())
             EventLog::Write("CYCLE TASK: registered helper is stale, re-registering");
     }
 

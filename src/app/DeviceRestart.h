@@ -109,11 +109,20 @@ bool ReadCycleStatus(CycleResult& result);
 
 // Record that these devnodes are about to be disabled. Call immediately before
 // the disable; the record is flushed to disk before this returns.
+//
+// Adds to what is already recorded rather than replacing it: a node an earlier
+// cycle switched off and never confirmed back must stay on the list however many
+// cycles start after it.
 bool ArmPendingDisable(const std::wstring& instanceId,
                        const std::wstring& parentInstanceId);
 
-// Drop the record. Call only once the devnode is confirmed enabled again.
-bool DisarmPendingDisable();
+// Drop this node's record. Call only once the devnode is confirmed enabled
+// again. Other nodes' records are untouched.
+bool DisarmPendingDisable(const std::wstring& instanceId);
+
+// Drop every record. For the reconcile pass, which has just dealt with all of
+// them one way or another.
+bool ClearPendingDisables();
 
 // True when a previous run left a disable unfinished. Cheap; safe unelevated.
 bool HasPendingDisable();

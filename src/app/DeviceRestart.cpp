@@ -1,5 +1,6 @@
 #include "DeviceRestart.h"
 #include <SetupAPI.h>
+#include <algorithm>
 #include <cfgmgr32.h>
 #include <cstdio>
 #include <io.h>
@@ -249,7 +250,7 @@ static void CycleDevNode(HDEVINFO devs, SP_DEVINFO_DATA& devInfo, CycleResult& o
         // viable here when it would be vetoed on a live one.
         const DWORD enableError = GetLastError();
         if (RebuildDevNode(instanceId)) {
-            DisarmPendingDisable();
+            DisarmPendingDisable(instanceId);
             out.kind  = CycleKind::Removed;
             out.error = ERROR_SUCCESS;
             return;
@@ -263,8 +264,9 @@ static void CycleDevNode(HDEVINFO devs, SP_DEVINFO_DATA& devInfo, CycleResult& o
         return;
     }
 
-    // Confirmed back. Nothing left for a later run to undo.
-    DisarmPendingDisable();
+    // Confirmed back. Nothing left for a later run to undo — for this node. Any
+    // other cycle's record is its own and stays until that cycle says so.
+    DisarmPendingDisable(instanceId);
 
     if (wentDown) {
         out.kind = CycleKind::Cycled;
@@ -419,51 +421,124 @@ static std::wstring PendingPath() {
     return dir + L"\\pending-disable";
 }
 
-bool ArmPendingDisable(const std::wstring& instanceId,
-                       const std::wstring& parentInstanceId) {
+// One record per cycle that has switched a node off and not yet confirmed it is
+// back: the node itself and the parent the disable might have landed on instead.
+//
+// The file used to hold exactly one such record, rewritten on every cycle. Two
+// cycles that both died mid-way — or any cycle that started while another's
+// record was still outstanding — left only the later one, and the node the
+// earlier one had switched off was forgotten with nothing left to bring it back.
+// So each node gets its own record, and finishing a cycle removes only its own.
+//
+// On disk a record is one line: "node", or "parent<TAB>node". A file written by
+// an older build is plain one-id-per-line, which reads as a record per id and
+// expands to the same list, so nothing is lost across an upgrade.
+struct PendingRecord {
+    std::wstring parent;
+    std::wstring node;
+};
+
+static std::vector<PendingRecord> ReadPendingRecords() {
+    std::vector<PendingRecord> records;
     const std::wstring path = PendingPath();
-    if (path.empty() || instanceId.empty()) return false;
+    if (path.empty()) return records;
+
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"r, ccs=UTF-8") != 0 || !f) return records;
+
+    wchar_t line[2 * MAX_DEVICE_ID_LEN + 4];
+    while (fgetws(line, ARRAYSIZE(line), f)) {
+        size_t len = wcslen(line);
+        while (len && (line[len - 1] == L'\n' || line[len - 1] == L'\r'))
+            line[--len] = L'\0';
+        if (!len) continue;
+
+        PendingRecord rec;
+        if (wchar_t* tab = wcschr(line, L'\t')) {
+            *tab       = L'\0';
+            rec.parent = line;
+            rec.node   = tab + 1;
+        } else {
+            rec.node = line;
+        }
+        if (!rec.node.empty()) records.push_back(std::move(rec));
+    }
+    fclose(f);
+    return records;
+}
+
+// Replaces the file with exactly these records, or removes it when there are
+// none. The whole point of the file is to outlive an abrupt death, so what is
+// written has to reach the disk before the disable it guards — buffered in this
+// process is no better than not written at all.
+static bool WritePendingRecords(const std::vector<PendingRecord>& records) {
+    const std::wstring path = PendingPath();
+    if (path.empty()) return false;
+
+    if (records.empty())
+        return DeleteFileW(path.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND;
 
     FILE* f = nullptr;
     if (_wfopen_s(&f, path.c_str(), L"w, ccs=UTF-8") != 0 || !f) return false;
-
-    // Outermost node first: reconciliation walks the file in order, and a
-    // disabled parent has to come back before its child can be looked at.
-    if (!parentInstanceId.empty())
-        fwprintf(f, L"%s\n", parentInstanceId.c_str());
-    fwprintf(f, L"%s\n", instanceId.c_str());
-
-    // The whole point of this file is to outlive an abrupt death, so it has to
-    // reach the disk before the disable it is guarding — buffered in this
-    // process is no better than not written at all.
+    for (const auto& rec : records) {
+        if (!rec.parent.empty())
+            fwprintf(f, L"%s\t%s\n", rec.parent.c_str(), rec.node.c_str());
+        else
+            fwprintf(f, L"%s\n", rec.node.c_str());
+    }
     fflush(f);
     _commit(_fileno(f));
     fclose(f);
     return true;
 }
 
-bool DisarmPendingDisable() {
-    const std::wstring path = PendingPath();
-    if (path.empty()) return false;
-    return DeleteFileW(path.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND;
+// Read-modify-write with no lock. The helper runs one at a time (the task drops
+// a second run while one is going), and the only other writer is the tray app
+// acting on a user's click, so the two do not realistically overlap — and a lock
+// would have to span an elevated and an unelevated process.
+bool ArmPendingDisable(const std::wstring& instanceId,
+                       const std::wstring& parentInstanceId) {
+    if (PendingPath().empty() || instanceId.empty()) return false;
+
+    auto records = ReadPendingRecords();
+    // Re-arming a node replaces its own record rather than doubling it.
+    records.erase(std::remove_if(records.begin(), records.end(),
+                                 [&](const PendingRecord& r) { return r.node == instanceId; }),
+                  records.end());
+    records.push_back({parentInstanceId, instanceId});
+    return WritePendingRecords(records);
 }
 
+bool DisarmPendingDisable(const std::wstring& instanceId) {
+    if (PendingPath().empty()) return false;
+
+    auto records = ReadPendingRecords();
+    const size_t before = records.size();
+    records.erase(std::remove_if(records.begin(), records.end(),
+                                 [&](const PendingRecord& r) { return r.node == instanceId; }),
+                  records.end());
+    if (records.size() == before) return true;  // nothing of this node's to drop
+    return WritePendingRecords(records);
+}
+
+bool ClearPendingDisables() {
+    return WritePendingRecords({});
+}
+
+// Every id that needs looking at, outermost first: reconciliation walks the list
+// in order, and a disabled parent has to come back before its child can be
+// examined. An id shared by several records (every interface of one device has
+// the same parent) appears once.
 static std::vector<std::wstring> ReadPendingIds() {
     std::vector<std::wstring> ids;
-    const std::wstring path = PendingPath();
-    if (path.empty()) return ids;
-
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, path.c_str(), L"r, ccs=UTF-8") != 0 || !f) return ids;
-
-    wchar_t line[MAX_DEVICE_ID_LEN + 2];
-    while (fgetws(line, ARRAYSIZE(line), f)) {
-        size_t len = wcslen(line);
-        while (len && (line[len - 1] == L'\n' || line[len - 1] == L'\r'))
-            line[--len] = L'\0';
-        if (len) ids.emplace_back(line);
+    const auto add = [&](const std::wstring& id) {
+        if (!id.empty() && std::find(ids.begin(), ids.end(), id) == ids.end())
+            ids.push_back(id);
+    };
+    for (const auto& rec : ReadPendingRecords()) {
+        add(rec.parent);
+        add(rec.node);
     }
-    fclose(f);
     return ids;
 }
 
@@ -533,7 +608,7 @@ int ReconcilePendingDisables(std::wstring* report) {
     // not be re-enabled by trying again on the next launch, and keeping the
     // file would turn one stranded device into a permanent startup ritual —
     // the failure is surfaced through the log instead.
-    DisarmPendingDisable();
+    ClearPendingDisables();
 
     if (report) *report = text;
     return recovered;

@@ -80,6 +80,12 @@ struct ControllerManager::Slot {
     std::chrono::steady_clock::time_point powerOffAt{};
     bool                               powerChordDown = false;
 
+    // The virtual pad was taken away because the controller went silent, and is
+    // to be recreated when it speaks again. Read thread only. padRetryAt holds
+    // off the next attempt after one failed.
+    bool                               padDropped = false;
+    std::chrono::steady_clock::time_point padRetryAt{};
+
     // When this slot was last found silent. Probing for a state report costs
     // the full timeout on an empty puck slot, and the acquire path retries in
     // a rapid burst — without this, three empty slots would block the UI
@@ -1019,6 +1025,25 @@ bool ControllerManager::AdoptPounced() {
     if (any) NotifyStateChanged();
     return any;
 }
+std::string ControllerManager::DescribeSlots() const {
+    if (m_slots.empty()) return "none";
+    std::string out;
+    for (const auto& slot : m_slots) {
+        if (!out.empty()) out += ", ";
+        out += SteamController::TransportName(slot->transport);
+        // The interface number is what tells a receiver's slots apart, and it is
+        // the part of a long device path worth reading: "mi_02".
+        const size_t mi = slot->path.find(L"mi_");
+        if (mi != std::wstring::npos && mi + 5 <= slot->path.size()) {
+            out += ' ';
+            for (size_t i = mi; i < mi + 5; ++i)
+                out += static_cast<char>(slot->path[i]);
+        }
+        out += slot->gameModeActive ? " (in use)" : " (idle)";
+    }
+    return out;
+}
+
 void ControllerManager::SyncDevices() {
     const auto enumStart = std::chrono::steady_clock::now();
     auto livePaths = SteamController::EnumerateAll();
@@ -1198,14 +1223,7 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut, bool 
         return GameModeOutcome::Blocked;
     }
 
-    slot.vc = std::make_unique<VirtualController>(
-        m_profile.platform,
-        [this, sc = slot.sc.get()](uint8_t largeMotor, uint8_t smallMotor) {
-            const uint32_t strength = m_rumbleStrength.load(std::memory_order_relaxed);
-            largeMotor = static_cast<uint8_t>(largeMotor * strength / 100);
-            smallMotor = static_cast<uint8_t>(smallMotor * strength / 100);
-            if (sc->IsOpen()) sc->SetRumble(largeMotor, smallMotor);
-        });
+    slot.vc = MakeVirtualPad(slot);
     if (!slot.vc->IsValid()) {
         EventLog::Write("GAMEMODE: ViGEm virtual controller failed (stage=%s, err=0x%08X, driverMissing=%d)",
                         slot.vc->FailStage(), slot.vc->LastError(),
@@ -1260,6 +1278,59 @@ ControllerManager::EnableGameModeSlot(Slot& slot, bool& padUnavailableOut, bool 
     return GameModeOutcome::Enabled;
 }
 
+std::unique_ptr<VirtualController> ControllerManager::MakeVirtualPad(Slot& slot) {
+    return std::make_unique<VirtualController>(
+        m_profile.platform,
+        [this, sc = slot.sc.get()](uint8_t largeMotor, uint8_t smallMotor) {
+            const uint32_t strength = m_rumbleStrength.load(std::memory_order_relaxed);
+            largeMotor = static_cast<uint8_t>(largeMotor * strength / 100);
+            smallMotor = static_cast<uint8_t>(smallMotor * strength / 100);
+            if (sc->IsOpen()) sc->SetRumble(largeMotor, smallMotor);
+        });
+}
+
+void ControllerManager::DropVirtualPad(Slot& slot, const char* why) {
+    if (!slot.vc) return;
+    // Nothing is coming to release what was held: the frames that would have
+    // carried the release are the ones that stopped.
+    ReleaseHeldPaddleInputs(slot);
+    slot.leftPad.Reset();
+    slot.rightPad.Reset();
+    slot.triggerRaw[0].store(0, std::memory_order_relaxed);
+    slot.triggerRaw[1].store(0, std::memory_order_relaxed);
+    for (auto& s : slot.stickRaw) s.store(0, std::memory_order_relaxed);
+    slot.vc.reset();
+    slot.padDropped = true;
+    slot.padRetryAt = {};
+    EventLog::Write("PAD: controller %s — removed the virtual controller so Windows stops "
+                    "listing it; it comes back with the controller (transport=%s) %ls",
+                    why, SteamController::TransportName(slot.transport), slot.path.c_str());
+}
+
+void ControllerManager::RestoreVirtualPad(Slot& slot) {
+    const auto now = std::chrono::steady_clock::now();
+    // A failed attempt is not retried on every frame: that is 157 creations a
+    // second against a driver that has just said no, and the notification storm
+    // that causes is how #68 was reported.
+    if (now < slot.padRetryAt) return;
+
+    auto vc = MakeVirtualPad(slot);
+    if (!vc->IsValid()) {
+        slot.padRetryAt = now + std::chrono::seconds(5);
+        EventLog::Write("PAD: controller is back but the virtual controller could not be "
+                        "recreated (stage=%s, err=0x%08X) — trying again in 5 s",
+                        vc->FailStage(), vc->LastError());
+        return;
+    }
+    slot.vc         = std::move(vc);
+    slot.padDropped = false;
+    // The controller lost whatever it was told when it powered off.
+    if (m_profile.platform == ControllerPlatform::PlayStation)
+        slot.sc->SetImuEnabled(true);
+    EventLog::Write("PAD: controller is back — virtual controller recreated (transport=%s) %ls",
+                    SteamController::TransportName(slot.transport), slot.path.c_str());
+}
+
 void ControllerManager::DisableGameModeSlot(Slot& slot) {
     if (!slot.gameModeActive) return;
     // Forget what was last logged, so the next enable states the pad setup
@@ -1279,6 +1350,7 @@ void ControllerManager::DisableGameModeSlot(Slot& slot) {
     slot.triggerRaw[1].store(0, std::memory_order_relaxed);
     for (auto& s : slot.stickRaw) s.store(0, std::memory_order_relaxed);
     slot.vc.reset();
+    slot.padDropped = false;
     slot.sc->EnableLizardMode();
     // Reopen shared so Steam can obtain write access — game mode is no longer active.
     slot.sc->ReleaseToShared();
@@ -1487,10 +1559,31 @@ void ControllerManager::ReadLoop(Slot* slot) {
                     m_alertFn(L"Controller not responding", text);
                 }
             }
+
+            // A controller that has gone away takes its virtual pad with it. A
+            // cable or Bluetooth link says so by removing the device; a receiver
+            // does not, so this is the only place that can tell. Right away
+            // after Steam + Y, which is the user saying so; otherwise only after
+            // a silence long enough that it is not a dropout — a pad that
+            // vanishes and returns every time the radio hiccups reads to a game
+            // as a controller being pulled out. Not for a cable, where a silent
+            // pad is a fault rather than a departure and removal already has
+            // its own path.
+            if (stalled && slot->vc
+                    && slot->transport != SteamController::Transport::Wired) {
+                static constexpr auto kPadDropSilence = std::chrono::seconds(10);
+                const bool poweredOff = slot->powerOffRequested.load();
+                if (poweredOff
+                        || std::chrono::steady_clock::now() - lastReport > kPadDropSilence)
+                    DropVirtualPad(*slot, poweredOff ? "powered off" : "went silent");
+            }
             continue;
         }
         lastReport = std::chrono::steady_clock::now();
         if (SteamController::IsStateReportId(buf[0])) {
+            // Back from wherever it was. Before anything below touches the pad:
+            // this frame is its first input.
+            if (slot->padDropped) RestoreVirtualPad(*slot);
             lastStateReport = lastReport;
             freeze.Observe(buf, n, keepaliveFailing);
             if (keepaliveFailing) ++stateSinceFail;

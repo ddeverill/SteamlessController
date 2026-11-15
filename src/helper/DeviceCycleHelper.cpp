@@ -272,7 +272,14 @@ static int RegisterTask() {
     xml += L"    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\r\n";
     xml += L"    <AllowStartOnDemand>true</AllowStartOnDemand>\r\n";
     xml += L"    <Enabled>true</Enabled>\r\n";
-    xml += L"    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>\r\n";
+    // Task Scheduler ends the helper with TerminateProcess when this runs out —
+    // no cleanup, so a cycle caught in the middle leaves the devnode disabled.
+    // One minute was ample on a healthy machine (a cycle is a second or so per
+    // interface) and not on a slow device stack: one reporter's log shows a
+    // single interface taking 31 s, and a four-interface cycle plus the veto
+    // probes can run well past a minute. Generous on purpose — a helper that is
+    // genuinely wedged is no worse off for being left a little longer.
+    xml += L"    <ExecutionTimeLimit>PT3M</ExecutionTimeLimit>\r\n";
     xml += L"  </Settings>\r\n";
     xml += L"  <Actions Context=\"Author\">\r\n";
     xml += L"    <Exec><Command>";

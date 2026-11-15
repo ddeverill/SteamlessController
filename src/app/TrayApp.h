@@ -93,7 +93,9 @@ private:
     // privileges scheduled task by the installer or, failing that, by a
     // one-time UAC prompt here.
     static bool IsProcessElevated();
-    bool EnsureCycleTaskRegistered();
+    // force: register again even though the task reads back as correct. For when
+    // schtasks /Run has just refused a task whose registered path matches.
+    bool EnsureCycleTaskRegistered(bool force = false);
     bool RunKeyExists() const;
     void SetRunKey(bool enabled);
     void DeleteLegacyStartupTask();
@@ -169,8 +171,15 @@ private:
     // elevated, through the helper's task otherwise. Shared so there is one
     // place that knows how to get a devnode switched back on.
     bool RunPendingRecovery();
-    // User-initiated repair of a devnode this app did not disable.
-    void EnableDisabledControllerDevice();
+    // Repair of a devnode this app has no record of disabling. `automatic` is
+    // only about who asked, for the log and the notice: the user clicked, or
+    // CheckForDisabledControllerDevice decided it was what they would want.
+    void EnableDisabledControllerDevice(bool automatic = false);
+    // While the app wants the controller and does not have it, a controller
+    // devnode that Windows has switched off is the likeliest reason — and from
+    // inside the app it looks exactly like an empty slot, with nothing to say so.
+    // Switches it back on if it stays that way.
+    void CheckForDisabledControllerDevice();
     bool RestartControllerDevices();
     // Follow a cycle we asked for using enumeration alone, so that watching it
     // cannot veto it. Called in place of ControllerManager::OnDeviceChange for
@@ -202,6 +211,9 @@ private:
     // Dock-only cycles spent on the current takeover; see CycleUnheldDocks.
     int                                m_dockCycles     = 0;
     ULONGLONG                          m_lastCycleTick  = 0;
+    // When the "waiting for a controller" line was last written; 0 when the wait
+    // has not started or has ended.
+    ULONGLONG                          m_lastWaitLogTick = 0;
     // Verdict of the most recent device cycle, read back from the helper.
     DeviceRestart::CycleResult         m_lastCycleStatus;
     bool                               m_elevationBalloonShown = false;
@@ -249,6 +261,21 @@ private:
     // Devnode found disabled when the menu was last built, so the command
     // handler and the menu agree on what "re-enable" refers to.
     std::wstring                       m_disabledDeviceNode;
+    // The node the last periodic check found disabled. It has to be found twice
+    // running before anything is done about it: a cycle of our own switches the
+    // node off for a moment on purpose, and a slow device stack stretches that
+    // moment well past a second.
+    std::wstring                       m_disabledSeenNode;
+    // Automatic re-enables spent on the current disabled node, and whether the
+    // user has been told we ran out. Both clear once nothing is disabled.
+    int                                m_autoEnableAttempts = 0;
+    bool                               m_autoEnableGaveUp   = false;
+    // A forced re-register of the cycle task has been spent. It costs a UAC
+    // prompt and a task that keeps refusing to run would ask for one on every
+    // attempt, so it is allowed once, and again only after a /Run has worked.
+    bool                               m_taskRepairTried    = false;
+    // The missing-helper notice has been given; cleared once the file is back.
+    bool                               m_helperMissingShown = false;
     std::mutex                         m_alertMutex;   // guards the two alert strings
     std::wstring                       m_alertTitle;   // set on read threads,
     std::wstring                       m_alertText;    // consumed on WM_ALERT
@@ -341,6 +368,15 @@ private:
     static constexpr UINT_PTR IDT_CYCLE_WATCHDOG  = 7;
     static constexpr UINT_PTR IDT_GAME_LIVENESS   = 8;
     static constexpr UINT_PTR IDT_DOCK_CYCLE      = 9;
+    static constexpr UINT_PTR IDT_DISABLED_CHECK  = 10;
+    // How often to look for a controller devnode Windows has switched off while
+    // we are waiting for the controller. Two looks are needed before acting, so
+    // a disabled node is dealt with after between this and twice this.
+    static constexpr UINT DISABLED_CHECK_MS = 30 * 1000;
+    // Automatic re-enables per disabled node before leaving it to the user. The
+    // enable either takes or it does not; asking a fourth time achieves nothing
+    // and would have the app fighting anyone who wants the device off.
+    static constexpr int  MAX_AUTO_ENABLES  = 3;
     // Long enough that idling for a month costs a fraction of the log's 512 KB,
     // short enough to bound when the app stopped responding to within a
     // quarter hour. Resolution only has to beat "somewhere in the last 33
@@ -359,6 +395,8 @@ private:
     // continuously and answers within a few reports.
     static constexpr UINT WAKE_POLL_MS  = 2000;
     static constexpr UINT WAKE_PROBE_MS = 80;
+    // Spacing of the "still waiting" line while the wake poll runs.
+    static constexpr ULONGLONG WAIT_LOG_EVERY_MS = 5 * 60 * 1000;
     // A dock that could not be claimed is cycled on its own shortly after the
     // takeover — late enough for the helper run that won the slot to have
     // exited, since the task drops a second run while one is going — and at
